@@ -32,49 +32,52 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
     | _ -> (false, Location.dummy) in
 
     (* log "Loop head: %B\n" is_loop_head; *)
-    if shouldLog then log "\n[State info] %a\n" pp_path astate.branchingPath;
+    (* if shouldLog then log "\n[State info] %a\n" pp_path astate.branchingPath; *)
 
     let astate = match instr with
     | Prune (exp, loc, branch, kind) -> 
       ( 
-        log "  [PRUNE] (%a)\n" Location.pp loc;
+        let is_loop_prune = match kind with
+          | Ik_dowhile | Ik_for | Ik_while -> true
+          | _ -> false
+        in
+
+        log "[PRUNE] (%a)\n" Location.pp loc;
         let lts_loc = LTSLocation.PruneLoc loc in
         let newLocSet = LocSet.add loc astate.branchLocs in
         let newEdge = Edge.set_end astate.current_edge lts_loc in
         let modifiedVars = Edge.modified_to_string astate.current_edge in
 
-        let node_label = F.sprintf "%s\n%s" (Sil.if_kind_to_string kind) (Location.to_string loc) in 
-        let prune_node = GraphNode.make lts_loc node_label in
-        log "%a = %d\n" LTSLocation.pp prune_node.location prune_node.id;
-        let edge_label = get_edge_label astate.branchingPath in
-        let edge_label = F.sprintf "%s\n%s" edge_label modifiedVars in
-        let new_edge = LTS.E.create astate.lastNode edge_label prune_node in
+        let prune_label = F.sprintf "%s\n%s" (Sil.if_kind_to_string kind) (Location.to_string loc) in 
+        let prune_node = GraphNode.make lts_loc prune_label in
+        let lhs = astate.joinNode.lhs in
+        let rhs = astate.joinNode.rhs in
+        let graph_nodes = NodeSet.add prune_node astate.graphNodes in
 
-        (* Create new prune node *)
-        (* let prune_locs = if PruneLocations.mem lts_loc astate.pruneLocs then (
-          astate.pruneLocs
+        let is_direct_backedge = LTSLocation.equal lts_loc lhs || LTSLocation.equal lts_loc rhs in
+        let graph_edges, graph_nodes = if is_direct_backedge then (
+          (* Discard join node and all edges poiting to it and instead make
+           * one direct backedge with variables modified inside the loop *)
+          let join_edges =  astate.joinNode.edges in
+          let edge = List.find_exn (GEdgeSet.elements join_edges) ~f:(fun edge -> 
+            let backedge_origin = LTS.E.src edge in
+            GraphNode.equal backedge_origin prune_node
+          ) in
+          let backedge = LTS.E.create (LTS.E.src edge) (LTS.E.label edge) prune_node in
+          let graph_edges = GEdgeSet.add backedge astate.graphEdges in
+          let graph_nodes = NodeSet.remove astate.lastNode graph_nodes in
+          graph_edges, graph_nodes
         ) else (
-          PruneLocations.add lts_loc prune_node astate.pruneLocs
+          (* Add all accumulated edges pointing to aggregated join node and
+           * new edge pointing from aggregated join node to this prune node *)
+          let edge_label = get_edge_label astate.branchingPath in
+          let edge_label = F.sprintf "%s\n%s" edge_label modifiedVars in
+          let new_edge = LTS.E.create astate.lastNode edge_label prune_node in
+          let graph_edges = GEdgeSet.add new_edge astate.graphEdges in
+          let graph_edges = GEdgeSet.union astate.joinNode.edges graph_edges in
+          graph_edges, graph_nodes
         )
-        in *)
-
-        (* let astate = if branch then (
-          let nodeLabel = F.sprintf "%s\n%s" (Sil.if_kind_to_string kind) (Location.to_string loc) in 
-          let newNode = Domain.GraphNode.make loc nodeLabel in
-          let edgeLabel = Domain.get_edge_label astate.branchingPath in
-          let edgeLabel = F.sprintf "%s\n%s" edgeLabel modifiedVars in
-          let newEdge = Domain.LTS.E.create astate.lastNode edgeLabel newNode in
-          Domain.LTS.add_vertex astate.lts newNode;
-          Domain.LTS.add_edge_e astate.lts newEdge;
-          {astate with 
-            lastNode = newNode;
-            lastNodeRef = ref newNode;
-          }
-        ) else (
-          let astate = {astate with lastNode = Domain.GraphNode.get_last() } in
-          astate
-        )
-        in *)
+        in
 
         let astate = { astate with
           (* pruneLocs = prune_locs; *)
@@ -85,20 +88,21 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
           lastLoc = LTSLocation.PruneLoc loc;
 
           lastNode = prune_node;
-          graphNodes = NodeSet.add prune_node astate.graphNodes;
-          graphEdges = GEdgeSet.add new_edge astate.graphEdges;
+          graphNodes = graph_nodes;
+          graphEdges = graph_edges;
+          joinNode = JoinNode.initial;
         } in
 
-        (
+        (* (
           match kind with
           | Ik_dowhile | Ik_for | Ik_while -> log "    Loop header location\n"
           | _ -> log "    Branching\n"
-        );
+        ); *)
 
-        log "    Edges:\n";
+        (* log "    Edges:\n";
         EdgeSet.iter (fun edge -> 
           log "      %a\n" Edge.pp edge
-        ) astate.edges;
+        ) astate.edges; *)
 
         astate
       )  
@@ -123,7 +127,7 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
 
     | Store (lexp, expType, rexp, loc) ->
       (
-        log "  [STORE] (%a)\n" Location.pp loc;
+        (* log "  [STORE] (%a)\n" Location.pp loc; *)
         let pvars = Sequence.append (Exp.program_vars lexp) (Exp.program_vars rexp) in
         let edge = Edge.add_modified astate.current_edge pvars in
         (* log "  Modified: [%a]\n" Domain.PvarSet.pp edge.modified_vars; *)
@@ -132,7 +136,7 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
 
     | Load (ident, lexp, typ, loc) ->
       (
-        log "  [LOAD] (%a)\n" Location.pp loc;
+        (* log "  [LOAD] (%a)\n" Location.pp loc; *)
         (* let pvars = Exp.program_vars lexp in
         let edge = Domain.Edge.add_modified astate.current_edge pvars in
         log "  Modified: [%a]\n" Domain.PvarSet.pp edge.modified_vars;
@@ -154,7 +158,7 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
       )
     in
     (* if shouldLog then log "  Last prune location: %a\n" Location.pp astate.lastLoc; *)
-    if shouldLog then log "  Current edge start: %a\n" LTSLocation.pp astate.current_edge.loc_begin;
+    (* if shouldLog then log "  Current edge start: %a\n" LTSLocation.pp astate.current_edge.loc_begin; *)
     astate
  end
 module CFG = ProcCfg.NormalOneInstrPerNode

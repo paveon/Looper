@@ -31,6 +31,11 @@ module LTSLocation = struct
     | Dummy
   [@@deriving compare]
 
+  let is_join_loc : t -> bool = fun loc -> 
+    match loc with
+    | Join _ -> true
+    | _ -> false
+
   let pp fmt loc = match loc with
     | PruneLoc loc | Start loc -> Location.pp fmt loc
     | Join id -> F.fprintf fmt "JOIN %d" id
@@ -59,6 +64,8 @@ module GraphNode = struct
 
   module IdMap = Caml.Map.Make(LTSLocation)
 
+  let is_join_node : t -> bool = fun node -> LTSLocation.is_join_loc node.location
+
   let idCnt = ref 0
   let idMap : (int IdMap.t) ref = ref IdMap.empty
 
@@ -69,12 +76,12 @@ module GraphNode = struct
     (Int.equal a.id b.id)
 
   let make : LTSLocation.t -> string -> t = fun loc label -> (
-    IdMap.iter (fun loc id -> 
+    (* IdMap.iter (fun loc id -> 
       L.stdout "%a = %d\n" LTSLocation.pp loc id;
-    ) !idMap;
+    ) !idMap; *)
 
     let found = IdMap.mem loc !idMap in
-    L.stdout "%a: %B\n" LTSLocation.pp loc found;
+    (* L.stdout "%a: %B\n" LTSLocation.pp loc found; *)
     (* let found = IdMap.find_first_opt (fun existing_loc -> 
       let equal = LTSLocation.equal existing_loc loc in
       L.stdout "%a, %a, %B\n" LTSLocation.pp existing_loc LTSLocation.pp loc equal;
@@ -90,7 +97,7 @@ module GraphNode = struct
     ) *)
     let node_id = if found then (
       let id = IdMap.find loc !idMap in
-      L.stdout "Found id: %d\n" id;
+      (* L.stdout "Found id: %d\n" id; *)
       id
     ) else (
       idCnt := !idCnt + 1;
@@ -98,9 +105,9 @@ module GraphNode = struct
       !idCnt
     ) 
     in
-    IdMap.iter (fun loc id -> 
+    (* IdMap.iter (fun loc id -> 
       L.stdout "%a = %d\n" LTSLocation.pp loc id;
-    ) !idMap;
+    ) !idMap; *)
     {
       id = node_id;
       location = loc;
@@ -196,13 +203,31 @@ module EdgeSet = Caml.Set.Make(Edge)
 module NodeSet = Caml.Set.Make(GraphNode)
 module GEdgeSet = Caml.Set.Make(LTS.E)
 
+
+module JoinNode = struct
+  type t = {
+    rhs: LTSLocation.t;
+    lhs: LTSLocation.t;
+    edges: GEdgeSet.t;
+  } [@@deriving compare]
+
+  let initial : t = {
+    lhs = LTSLocation.Dummy;
+    rhs = LTSLocation.Dummy;
+    edges = GEdgeSet.empty;
+  }
+
+  let add_edge : t -> LTS.E.t -> t = fun info edge -> 
+    { info with edges = GEdgeSet.add edge info.edges } 
+
+  let make : LTSLocation.t -> LTSLocation.t -> t = fun rhs lhs ->
+    { lhs = lhs; rhs = rhs; edges = GEdgeSet.empty; }
+end
+
 type pathItem = (Sil.if_kind * bool * Location.t)
 
 type astate = {
-  (* mutable lts: LTS.t; *)
   lastNode: GraphNode.t;
-  (* lastNodeRef: GraphNode.t ref; *)
-
   branchingPath: pathItem list;
   branchLocs: LocSet.t;
   lastLoc: LTSLocation.t;
@@ -210,12 +235,12 @@ type astate = {
   current_edge: Edge.t;
   branch: bool;
   pvars: PvarSet.t;
-  afterJoin: bool;
   joinLocs: int JoinLocations.t;
   pruneLocs: GraphNode.t PruneLocations.t;
 
   graphNodes: NodeSet.t;
   graphEdges: GEdgeSet.t;
+  joinNode: JoinNode.t;
 }
 
 let initial : LTSLocation.t -> astate = fun beginLoc -> (
@@ -233,12 +258,12 @@ let initial : LTSLocation.t -> astate = fun beginLoc -> (
     current_edge = Edge.initial beginLoc;
     branch = false;
     pvars = PvarSet.empty;
-    afterJoin = false;
     joinLocs = JoinLocations.empty;
     pruneLocs = PruneLocations.empty;
 
     graphNodes = NodeSet.add entryPoint NodeSet.empty;
     graphEdges = GEdgeSet.empty;
+    joinNode = JoinNode.initial;
   }
   in
   (* LTS.add_vertex graph entryPoint; *)
@@ -260,7 +285,7 @@ let path_to_string path =
 
 let get_edge_label path = match List.last path with
   | Some (_, branch, _) -> string_of_bool branch
-  | None -> "unknown"
+  | None -> "none"
 
 (* let find_edge : EdgeSet.t -> Edge.t -> Edge.t = fun set edge -> (
     let loc_cmp loc_a loc_b = match loc_a, loc_b with
@@ -280,7 +305,7 @@ let get_edge_label path = match List.last path with
   ) *)
 
 let ( <= ) ~lhs ~rhs =
-  L.stdout "[Partial order <= ]\n";
+  (* L.stdout "[Partial order <= ]\n"; *)
   (* L.stdout "  [LHS]\n";
   EdgeSet.iter (fun edge -> 
     L.stdout "    %a\n" Edge.pp edge
@@ -295,8 +320,8 @@ let ( <= ) ~lhs ~rhs =
 let join_cnt = ref 0
 
 let join : astate -> astate -> astate = fun lhs rhs ->
-  L.stdout "\n[JOIN]\n";
-  L.stdout "  [LHS]\n";
+  L.stdout "\n[JOIN] %a | %a\n" LTSLocation.pp lhs.lastNode.location LTSLocation.pp rhs.lastNode.location;
+  (* L.stdout "  [LHS]\n";
   L.stdout "    Path %a\n" pp_path lhs.branchingPath;
   L.stdout "    Edges:\n";
   EdgeSet.iter (fun edge -> 
@@ -308,7 +333,7 @@ let join : astate -> astate -> astate = fun lhs rhs ->
   L.stdout "    Edges:\n";
   EdgeSet.iter (fun edge -> 
     L.stdout "      %a\n" Edge.pp edge
-  ) rhs.edges;
+  ) rhs.edges; *)
 
   let lhsPath = path_to_string lhs.branchingPath in
   let rhsPath = path_to_string rhs.branchingPath in
@@ -325,52 +350,8 @@ let join : astate -> astate -> astate = fun lhs rhs ->
   | Some (_, _, loc) -> LTSLocation.PruneLoc loc 
   | _ -> LTSLocation.Dummy
   in
-  L.stdout "  [NEW]\n";
-  L.stdout "    Path %a\n" pp_path pathPrefix;
+  L.stdout "  Path prefix: %a\n" pp_path pathPrefix;
 
-  (* let state = if (List.length lhs.branchingPath) > (List.length rhs.branchingPath) 
-  then lhs else rhs in
-
-  let backedge = if (List.length state.branchingPath) > 0 then (
-    match List.last_exn state.branchingPath with
-    | Sil.Ik_while, true, _ -> true
-    | _ -> false 
-  ) else false
-  in
-
-  let astate = if backedge then (
-    let modified = Edge.modified_to_string state.current_edge in
-    let backedge = LTS.E.create state.lastNode ("Backedge\n" ^ modified) state.lastNode in
-    LTS.add_edge_e state.lts backedge;
-    rhs
-  )
-  else (
-    let nodeLabel = "JOIN\n" ^ lhsPath ^ "\n" ^ rhsPath in
-    let newNode = GraphNode.make Location.dummy nodeLabel in
-    let lhs_modified = Edge.modified_to_string lhs.current_edge in
-    let rhs_modified = Edge.modified_to_string rhs.current_edge in
-    let lhs_edge_label = F.sprintf "%s\n%s" (get_edge_label lhs.branchingPath) lhs_modified in
-    let rhs_edge_label = F.sprintf "%s\n%s" (get_edge_label rhs.branchingPath) rhs_modified in
-    let lhs_edge = LTS.E.create lhs.lastNode lhs_edge_label newNode in
-    let rhs_edge = LTS.E.create rhs.lastNode rhs_edge_label newNode in
-    LTS.add_vertex rhs.lts newNode;
-    LTS.add_edge_e rhs.lts lhs_edge;
-    LTS.add_edge_e rhs.lts rhs_edge;
-    {rhs with lastNode = newNode; lastNodeRef = ref newNode; }
-  ) 
-  in *)
-  (* let filename = F.sprintf "%s.dot" (string_of_int newNode.id) in
-  let file = Out_channel.create filename in
-  let () = Dot.output_graph file rhs.lts in
-  Out_channel.close file; *)
-  (* let prune_locs = PruneLocations.union (fun key (a : GraphNode.t) (b : GraphNode.t) ->
-    if not (GraphNode.equal a b) then (
-      L.stdout "%a, %d, %s\n" LTSLocation.pp a.location a.id a.label;
-      L.stdout "%a, %d, %s\n" LTSLocation.pp b.location b.id b.label;
-      L.(die InternalError)"Prune location is not unique!"
-    ) else Some a
-  ) lhs.pruneLocs rhs.pruneLocs
-  in *)
   let join_locs = JoinLocations.union (fun key a b -> 
     if not (phys_equal a b) then L.(die InternalError)"Join location is not unique!" else Some a
   ) lhs.joinLocs rhs.joinLocs 
@@ -383,23 +364,58 @@ let join : astate -> astate -> astate = fun lhs rhs ->
     !join_cnt, JoinLocations.add key !join_cnt join_locs
   )
   in
-  let location = LTSLocation.Join join_id in
 
-
-  let label = F.sprintf "JOIN (%d)" join_id in
-  let join_node = GraphNode.make location label in
-  let lhs_modified = Edge.modified_to_string lhs.current_edge in
-  let rhs_modified = Edge.modified_to_string rhs.current_edge in
-  let lhs_edge_label = F.sprintf "%s\n%s" (get_edge_label lhs.branchingPath) lhs_modified in
-  let rhs_edge_label = F.sprintf "%s\n%s" (get_edge_label rhs.branchingPath) rhs_modified in
-  let lhs_edge = LTS.E.create lhs.lastNode lhs_edge_label join_node in
-  let rhs_edge = LTS.E.create rhs.lastNode rhs_edge_label join_node in
+  let graph_nodes = NodeSet.union lhs.graphNodes rhs.graphNodes in
   let graph_edges = GEdgeSet.union lhs.graphEdges rhs.graphEdges in
-  let graph_edges = GEdgeSet.add lhs_edge graph_edges in
-  let graph_edges = GEdgeSet.add rhs_edge graph_edges in
 
-  let lhsEdge = Edge.set_end lhs.current_edge location in
-  let rhsEdge = Edge.set_end rhs.current_edge location in
+  let join_location = LTSLocation.Join join_id in
+  let is_consecutive_join = GraphNode.is_join_node lhs.lastNode || GraphNode.is_join_node rhs.lastNode in
+
+  let join_node, join_info = if is_consecutive_join then (
+    let other_state, join_state = if GraphNode.is_join_node lhs.lastNode then rhs, lhs else lhs, rhs in
+    let join_info = match other_state.lastNode.location with
+    | LTSLocation.Start _ -> (
+      (* Don't add new edge if it's from the beginning location *)
+      join_state.joinNode
+    )
+    | _ -> (
+      (* Add edge from non-join node to current set of edges pointing to aggregated join node *)
+      let edge_vars = Edge.modified_to_string other_state.current_edge in
+      let edge_label = F.sprintf "%s\n%s" (get_edge_label other_state.branchingPath) edge_vars in
+      let edge = LTS.E.create other_state.lastNode edge_label join_state.lastNode in
+      let join_info = JoinNode.add_edge join_state.joinNode edge in
+      join_info
+    )
+    in
+    join_state.lastNode, join_info
+  ) else (
+    (* First join in a row, create new join node and join info *)
+    let node_label = F.sprintf "JOIN (%d)" join_id in
+    let join_node = GraphNode.make join_location node_label in
+    let lhs_modified = Edge.modified_to_string lhs.current_edge in
+    let rhs_modified = Edge.modified_to_string rhs.current_edge in
+    let lhs_edge_label = F.sprintf "%s\n%s" (get_edge_label lhs.branchingPath) lhs_modified in
+    let rhs_edge_label = F.sprintf "%s\n%s" (get_edge_label rhs.branchingPath) rhs_modified in
+    let lhs_edge = LTS.E.create lhs.lastNode lhs_edge_label join_node in
+    let rhs_edge = LTS.E.create rhs.lastNode rhs_edge_label join_node in
+    (* let graph_edges = GEdgeSet.add lhs_edge graph_edges in
+    let graph_edges = GEdgeSet.add rhs_edge graph_edges in *)
+    let join_info =  JoinNode.make lhs.lastLoc rhs.lastLoc in
+    let join_info = JoinNode.add_edge join_info lhs_edge in
+    let join_info = JoinNode.add_edge join_info rhs_edge in
+    join_node, join_info
+  )
+  in
+
+  (* let graph_nodes = if NodeSet.mem join_node graph_nodes then (
+    graph_nodes
+  ) else (
+    NodeSet.add join_node graph_nodes
+  )
+  in *)
+
+  let lhsEdge = Edge.set_end lhs.current_edge join_location in
+  let rhsEdge = Edge.set_end rhs.current_edge join_location in
   let edgeSet = EdgeSet.union lhs.edges rhs.edges in
   let edgeSet = EdgeSet.add lhsEdge edgeSet in
   let edgeSet = EdgeSet.add rhsEdge edgeSet in
@@ -414,12 +430,11 @@ let join : astate -> astate -> astate = fun lhs rhs ->
 
     joinLocs = join_locs;
     pruneLocs = lhs.pruneLocs;
-    (* TODO: try to find a better way *)
-    afterJoin = true;
 
     lastNode = join_node;
-    graphNodes = NodeSet.add join_node (NodeSet.union lhs.graphNodes rhs.graphNodes);
+    graphNodes = NodeSet.add join_node graph_nodes;
     graphEdges = graph_edges;
+    joinNode = join_info;
   }
 
 let widen ~prev ~next ~num_iters:_ = 
