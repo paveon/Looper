@@ -76,50 +76,21 @@ module GraphNode = struct
     (Int.equal a.id b.id)
 
   let make : LTSLocation.t -> string -> t = fun loc label -> (
-    (* IdMap.iter (fun loc id -> 
-      L.stdout "%a = %d\n" LTSLocation.pp loc id;
-    ) !idMap; *)
-
     let found = IdMap.mem loc !idMap in
-    (* L.stdout "%a: %B\n" LTSLocation.pp loc found; *)
-    (* let found = IdMap.find_first_opt (fun existing_loc -> 
-      let equal = LTSLocation.equal existing_loc loc in
-      L.stdout "%a, %a, %B\n" LTSLocation.pp existing_loc LTSLocation.pp loc equal;
-      equal
-    ) !idMap 
-    in
-    let node_id = match found with
-    | Some (_, id) -> id
-    | None -> (
-      idMap := IdMap.add loc !idCnt !idMap;
-      idCnt := !idCnt + 1;
-      !idCnt
-    ) *)
     let node_id = if found then (
-      let id = IdMap.find loc !idMap in
-      (* L.stdout "Found id: %d\n" id; *)
-      id
+      IdMap.find loc !idMap
     ) else (
       idCnt := !idCnt + 1;
       idMap := IdMap.add loc !idCnt !idMap;
       !idCnt
     ) 
     in
-    (* IdMap.iter (fun loc id -> 
-      L.stdout "%a = %d\n" LTSLocation.pp loc id;
-    ) !idMap; *)
     {
       id = node_id;
       location = loc;
       label = label;
     }
   )
-
-  (* let get_last() = match !last_node with
-    | Some node -> node
-    | None -> { id = -1; location = Location.dummy; label = "invalid"; }
-
-  let get_id() = !id_counter *)
 end
 
 module JoinLocations = Caml.Map.Make(struct
@@ -204,7 +175,7 @@ module NodeSet = Caml.Set.Make(GraphNode)
 module GEdgeSet = Caml.Set.Make(LTS.E)
 
 
-module JoinNode = struct
+module AggregateJoin = struct
   type t = {
     rhs: LTSLocation.t;
     lhs: LTSLocation.t;
@@ -240,17 +211,13 @@ type astate = {
 
   graphNodes: NodeSet.t;
   graphEdges: GEdgeSet.t;
-  joinNode: JoinNode.t;
+  aggregateJoin: AggregateJoin.t;
 }
 
 let initial : LTSLocation.t -> astate = fun beginLoc -> (
-  (* let graph = LTS.create() in *)
   let entryPoint = GraphNode.make beginLoc "Begin" in
-  let astate = {
-    (* lts = graph; *)
+  {
     lastNode = entryPoint;
-    (* lastNodeRef = ref entryPoint; *)
-
     branchingPath = [];
     branchLocs = LocSet.empty;
     lastLoc = beginLoc;
@@ -263,11 +230,8 @@ let initial : LTSLocation.t -> astate = fun beginLoc -> (
 
     graphNodes = NodeSet.add entryPoint NodeSet.empty;
     graphEdges = GEdgeSet.empty;
-    joinNode = JoinNode.initial;
+    aggregateJoin = AggregateJoin.initial;
   }
-  in
-  (* LTS.add_vertex graph entryPoint; *)
-  astate
 )
 
 let pp_path fmt path =
@@ -287,22 +251,6 @@ let get_edge_label path = match List.last path with
   | Some (_, branch, _) -> string_of_bool branch
   | None -> "none"
 
-(* let find_edge : EdgeSet.t -> Edge.t -> Edge.t = fun set edge -> (
-    let loc_cmp loc_a loc_b = match loc_a, loc_b with
-      | LTSLocation.Join _, LTSLocation.Join _ -> true
-      | _, _ -> Int.equal (LTSLocation.compare loc_a loc_b) 0
-    in
-    let found = EdgeSet.find_first_opt (fun existing_edge -> 
-      (PvarSet.equal existing_edge.modified_vars edge.modified_vars) &&
-      (loc_cmp existing_edge.loc_begin edge.loc_begin) && 
-      (loc_cmp existing_edge.loc_end edge.loc_end) &&
-      (phys_equal existing_edge.is_backedge edge.is_backedge)
-    ) set
-    in
-    match found with
-    | Some found -> L.stdout "FOUND EXISTING EDGE"; found
-    | None -> edge
-  ) *)
 
 let ( <= ) ~lhs ~rhs =
   (* L.stdout "[Partial order <= ]\n"; *)
@@ -371,23 +319,23 @@ let join : astate -> astate -> astate = fun lhs rhs ->
   let join_location = LTSLocation.Join join_id in
   let is_consecutive_join = GraphNode.is_join_node lhs.lastNode || GraphNode.is_join_node rhs.lastNode in
 
-  let join_node, join_info = if is_consecutive_join then (
+  let join_node, aggregate_join = if is_consecutive_join then (
     let other_state, join_state = if GraphNode.is_join_node lhs.lastNode then rhs, lhs else lhs, rhs in
-    let join_info = match other_state.lastNode.location with
+    let aggregate_join = match other_state.lastNode.location with
     | LTSLocation.Start _ -> (
       (* Don't add new edge if it's from the beginning location *)
-      join_state.joinNode
+      join_state.aggregateJoin
     )
     | _ -> (
       (* Add edge from non-join node to current set of edges pointing to aggregated join node *)
       let edge_vars = Edge.modified_to_string other_state.current_edge in
       let edge_label = F.sprintf "%s\n%s" (get_edge_label other_state.branchingPath) edge_vars in
       let edge = LTS.E.create other_state.lastNode edge_label join_state.lastNode in
-      let join_info = JoinNode.add_edge join_state.joinNode edge in
-      join_info
+      let aggregate_join = AggregateJoin.add_edge join_state.aggregateJoin edge in
+      aggregate_join
     )
     in
-    join_state.lastNode, join_info
+    join_state.lastNode, aggregate_join
   ) else (
     (* First join in a row, create new join node and join info *)
     let node_label = F.sprintf "JOIN (%d)" join_id in
@@ -400,10 +348,10 @@ let join : astate -> astate -> astate = fun lhs rhs ->
     let rhs_edge = LTS.E.create rhs.lastNode rhs_edge_label join_node in
     (* let graph_edges = GEdgeSet.add lhs_edge graph_edges in
     let graph_edges = GEdgeSet.add rhs_edge graph_edges in *)
-    let join_info =  JoinNode.make lhs.lastLoc rhs.lastLoc in
-    let join_info = JoinNode.add_edge join_info lhs_edge in
-    let join_info = JoinNode.add_edge join_info rhs_edge in
-    join_node, join_info
+    let aggregate_join =  AggregateJoin.make lhs.lastLoc rhs.lastLoc in
+    let aggregate_join = AggregateJoin.add_edge aggregate_join lhs_edge in
+    let aggregate_join = AggregateJoin.add_edge aggregate_join rhs_edge in
+    join_node, aggregate_join
   )
   in
 
@@ -434,7 +382,7 @@ let join : astate -> astate -> astate = fun lhs rhs ->
     lastNode = join_node;
     graphNodes = NodeSet.add join_node graph_nodes;
     graphEdges = graph_edges;
-    joinNode = join_info;
+    aggregateJoin = aggregate_join;
   }
 
 let widen ~prev ~next ~num_iters:_ = 
