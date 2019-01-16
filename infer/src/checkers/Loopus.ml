@@ -24,54 +24,51 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
 
   (* Take an abstract state and instruction, produce a new abstract state *)
   let exec_instr : Domain.astate -> 'a ProcData.t -> CFG.Node.t -> Sil.instr -> Domain.astate =
-    fun astate {ProcData.pdesc; tenv; extras} node instr ->
+    fun astate _ node instr ->
 
     let open Domain in
 
-    let is_loop_head = CFG.is_loop_head pdesc node in
-    let is_exit_node = match ProcCFG.Node.kind node with Procdesc.Node.Exit_node -> true | _ -> false in
+    let is_exit_node = match ProcCFG.Node.kind node with 
+      | Procdesc.Node.Exit_node -> true 
+      | _ -> false 
+    in
 
     let astate = match instr with
-    | Prune (exp, loc, branch, kind) -> 
+    | Prune (_exp, loc, branch, kind) -> 
       ( 
-        let is_loop_prune = match kind with
-          | Ik_dowhile | Ik_for | Ik_while -> true
-          | _ -> false
-        in
-
         log "[PRUNE] (%a)\n" Location.pp loc;
-        let lts_loc = LTSLocation.PruneLoc loc in
+        let lts_loc = LTSLocation.PruneLoc (kind, loc) in
         let newLocSet = LocSet.add loc astate.branchLocs in
         let newEdge = Edge.set_end astate.current_edge lts_loc in
-        let modified_vars = Edge.modified_to_string astate.current_edge in
 
-        let prune_label = F.sprintf "%s\n%s" (Sil.if_kind_to_string kind) (Location.to_string loc) in 
-        let prune_node = GraphNode.make lts_loc prune_label in
+        let prune_node = GraphNode.make lts_loc in
         let lhs = astate.aggregateJoin.lhs in
         let rhs = astate.aggregateJoin.rhs in
-        let graph_nodes = NodeSet.add prune_node astate.graphNodes in
+        let graph_nodes = LTSNodeSet.add prune_node astate.graphNodes in
 
         let is_direct_backedge = LTSLocation.equal lts_loc lhs || LTSLocation.equal lts_loc rhs in
         let graph_edges, graph_nodes = if is_direct_backedge then (
           (* Discard join node and all edges poiting to it and instead make
            * one direct backedge with variables modified inside the loop *)
           let join_edges =  astate.aggregateJoin.edges in
-          let edge = List.find_exn (GEdgeSet.elements join_edges) ~f:(fun edge -> 
+          let edge = List.find_exn (LTSEdgeSet.elements join_edges) ~f:(fun edge -> 
             let backedge_origin = LTS.E.src edge in
             GraphNode.equal backedge_origin prune_node
           ) in
           let backedge = LTS.E.create (LTS.E.src edge) (LTS.E.label edge) prune_node in
-          let graph_edges = GEdgeSet.add backedge astate.graphEdges in
-          let graph_nodes = NodeSet.remove astate.lastNode graph_nodes in
+          let graph_edges = LTSEdgeSet.add backedge astate.graphEdges in
+          let graph_nodes = LTSNodeSet.remove astate.lastNode graph_nodes in
           graph_edges, graph_nodes
         ) else (
           (* Add all accumulated edges pointing to aggregated join node and
            * new edge pointing from aggregated join node to this prune node *)
-          let edge_label = get_edge_label astate.branchingPath in
-          let edge_label = F.sprintf "%s\n%s" edge_label modified_vars in
-          let new_edge = LTS.E.create astate.lastNode edge_label prune_node in
-          let graph_edges = GEdgeSet.add new_edge astate.graphEdges in
-          let graph_edges = GEdgeSet.union astate.aggregateJoin.edges graph_edges in
+          (* let edge_label = get_edge_label astate.branchingPath in
+          let edge_label = F.sprintf "%s\n%s" edge_label modified_vars in *)
+          let path_end = List.last astate.branchingPath in
+          let edge_data = GraphEdge.make astate.edgeFormulas path_end in
+          let new_lts_edge = LTS.E.create astate.lastNode edge_data prune_node in
+          let graph_edges = LTSEdgeSet.add new_lts_edge astate.graphEdges in
+          let graph_edges = LTSEdgeSet.union astate.aggregateJoin.edges graph_edges in
           graph_edges, graph_nodes
         )
         in
@@ -80,9 +77,10 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
           branchingPath = astate.branchingPath @ [(kind, branch, loc)];
           branchLocs = newLocSet; 
           edges = EdgeSet.add newEdge astate.edges;
-          current_edge = Edge.initial (LTSLocation.PruneLoc loc);
-          lastLoc = LTSLocation.PruneLoc loc;
+          current_edge = Edge.initial lts_loc;
+          lastLoc = lts_loc;
 
+          edgeFormulas = Exp.Set.empty;
           lastNode = prune_node;
           graphNodes = graph_nodes;
           graphEdges = graph_edges;
@@ -107,13 +105,15 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
         log "[REMOVE_TEMPS] %a\n" Location.pp loc;
         if is_exit_node then (
           log "  Exit node\n";
-          let exit_node = GraphNode.make LTSLocation.Exit "Exit" in
-          let modified_vars = Edge.modified_to_string astate.current_edge in
+          let exit_node = GraphNode.make LTSLocation.Exit in
+          (* let modified_vars = Edge.modified_to_string astate.current_edge in
           let edge_label = get_edge_label astate.branchingPath in
-          let edge_label = F.sprintf "%s\n%s" edge_label modified_vars in
-          let new_edge = LTS.E.create astate.lastNode edge_label exit_node in
-          let graph_edges = GEdgeSet.add new_edge astate.graphEdges in
-          let graph_nodes = NodeSet.add exit_node astate.graphNodes in
+          let edge_label = F.sprintf "%s\n%s" edge_label modified_vars in *)
+          let path_end = List.last astate.branchingPath in
+          let edge_data = GraphEdge.make astate.edgeFormulas path_end in
+          let new_lts_edge = LTS.E.create astate.lastNode edge_data exit_node in
+          let graph_edges = LTSEdgeSet.add new_lts_edge astate.graphEdges in
+          let graph_nodes = LTSNodeSet.add exit_node astate.graphNodes in
           { astate with
             graphNodes = graph_nodes;
             graphEdges = graph_edges;
@@ -123,16 +123,20 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
         )  
       )
 
-    | Store (lexp, expType, rexp, loc) ->
+    | Store (lexp, _expType, rexp, loc) ->
       (
-        log "[STORE] (%a)\n" Location.pp loc;
-        log "  Exit node: %B\n" is_exit_node;
+        log "[STORE] (%a) | %a = %a\n" Location.pp loc Exp.pp lexp Exp.pp rexp;
+        let formula = match rexp with
+        | Exp.Const _ -> Exp.eq lexp rexp
+        | _ -> lexp (* TODO *)
+        in
+        let formulas = Exp.Set.add formula astate.edgeFormulas in
         let pvars = Sequence.append (Exp.program_vars lexp) (Exp.program_vars rexp) in
         let edge = Edge.add_modified astate.current_edge pvars in
-        {astate with current_edge = edge}
+        { astate with current_edge = edge; edgeFormulas = formulas; }
       )
 
-    | Load (ident, lexp, typ, loc) ->
+    | Load (_ident, _lexp, _typ, loc) ->
       (
         log "[LOAD] (%a)\n" Location.pp loc;
         (* let pvars = Exp.program_vars lexp in
@@ -141,9 +145,9 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
         {astate with current_edge = edge} *)
         astate
       )
-    | Call (retValue, Const Cfun callee_pname, actuals, loc, _) ->
+    | Call (_retValue, Const Cfun callee_pname, _actuals, loc, _) ->
       ( 
-        let fun_name = Typ.Procname.to_simplified_string callee_pname in
+        let _fun_name = Typ.Procname.to_simplified_string callee_pname in
         log "[CALL] (%a)\n" Location.pp loc;
         astate
       )
@@ -175,17 +179,16 @@ module CFG = ProcCfg.NormalOneInstrPerNode
       List.iter locals ~f:(fun local -> log "%a\n" Procdesc.pp_local local);
       (* Procdesc.pp_local locals; *)
 
-      let reportBugs : Domain.astate -> unit = fun post ->
-        ()
-        (* LocationMap.iter (fun loopLoc bugSet ->
+      (* let reportBugs : Domain.astate -> unit = fun post ->
+        LocationMap.iter (fun loopLoc bugSet ->
         let msg = F.asprintf "Redundant traversal of %a detected in loop" Domain.pp_footprint bugSet in
         (* let msg = F.asprintf "Redundant traversal bug detected\n" in *)
         let localised_msg = Localise.verbatim_desc msg in
         let issue = IssueType.redundant_traversal in
         let exn = Exceptions.Checkers (issue, localised_msg) in
         Reporting.log_warning summary ~loc:loopLoc IssueType.redundant_traversal msg
-        ) post.bugLocs;  *)
-      in
+        ) post.bugLocs; 
+      in *)
 
       let extras = "extras test" in
       let proc_data = ProcData.make proc_desc tenv extras in
@@ -200,11 +203,11 @@ module CFG = ProcCfg.NormalOneInstrPerNode
 
           (* Draw dot graph, use nodes and edges stored in post state *)
           let lts = Domain.LTS.create () in
-          Domain.NodeSet.iter (fun node -> 
+          Domain.LTSNodeSet.iter (fun node -> 
             log "%a = %d\n" Domain.LTSLocation.pp node.location node.id;
             Domain.LTS.add_vertex lts node;
           ) post.graphNodes;
-          Domain.GEdgeSet.iter (fun edge -> 
+          Domain.LTSEdgeSet.iter (fun edge -> 
             Domain.LTS.add_edge_e lts edge;
           ) post.graphEdges;
 
