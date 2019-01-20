@@ -18,13 +18,13 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
   module CFG = ProcCFG
   module Domain = Domain
 
-  type nonrec extras = string
+  type nonrec extras = Domain.PvarSet.t
 
   let pp_session_name node fmt = F.fprintf fmt "loopus %a" CFG.Node.pp_id (CFG.Node.id node)
 
   (* Take an abstract state and instruction, produce a new abstract state *)
   let exec_instr : Domain.astate -> 'a ProcData.t -> CFG.Node.t -> Sil.instr -> Domain.astate =
-    fun astate _ node instr ->
+    fun astate {pdesc; tenv; extras} node instr ->
 
     let open Domain in
 
@@ -33,58 +33,120 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
       | _ -> false 
     in
 
+    let is_start_node = match ProcCFG.Node.kind node with
+      | Procdesc.Node.Start_node -> true
+      | _ -> false
+    in
+
+    let is_pvar_decl_node = match ProcCFG.Node.kind node with
+    | Procdesc.Node.Stmt_node DeclStmt -> true
+    | _ -> false
+    in
+
+    let rec substitute_pvars exp = match exp with
+    | Exp.BinOp (op, lexp, rexp) -> (
+      let lexp = substitute_pvars lexp in
+      let rexp = substitute_pvars rexp in
+      Exp.BinOp (op, lexp, rexp)
+    )
+    | Exp.UnOp (op, sub_exp, typ) -> (
+      let sub_exp = substitute_pvars sub_exp in
+      Exp.UnOp (op, sub_exp, typ)
+    )
+    | Exp.Var ident -> (
+      let referenced_pvar = Ident.Map.find ident astate.ident_map in
+      Exp.Lvar referenced_pvar
+    )
+    | _ -> exp
+    in
+
+
     let astate = match instr with
-    | Prune (_exp, loc, branch, kind) -> 
+    | Prune (cond, loc, branch, kind) -> 
       ( 
-        log "[PRUNE] (%a)\n" Location.pp loc;
+        log "[PRUNE] (%a) | %a\n" Location.pp loc Exp.pp cond;
+
         let lts_loc = LTSLocation.PruneLoc (kind, loc) in
         let newLocSet = LocSet.add loc astate.branchLocs in
         let newEdge = Edge.set_end astate.current_edge lts_loc in
 
+        let missing_formulas = generate_missing_formulas astate in
+        let formulas = FormulaSet.union astate.edge_formulas missing_formulas in
+
         let prune_node = GraphNode.make lts_loc in
-        let lhs = astate.aggregateJoin.lhs in
-        let rhs = astate.aggregateJoin.rhs in
-        let graph_nodes = LTSNodeSet.add prune_node astate.graphNodes in
+        let lhs = astate.aggregate_join.lhs in
+        let rhs = astate.aggregate_join.rhs in
+        let graph_nodes = LTSNodeSet.add prune_node astate.graph_nodes in
 
         let is_direct_backedge = LTSLocation.equal lts_loc lhs || LTSLocation.equal lts_loc rhs in
         let graph_edges, graph_nodes = if is_direct_backedge then (
           (* Discard join node and all edges poiting to it and instead make
            * one direct backedge with variables modified inside the loop *)
-          let join_edges =  astate.aggregateJoin.edges in
+          let join_edges =  astate.aggregate_join.edges in
           let edge = List.find_exn (LTSEdgeSet.elements join_edges) ~f:(fun edge -> 
             let backedge_origin = LTS.E.src edge in
             GraphNode.equal backedge_origin prune_node
           ) in
           let backedge = LTS.E.create (LTS.E.src edge) (LTS.E.label edge) prune_node in
-          let graph_edges = LTSEdgeSet.add backedge astate.graphEdges in
+          let graph_edges = LTSEdgeSet.add backedge astate.graph_edges in
           let graph_nodes = LTSNodeSet.remove astate.lastNode graph_nodes in
           graph_edges, graph_nodes
         ) else (
           (* Add all accumulated edges pointing to aggregated join node and
            * new edge pointing from aggregated join node to this prune node *)
-          (* let edge_label = get_edge_label astate.branchingPath in
-          let edge_label = F.sprintf "%s\n%s" edge_label modified_vars in *)
+
           let path_end = List.last astate.branchingPath in
-          let edge_data = GraphEdge.make astate.edgeFormulas path_end in
+          let edge_data = GraphEdge.make formulas path_end in
           let new_lts_edge = LTS.E.create astate.lastNode edge_data prune_node in
-          let graph_edges = LTSEdgeSet.add new_lts_edge astate.graphEdges in
-          let graph_edges = LTSEdgeSet.union astate.aggregateJoin.edges graph_edges in
+          let graph_edges = LTSEdgeSet.add new_lts_edge astate.graph_edges in
+          let graph_edges = LTSEdgeSet.union astate.aggregate_join.edges graph_edges in
           graph_edges, graph_nodes
         )
         in
+
+        let pvar_condition = substitute_pvars cond in
+        let prune_formula = match pvar_condition with
+        | Exp.BinOp (op, lexp, rexp) -> (lexp, Formula.Binop op, rexp)
+        | Exp.UnOp (LNot, exp, _) -> (
+          (* Currently handles only "!exp" *)
+          match exp with
+          | Exp.BinOp (op, lexp, rexp) -> (
+            (* Handles "!(lexp BINOP rexp)" *)
+            let negate_binop binop = match binop with
+            | Binop.Lt -> Binop.Ge
+            | Binop.Gt -> Binop.Le
+            | Binop.Le -> Binop.Gt
+            | Binop.Ge -> Binop.Lt
+            | Binop.Eq -> Binop.Ne
+            | Binop.Ne -> Binop.Eq
+            | _ -> L.(die InternalError)"Unsupported prune condition type!"
+            in
+            (lexp, Formula.Binop (negate_binop op), rexp)
+          )
+          | Exp.Const const -> (
+            (* Handles "!CONST" *)
+            (Exp.Const const, Formula.Binop Binop.Eq, Exp.Const (Const.Cint IntLit.zero))
+          )
+          | _ -> L.(die InternalError)"Unsupported prune condition type!"
+        )
+        | Exp.Const _ -> (cond, Formula.Binop Binop.Ne, Exp.Const (Const.Cint IntLit.zero))
+        | _ -> L.(die InternalError)"Unsupported prune condition type!"
+        in
+
+        let formulas = FormulaSet.add (prune_formula) FormulaSet.empty in
         { astate with
-          (* pruneLocs = prune_locs; *)
           branchingPath = astate.branchingPath @ [(kind, branch, loc)];
           branchLocs = newLocSet; 
           edges = EdgeSet.add newEdge astate.edges;
           current_edge = Edge.initial lts_loc;
           lastLoc = lts_loc;
 
-          edgeFormulas = Exp.Set.empty;
+          modified_pvars = PvarSet.empty;
+          edge_formulas = formulas;
           lastNode = prune_node;
-          graphNodes = graph_nodes;
-          graphEdges = graph_edges;
-          aggregateJoin = AggregateJoin.initial;
+          graph_nodes = graph_nodes;
+          graph_edges = graph_edges;
+          aggregate_join = AggregateJoin.initial;
         }
       )  
       
@@ -100,23 +162,34 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
         astate
       )
 
-    | Remove_temps (_, loc) -> 
+    | Remove_temps (ident_list, loc) -> 
       (
         log "[REMOVE_TEMPS] %a\n" Location.pp loc;
+
+        if is_pvar_decl_node then log "  Decl node\n";
+        if is_start_node then (
+          let instrs = CFG.instrs node in
+          log "  Start node\n";
+          let count = Instrs.count instrs in
+          log "  Instr count: %d\n" count;
+          (* log "  %a\n" (Instrs.pp Pp.text) instrs; *)
+        );
+
         if is_exit_node then (
           log "  Exit node\n";
+          let missing_formulas = generate_missing_formulas astate in
+          let formulas = FormulaSet.union astate.edge_formulas missing_formulas in
+
           let exit_node = GraphNode.make LTSLocation.Exit in
-          (* let modified_vars = Edge.modified_to_string astate.current_edge in
-          let edge_label = get_edge_label astate.branchingPath in
-          let edge_label = F.sprintf "%s\n%s" edge_label modified_vars in *)
           let path_end = List.last astate.branchingPath in
-          let edge_data = GraphEdge.make astate.edgeFormulas path_end in
+          let edge_data = GraphEdge.make formulas path_end in
           let new_lts_edge = LTS.E.create astate.lastNode edge_data exit_node in
-          let graph_edges = LTSEdgeSet.add new_lts_edge astate.graphEdges in
-          let graph_nodes = LTSNodeSet.add exit_node astate.graphNodes in
+          let graph_edges = LTSEdgeSet.add new_lts_edge astate.graph_edges in
+          let graph_edges = LTSEdgeSet.union astate.aggregate_join.edges graph_edges in
+          let graph_nodes = LTSNodeSet.add exit_node astate.graph_nodes in
           { astate with
-            graphNodes = graph_nodes;
-            graphEdges = graph_edges;
+            graph_nodes = graph_nodes;
+            graph_edges = graph_edges;
           }
         ) else (
           astate
@@ -125,25 +198,89 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
 
     | Store (lexp, _expType, rexp, loc) ->
       (
-        log "[STORE] (%a) | %a = %a\n" Location.pp loc Exp.pp lexp Exp.pp rexp;
-        let formula = match rexp with
-        | Exp.Const _ -> Exp.eq lexp rexp
-        | _ -> lexp (* TODO *)
+        log "[STORE] (%a) | %a = %a | %B\n" Location.pp loc Exp.pp lexp Exp.pp rexp is_pvar_decl_node;
+        (* let find_formula_rhs lhs_pvar = 
+          let rhs_set = FormulaSet.filter (fun formula -> 
+            match formula with 
+            | (Exp.Lvar lexp_pvar, Formula.Assignment, rexp) when Pvar.equal lhs_pvar lexp_pvar -> true
+            | _ -> false
+          ) astate.edge_formulas
+          in
+          FormulaSet.min_elt_opt rhs_set
+        in *)
+
+        let find_formula_rhs lexp = FormulaSet.fold (fun formula acc -> 
+            match formula with 
+            | (lhs, Formula.Assignment, rexp) when Exp.equal lexp lhs -> rexp
+            | _ -> acc
+          ) astate.edge_formulas lexp 
         in
-        let formulas = Exp.Set.add formula astate.edgeFormulas in
+
+        let pvar_rexp = substitute_pvars rexp in
+
+        (* Substitute rexp based on previous assignments, 
+         * eg. [beg = i; end = beg;] becomes [beg = i; end = i] *)
+        let pvar_rexp = match pvar_rexp with
+        | Exp.BinOp (Binop.PlusA, Exp.Lvar lexp, Exp.Const (Const.Cint c1)) -> (
+          (* [BINOP] PVAR + CONST *)
+          let formula_rhs = find_formula_rhs (Exp.Lvar lexp) in
+          match formula_rhs with
+          | Exp.BinOp (Binop.PlusA, lexp, Exp.Const (Const.Cint c2)) -> (
+            (* [BINOP] (PVAR + C1) + C2 -> PVAR + (C1 + C2) *)
+            let const = Exp.Const (Const.Cint (IntLit.add c1 c2)) in
+            Exp.BinOp (Binop.PlusA, lexp, const)
+          )
+          | _ -> pvar_rexp
+        )
+        | Exp.Lvar rhs_pvar -> (
+          let rhs_pvar = FormulaSet.fold (fun formula acc -> 
+            match formula with 
+            | (Exp.Lvar lexp_pvar, Formula.Assignment, Exp.Lvar rexp_pvar) when Pvar.equal rhs_pvar lexp_pvar -> rexp_pvar
+            | _ -> acc
+          ) astate.edge_formulas rhs_pvar in
+          Exp.Lvar rhs_pvar
+        )
+        | _ -> pvar_rexp
+        in
+
+        (* Check if set already contains assignment formula
+         * with specified lhs and replace it with updated formulas if so *)
+        let formulas = FormulaSet.filter (function
+          | (lhs, Formula.Assignment, _) when Exp.equal lexp lhs -> false
+          | _ -> true
+        ) astate.edge_formulas
+        in
+        let formulas = FormulaSet.add (lexp, Formula.Assignment, pvar_rexp) formulas in
+
+        let modified_pvars = match lexp with
+        | Exp.Lvar pvar -> PvarSet.add pvar astate.modified_pvars
+        | _ -> astate.modified_pvars
+        in
         let pvars = Sequence.append (Exp.program_vars lexp) (Exp.program_vars rexp) in
         let edge = Edge.add_modified astate.current_edge pvars in
-        { astate with current_edge = edge; edgeFormulas = formulas; }
+        { astate with 
+          current_edge = edge; 
+          edge_formulas = formulas; 
+          modified_pvars = modified_pvars;
+        }
       )
 
-    | Load (_ident, _lexp, _typ, loc) ->
+    | Load (ident, lexp, _typ, loc) ->
       (
-        log "[LOAD] (%a)\n" Location.pp loc;
+        log "[LOAD] (%a) | %a = %a\n" Location.pp loc Ident.pp ident Exp.pp lexp;
+        let ident_map = match lexp with
+        | Exp.Lvar pvar -> Ident.Map.add ident pvar astate.ident_map
+        | Exp.Var id -> (
+          let pvar = Ident.Map.find id astate.ident_map in
+          Ident.Map.add ident pvar astate.ident_map
+        )
+        | _ -> L.(die InternalError)"Unsupported LOAD lhs-expression type!"
+        in
         (* let pvars = Exp.program_vars lexp in
         let edge = Domain.Edge.add_modified astate.current_edge pvars in
         log "  Modified: [%a]\n" Domain.PvarSet.pp edge.modified_vars;
         {astate with current_edge = edge} *)
-        astate
+        { astate with ident_map = ident_map }
       )
     | Call (_retValue, Const Cfun callee_pname, _actuals, loc, _) ->
       ( 
@@ -168,10 +305,9 @@ module CFG = ProcCfg.NormalOneInstrPerNode
   module Analyzer = AbstractInterpreter.Make (CFG) (TransferFunctions)
     let checker {Callbacks.tenv; proc_desc; summary} : Summary.t =
       let beginLoc = Procdesc.get_loc proc_desc in
-      let procName = Procdesc.get_proc_name proc_desc in 
-      let procNameStr = Typ.Procname.to_simplified_string procName in
+      let proc_name = Procdesc.get_proc_name proc_desc in 
       log "\n\n---------------------------------";
-      log "\n- ANALYZING %s" procNameStr;
+      log "\n- ANALYZING %s" (Typ.Procname.to_simplified_string proc_name);
       log "\n---------------------------------\n";
       log " Begin location: %a\n" Location.pp beginLoc;
 
@@ -190,10 +326,17 @@ module CFG = ProcCfg.NormalOneInstrPerNode
         ) post.bugLocs; 
       in *)
 
-      let extras = "extras test" in
+      let proc_name = Procdesc.get_proc_name proc_desc in
+      let locals = Procdesc.get_locals proc_desc in
+      let extras = List.fold locals ~init:Domain.PvarSet.empty ~f:(fun acc (local : ProcAttributes.var_data) ->
+        let pvar = Pvar.mk local.name proc_name in
+        Domain.PvarSet.add pvar acc
+      )
+      in
       let proc_data = ProcData.make proc_desc tenv extras in
       let begin_loc = Domain.LTSLocation.Start beginLoc in
-      match Analyzer.compute_post proc_data ~initial:(Domain.initial begin_loc) with
+      let initial_state = Domain.initial begin_loc extras in
+      match Analyzer.compute_post proc_data ~initial:initial_state with
       | Some post ->
         (
           log "\n---------------------------------";
@@ -206,10 +349,10 @@ module CFG = ProcCfg.NormalOneInstrPerNode
           Domain.LTSNodeSet.iter (fun node -> 
             log "%a = %d\n" Domain.LTSLocation.pp node.location node.id;
             Domain.LTS.add_vertex lts node;
-          ) post.graphNodes;
+          ) post.graph_nodes;
           Domain.LTSEdgeSet.iter (fun edge -> 
             Domain.LTS.add_edge_e lts edge;
-          ) post.graphEdges;
+          ) post.graph_edges;
 
           let file = Out_channel.create "test_graph.dot" in
           let () = Domain.Dot.output_graph file lts in

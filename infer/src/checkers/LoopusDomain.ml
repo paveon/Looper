@@ -2,7 +2,7 @@ open! IStd
 module F = Format
 module L = Logging
 
-(* module PvarSet = Caml.Set.Make(Pvar) *)
+
 module LocSet = Caml.Set.Make(Location)
 
 module PvarSet = struct
@@ -22,10 +22,40 @@ module PvarSet = struct
 end
 
 
-type operator = 
-  | Binop of Binop.t
-  | Assignment
-[@@deriving compare]
+module Formula = struct
+  type operator = 
+    | Binop of Binop.t
+    | Assignment
+  [@@deriving compare]
+
+  type t = (Exp.t * operator * Exp.t)
+  [@@deriving compare]
+
+  let operator_text = function
+  | Binop op -> Binop.str Pp.text op
+  | Assignment -> "="
+
+  let to_string (lexp, op, rexp) =
+    let rec exp_to_str exp = match exp with
+    | Exp.BinOp (op, lexp, rexp) -> (
+      let lexp = exp_to_str lexp in
+      let rexp = exp_to_str rexp in
+      let op = Binop.str Pp.text op in
+      F.sprintf "(%s %s %s)" lexp op rexp
+    )
+    | Exp.Lvar _ -> String.slice (Exp.to_string exp) 1 0
+    | _ -> Exp.to_string exp
+    in
+    let lexp_str = exp_to_str lexp in
+    let rexp_str = exp_to_str rexp in
+    F.asprintf "%s %s %s" lexp_str (operator_text op) rexp_str
+    
+
+  let pp fmt formula = 
+    F.fprintf fmt "%s" (to_string formula)
+end
+
+module FormulaSet = Caml.Set.Make(Formula)
 
 
 type prune_info = (Sil.if_kind * bool * Location.t)
@@ -40,10 +70,16 @@ module LTSLocation = struct
   type t = 
     | PruneLoc of (Sil.if_kind * Location.t)
     | Start of Location.t
-    | Join of int
+    | Join of IntSet.t
     | Exit
     | Dummy
   [@@deriving compare]
+
+  let add_join_id : t -> int -> t = fun loc id -> (
+    match loc with
+    | Join id_set -> Join (IntSet.add id id_set)
+    | _ -> loc
+  )
 
   let is_join_loc : t -> bool = fun loc -> 
     match loc with
@@ -53,7 +89,13 @@ module LTSLocation = struct
   let to_string loc = match loc with
     | PruneLoc (kind, loc) -> F.sprintf "%s [%s]" (Sil.if_kind_to_string kind) (Location.to_string loc)
     | Start loc -> F.sprintf "Begin [%s]" (Location.to_string loc)
-    | Join id -> F.sprintf "Join (%d)" id
+    | Join id_set -> (
+      let str = IntSet.fold (fun id acc ->
+        acc ^ Int.to_string id ^ " + "
+      ) id_set "Join ("
+      in
+      (String.slice str 0 (String.length str - 3)) ^ ")"
+    )
     | Exit -> F.sprintf "Exit"
     | Dummy -> F.sprintf "Dummy"
 
@@ -62,24 +104,23 @@ module LTSLocation = struct
   let equal = [%compare.equal: t]
 end
 
-
 module GraphEdge = struct
   type t = {
-    formulas: Exp.Set.t;
+    formulas: FormulaSet.t;
 
     (* Last element of common path prefix *)
     path_prefix_end: prune_info option; 
   }
   [@@deriving compare]
   let equal = [%compare.equal: t]
-  let empty = { formulas = Exp.Set.empty; path_prefix_end = None; }
+  let empty = { formulas = FormulaSet.empty; path_prefix_end = None; }
   let default = empty
 
-  let make : Exp.Set.t -> prune_info option -> t = fun formulas prefix_end -> 
+  let make : FormulaSet.t -> prune_info option -> t = fun formulas prefix_end -> 
     { formulas = formulas; path_prefix_end = prefix_end; }
 
-  let add_formula : t -> Exp.t -> t = fun edge formula -> (
-    { edge with formulas = Exp.Set.add formula edge.formulas }
+  let add_formula : t -> Formula.t -> t = fun edge formula -> (
+    { edge with formulas = FormulaSet.add formula edge.formulas }
   )
   
 end
@@ -100,9 +141,14 @@ module GraphNode = struct
   let hash = Hashtbl.hash
   let equal = [%compare.equal: t]
 
+  let add_join_id : t -> int -> t = fun node id -> (
+    { node with location = LTSLocation.add_join_id node.location id }
+  )
+
   let make : LTSLocation.t -> t = fun loc -> (
     let found = IdMap.mem loc !idMap in
     let node_id = if found then (
+      (* L.stdout "EQUAL: %a - %a" LTSLocation.pp *)
       IdMap.find loc !idMap
     ) else (
       idCnt := !idCnt + 1;
@@ -138,8 +184,15 @@ module DotConfig = struct
     | Some prune_info -> F.asprintf "%a\n" pp_prune_info prune_info
     | None -> "\n"
     in
-    let label = Exp.Set.fold (fun exp acc -> acc ^ (Exp.to_string exp) ^ "\n") edge.formulas label
+    let label = FormulaSet.fold (fun exp acc -> 
+      acc ^ (Formula.to_string exp) ^ "\n"
+    ) edge.formulas label
     in
+    (* let len = String.length label in
+    let label = if not (FormulaSet.is_empty edge.formulas) then (
+      String.slice label 0 (len - 3)
+    ) else label 
+    in *)
     [`Label label; `Color 4711]
   )
   
@@ -248,13 +301,16 @@ type astate = {
   joinLocs: int JoinLocations.t;
   pruneLocs: GraphNode.t PruneLocations.t;
 
-  edgeFormulas: Exp.Set.t;
-  graphNodes: LTSNodeSet.t;
-  graphEdges: LTSEdgeSet.t;
-  aggregateJoin: AggregateJoin.t;
+  locals: PvarSet.t;
+  ident_map: Pvar.t Ident.Map.t;
+  modified_pvars: PvarSet.t;
+  edge_formulas: FormulaSet.t;
+  graph_nodes: LTSNodeSet.t;
+  graph_edges: LTSEdgeSet.t;
+  aggregate_join: AggregateJoin.t;
 }
 
-let initial : LTSLocation.t -> astate = fun beginLoc -> (
+let initial : LTSLocation.t -> PvarSet.t -> astate = fun beginLoc locals -> (
   let entryPoint = GraphNode.make beginLoc in
   {
     lastNode = entryPoint;
@@ -268,12 +324,23 @@ let initial : LTSLocation.t -> astate = fun beginLoc -> (
     joinLocs = JoinLocations.empty;
     pruneLocs = PruneLocations.empty;
 
-    edgeFormulas = Exp.Set.empty;
-    graphNodes = LTSNodeSet.add entryPoint LTSNodeSet.empty;
-    graphEdges = LTSEdgeSet.empty;
-    aggregateJoin = AggregateJoin.initial;
+    locals = locals;
+    ident_map = Ident.Map.empty;
+    modified_pvars = PvarSet.empty;
+    edge_formulas = FormulaSet.empty;
+    graph_nodes = LTSNodeSet.add entryPoint LTSNodeSet.empty;
+    graph_edges = LTSEdgeSet.empty;
+    aggregate_join = AggregateJoin.initial;
   }
 )
+
+let generate_missing_formulas astate =
+  let unmodified_pvars = PvarSet.diff astate.locals astate.modified_pvars in
+  PvarSet.fold (fun pvar acc ->
+    let pvar_exp = Exp.Lvar pvar in
+    let formula = (pvar_exp, Formula.Assignment, pvar_exp) in
+    FormulaSet.add formula acc
+  ) unmodified_pvars FormulaSet.empty
 
 let is_loop_prune : Sil.if_kind -> bool = function
   | Ik_dowhile | Ik_for | Ik_while -> true
@@ -298,34 +365,15 @@ let get_edge_label path = match List.last path with
 
 let ( <= ) ~lhs ~rhs =
   (* L.stdout "[Partial order <= ]\n"; *)
-  (* L.stdout "  [LHS]\n";
-  EdgeSet.iter (fun edge -> 
-    L.stdout "    %a\n" Edge.pp edge
-  ) lhs.edges;
-  L.stdout "  [RHS]\n";
-  EdgeSet.iter (fun edge -> 
-    L.stdout "    %a\n" Edge.pp edge
-  ) rhs.edges; *)
+  (* L.stdout "  [LHS]\n"; *)
   EdgeSet.equal lhs.edges rhs.edges || (EdgeSet.cardinal lhs.edges < EdgeSet.cardinal rhs.edges)
 
 
 let join_cnt = ref 0
 
+
 let join : astate -> astate -> astate = fun lhs rhs ->
   L.stdout "\n[JOIN] %a | %a\n" LTSLocation.pp lhs.lastNode.location LTSLocation.pp rhs.lastNode.location;
-  (* L.stdout "  [LHS]\n";
-  L.stdout "    Path %a\n" pp_path lhs.branchingPath;
-  L.stdout "    Edges:\n";
-  EdgeSet.iter (fun edge -> 
-    L.stdout "      %a\n" Edge.pp edge
-  ) lhs.edges;
-
-  L.stdout "  [RHS]\n";
-  L.stdout "    Path %a\n" pp_path rhs.branchingPath;
-  L.stdout "    Edges:\n";
-  EdgeSet.iter (fun edge -> 
-    L.stdout "      %a\n" Edge.pp edge
-  ) rhs.edges; *)
 
   (* Creates common path prefix of provided paths *)
   let rec common_path_prefix = fun (prefix, _) pathA pathB ->
@@ -349,8 +397,6 @@ let join : astate -> astate -> astate = fun lhs rhs ->
   | _ -> LTSLocation.Dummy
   in
   let path_prefix = List.rev path_prefix_rev in
-  (* L.stdout "  [A] Path prefix: %a\n" pp_path lhs.branchingPath;
-  L.stdout "  [B] Path prefix: %a\n" pp_path rhs.branchingPath; *)
   L.stdout "  [NEW] Path prefix: %a\n" pp_path path_prefix;
 
   let join_locs = JoinLocations.union (fun _key a b -> 
@@ -368,10 +414,10 @@ let join : astate -> astate -> astate = fun lhs rhs ->
   )
   in
 
-  let graph_nodes = LTSNodeSet.union lhs.graphNodes rhs.graphNodes in
-  let graph_edges = LTSEdgeSet.union lhs.graphEdges rhs.graphEdges in
+  let graph_nodes = LTSNodeSet.union lhs.graph_nodes rhs.graph_nodes in
+  let graph_edges = LTSEdgeSet.union lhs.graph_edges rhs.graph_edges in
 
-  let join_location = LTSLocation.Join join_id in
+  let join_location = LTSLocation.Join (IntSet.add join_id IntSet.empty) in
   let is_consecutive_join = GraphNode.is_join_node lhs.lastNode || GraphNode.is_join_node rhs.lastNode in
 
   let join_node, aggregate_join = if is_consecutive_join then (
@@ -380,19 +426,19 @@ let join : astate -> astate -> astate = fun lhs rhs ->
     let aggregate_join = match other_state.lastNode.location with
     | LTSLocation.Start _ -> (
       (* Don't add new edge if it's from the beginning location *)
-      join_state.aggregateJoin
+      join_state.aggregate_join
     )
     | _ -> (
       if loop_left then (
         (* Heuristic: ignore edge from previous location if this is a "backedge" join which 
          * joins state from inside of the loop with outside state denoted by prune location before loop prune *)
-        join_state.aggregateJoin
+        join_state.aggregate_join
       ) else (
         (* Add edge from non-join node to current set of edges pointing to aggregated join node *)
-        let path_end = List.last other_state.branchingPath in
-        let edge_data = GraphEdge.make join_state.edgeFormulas path_end in
+        let formulas = FormulaSet.union other_state.edge_formulas (generate_missing_formulas other_state) in
+        let edge_data = GraphEdge.make formulas (List.last other_state.branchingPath) in
         let lts_edge = LTS.E.create other_state.lastNode edge_data join_state.lastNode in
-        let aggregate_join = AggregateJoin.add_edge join_state.aggregateJoin lts_edge in
+        let aggregate_join = AggregateJoin.add_edge join_state.aggregate_join lts_edge in
         aggregate_join
       )
     )
@@ -401,8 +447,10 @@ let join : astate -> astate -> astate = fun lhs rhs ->
   ) else (
     (* First join in a row, create new join node and join info *)
     let join_node = GraphNode.make join_location in
-    let lhs_edge_data = GraphEdge.make lhs.edgeFormulas (List.last lhs_path) in
-    let rhs_edge_data = GraphEdge.make rhs.edgeFormulas (List.last rhs_path) in
+    let lhs_formulas = FormulaSet.union lhs.edge_formulas (generate_missing_formulas lhs) in
+    let rhs_formulas = FormulaSet.union rhs.edge_formulas (generate_missing_formulas rhs) in
+    let lhs_edge_data = GraphEdge.make lhs_formulas (List.last lhs_path) in
+    let rhs_edge_data = GraphEdge.make rhs_formulas (List.last rhs_path) in
     let lhs_lts_edge = LTS.E.create lhs.lastNode lhs_edge_data join_node in
     let rhs_lts_edge = LTS.E.create rhs.lastNode rhs_edge_data join_node in
     let aggregate_join =  AggregateJoin.make join_id lhs.lastLoc rhs.lastLoc in
@@ -417,36 +465,37 @@ let join : astate -> astate -> astate = fun lhs rhs ->
   let edgeSet = EdgeSet.union lhs.edges rhs.edges in
   let edgeSet = EdgeSet.add lhsEdge edgeSet in
   let edgeSet = EdgeSet.add rhsEdge edgeSet in
+
+  let ident_map = Ident.Map.union (fun _key a b ->
+    if not (Pvar.equal a b) then 
+      L.(die InternalError)"One SIL identificator maps to multiple Pvars!" 
+    else 
+      Some a
+  ) lhs.ident_map rhs.ident_map 
+  in
   { 
     branchingPath = path_prefix;
     branchLocs = LocSet.union lhs.branchLocs rhs.branchLocs;
     lastLoc = prefix_end_loc;
     edges = edgeSet;
-    current_edge = Edge.initial (LTSLocation.Join join_id);
+    current_edge = Edge.initial join_location;
     branch = lhs.branch || rhs.branch;
     pvars = PvarSet.union lhs.pvars rhs.pvars;
-
     joinLocs = join_locs;
     pruneLocs = lhs.pruneLocs;
 
-    edgeFormulas = Exp.Set.empty;
+    locals = lhs.locals;
+    modified_pvars = PvarSet.empty;
+    ident_map = ident_map;
+    edge_formulas = FormulaSet.empty;
     lastNode = join_node;
-    graphNodes = LTSNodeSet.add join_node graph_nodes;
-    graphEdges = graph_edges;
-    aggregateJoin = aggregate_join;
+    graph_nodes = LTSNodeSet.add join_node graph_nodes;
+    graph_edges = graph_edges;
+    aggregate_join = aggregate_join;
   }
 
 let widen ~prev ~next ~num_iters:_ = 
-  (* L.stdout "\n[WIDEN]\n";
-  L.stdout "  [PREV]\n";
-  EdgeSet.iter (fun edge -> 
-    L.stdout "    %a\n" Edge.pp edge
-  ) prev.edges;
-  L.stdout "  [NEXT]\n";
-  EdgeSet.iter (fun edge -> 
-    L.stdout "    %a\n" Edge.pp edge
-  ) next.edges; *)
-  (* join prev next *)
+  (* L.stdout "\n[WIDEN]\n"; *)
   {next with edges = EdgeSet.union prev.edges next.edges;}
 
 let pp fmt astate =
