@@ -18,7 +18,7 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
   module CFG = ProcCFG
   module Domain = Domain
 
-  type nonrec extras = Domain.PvarSet.t
+  type nonrec extras = (Domain.PvarSet.t * Domain.PvarSet.t)
 
   let pp_session_name node fmt = F.fprintf fmt "loopus %a" CFG.Node.pp_id (CFG.Node.id node)
 
@@ -27,6 +27,8 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
     fun astate {pdesc; tenv; extras} node instr ->
 
     let open Domain in
+
+    let locals, formals = fst extras, snd extras in
 
     let is_exit_node = match ProcCFG.Node.kind node with 
       | Procdesc.Node.Exit_node -> true 
@@ -60,6 +62,19 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
     | _ -> exp
     in
 
+    (* Extracts all formals as pvars from expression *)
+    let rec extract_formals pvar_exp acc = match pvar_exp with
+    | Exp.BinOp (op, lexp, rexp) -> (
+      let acc = extract_formals lexp acc in
+      extract_formals rexp acc
+    )
+    | Exp.UnOp (_, sub_exp, _) -> (
+      extract_formals sub_exp acc
+    )
+    | Exp.Lvar pvar when PvarSet.mem pvar formals -> PvarSet.add pvar acc
+    | _ -> acc
+    in
+
 
     let astate = match instr with
     | Prune (cond, loc, branch, kind) -> 
@@ -71,25 +86,25 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
         let newEdge = Edge.set_end astate.current_edge lts_loc in
 
         let missing_formulas = generate_missing_formulas astate in
-        let formulas = FormulaSet.union astate.edge_formulas missing_formulas in
+        let formulas = Formula.Set.union astate.edge_formulas missing_formulas in
 
         let prune_node = GraphNode.make lts_loc in
         let lhs = astate.aggregate_join.lhs in
         let rhs = astate.aggregate_join.rhs in
-        let graph_nodes = LTSNodeSet.add prune_node astate.graph_nodes in
+        let graph_nodes = LTS.NodeSet.add prune_node astate.graph_nodes in
 
         let is_direct_backedge = LTSLocation.equal lts_loc lhs || LTSLocation.equal lts_loc rhs in
         let graph_edges, graph_nodes = if is_direct_backedge then (
           (* Discard join node and all edges poiting to it and instead make
            * one direct backedge with variables modified inside the loop *)
           let join_edges =  astate.aggregate_join.edges in
-          let edge = List.find_exn (LTSEdgeSet.elements join_edges) ~f:(fun edge -> 
+          let edge = List.find_exn (LTS.EdgeSet.elements join_edges) ~f:(fun edge -> 
             let backedge_origin = LTS.E.src edge in
             GraphNode.equal backedge_origin prune_node
           ) in
           let backedge = LTS.E.create (LTS.E.src edge) (LTS.E.label edge) prune_node in
-          let graph_edges = LTSEdgeSet.add backedge astate.graph_edges in
-          let graph_nodes = LTSNodeSet.remove astate.lastNode graph_nodes in
+          let graph_edges = LTS.EdgeSet.add backedge astate.graph_edges in
+          let graph_nodes = LTS.NodeSet.remove astate.last_node graph_nodes in
           graph_edges, graph_nodes
         ) else (
           (* Add all accumulated edges pointing to aggregated join node and
@@ -97,9 +112,9 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
 
           let path_end = List.last astate.branchingPath in
           let edge_data = GraphEdge.make formulas path_end in
-          let new_lts_edge = LTS.E.create astate.lastNode edge_data prune_node in
-          let graph_edges = LTSEdgeSet.add new_lts_edge astate.graph_edges in
-          let graph_edges = LTSEdgeSet.union astate.aggregate_join.edges graph_edges in
+          let new_lts_edge = LTS.E.create astate.last_node edge_data prune_node in
+          let graph_edges = LTS.EdgeSet.add new_lts_edge astate.graph_edges in
+          let graph_edges = LTS.EdgeSet.union astate.aggregate_join.edges graph_edges in
           graph_edges, graph_nodes
         )
         in
@@ -133,17 +148,57 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
         | _ -> L.(die InternalError)"Unsupported prune condition type!"
         in
 
-        let formulas = FormulaSet.add (prune_formula) FormulaSet.empty in
+        (* We're tracking formals which are used in
+         * loop header conditions inside the loop body *)
+        let tracked_formals = if is_loop_prune kind then (
+          let cond_formals = extract_formals pvar_condition PvarSet.empty in
+          if branch then (
+            PvarSet.union astate.tracked_formals cond_formals
+          ) else (
+            (* Remove formals from false branch of loop *)
+            PvarSet.diff astate.tracked_formals cond_formals
+          )
+        ) else astate.tracked_formals
+        in
+
+        let norms = if branch && is_loop_prune kind then (
+          match prune_formula with
+          | (lexp, Formula.Binop op, rexp) -> (
+            match op with
+            | Binop.Lt -> Exp.Set.add (Exp.BinOp (Binop.MinusA, rexp, lexp)) astate.initial_norms
+            | Binop.Le -> (
+              let subexp = Exp.BinOp (Binop.MinusA, rexp, lexp) in
+              let norm = Exp.BinOp (Binop.PlusA, subexp, Exp.Const (Const.Cint IntLit.one)) in
+              Exp.Set.add norm astate.initial_norms
+            )
+            | Binop.Gt -> Exp.Set.add (Exp.BinOp (Binop.MinusA, lexp, rexp)) astate.initial_norms
+            | Binop.Ge -> (
+              let subexp = Exp.BinOp (Binop.MinusA, lexp, rexp) in
+              let norm = Exp.BinOp (Binop.PlusA, subexp, Exp.Const (Const.Cint IntLit.one)) in
+              Exp.Set.add norm astate.initial_norms
+            )
+            | _ -> astate.initial_norms
+          )
+          | _ -> astate.initial_norms
+        ) else (
+          astate.initial_norms
+        )
+        in
+
+
+        let formulas = Formula.Set.add (prune_formula) Formula.Set.empty in
         { astate with
           branchingPath = astate.branchingPath @ [(kind, branch, loc)];
           branchLocs = newLocSet; 
-          edges = EdgeSet.add newEdge astate.edges;
+          edges = Edge.Set.add newEdge astate.edges;
           current_edge = Edge.initial lts_loc;
           lastLoc = lts_loc;
 
+          initial_norms = norms;
+          tracked_formals = tracked_formals;
           modified_pvars = PvarSet.empty;
           edge_formulas = formulas;
-          lastNode = prune_node;
+          last_node = prune_node;
           graph_nodes = graph_nodes;
           graph_edges = graph_edges;
           aggregate_join = AggregateJoin.initial;
@@ -177,16 +232,16 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
 
         if is_exit_node then (
           log "  Exit node\n";
-          let missing_formulas = generate_missing_formulas astate in
-          let formulas = FormulaSet.union astate.edge_formulas missing_formulas in
+          (* let missing_formulas = generate_missing_formulas astate in
+          let formulas = Formula.Set.union astate.edge_formulas missing_formulas in *)
 
           let exit_node = GraphNode.make LTSLocation.Exit in
           let path_end = List.last astate.branchingPath in
-          let edge_data = GraphEdge.make formulas path_end in
-          let new_lts_edge = LTS.E.create astate.lastNode edge_data exit_node in
-          let graph_edges = LTSEdgeSet.add new_lts_edge astate.graph_edges in
-          let graph_edges = LTSEdgeSet.union astate.aggregate_join.edges graph_edges in
-          let graph_nodes = LTSNodeSet.add exit_node astate.graph_nodes in
+          let edge_data = GraphEdge.make astate.edge_formulas path_end in
+          let new_lts_edge = LTS.E.create astate.last_node edge_data exit_node in
+          let graph_edges = LTS.EdgeSet.add new_lts_edge astate.graph_edges in
+          let graph_edges = LTS.EdgeSet.union astate.aggregate_join.edges graph_edges in
+          let graph_nodes = LTS.NodeSet.add exit_node astate.graph_nodes in
           { astate with
             graph_nodes = graph_nodes;
             graph_edges = graph_edges;
@@ -200,16 +255,16 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
       (
         log "[STORE] (%a) | %a = %a | %B\n" Location.pp loc Exp.pp lexp Exp.pp rexp is_pvar_decl_node;
         (* let find_formula_rhs lhs_pvar = 
-          let rhs_set = FormulaSet.filter (fun formula -> 
+          let rhs_set = Formula.Set.filter (fun formula -> 
             match formula with 
             | (Exp.Lvar lexp_pvar, Formula.Assignment, rexp) when Pvar.equal lhs_pvar lexp_pvar -> true
             | _ -> false
           ) astate.edge_formulas
           in
-          FormulaSet.min_elt_opt rhs_set
+          Formula.Set.min_elt_opt rhs_set
         in *)
 
-        let find_formula_rhs lexp = FormulaSet.fold (fun formula acc -> 
+        let find_formula_rhs lexp = Formula.Set.fold (fun formula acc -> 
             match formula with 
             | (lhs, Formula.Assignment, rexp) when Exp.equal lexp lhs -> rexp
             | _ -> acc
@@ -233,7 +288,7 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
           | _ -> pvar_rexp
         )
         | Exp.Lvar rhs_pvar -> (
-          let rhs_pvar = FormulaSet.fold (fun formula acc -> 
+          let rhs_pvar = Formula.Set.fold (fun formula acc -> 
             match formula with 
             | (Exp.Lvar lexp_pvar, Formula.Assignment, Exp.Lvar rexp_pvar) when Pvar.equal rhs_pvar lexp_pvar -> rexp_pvar
             | _ -> acc
@@ -245,12 +300,12 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
 
         (* Check if set already contains assignment formula
          * with specified lhs and replace it with updated formulas if so *)
-        let formulas = FormulaSet.filter (function
+        let formulas = Formula.Set.filter (function
           | (lhs, Formula.Assignment, _) when Exp.equal lexp lhs -> false
           | _ -> true
         ) astate.edge_formulas
         in
-        let formulas = FormulaSet.add (lexp, Formula.Assignment, pvar_rexp) formulas in
+        let formulas = Formula.Set.add (lexp, Formula.Assignment, pvar_rexp) formulas in
 
         let modified_pvars = match lexp with
         | Exp.Lvar pvar -> PvarSet.add pvar astate.modified_pvars
@@ -327,15 +382,22 @@ module CFG = ProcCfg.NormalOneInstrPerNode
       in *)
 
       let proc_name = Procdesc.get_proc_name proc_desc in
-      let locals = Procdesc.get_locals proc_desc in
-      let extras = List.fold locals ~init:Domain.PvarSet.empty ~f:(fun acc (local : ProcAttributes.var_data) ->
+      let formals_mangled = Procdesc.get_formals proc_desc in
+      let formals = List.fold formals_mangled ~init:Domain.PvarSet.empty ~f:(fun acc (name, _) ->
+        let formal_pvar = Pvar.mk name proc_name in
+        Domain.PvarSet.add formal_pvar acc
+      )
+      in
+      let locals_list = Procdesc.get_locals proc_desc in
+      let locals = List.fold locals ~init:Domain.PvarSet.empty ~f:(fun acc (local : ProcAttributes.var_data) ->
         let pvar = Pvar.mk local.name proc_name in
         Domain.PvarSet.add pvar acc
       )
       in
+      let extras = (locals, formals) in
       let proc_data = ProcData.make proc_desc tenv extras in
       let begin_loc = Domain.LTSLocation.Start beginLoc in
-      let initial_state = Domain.initial begin_loc extras in
+      let initial_state = Domain.initial begin_loc locals in
       match Analyzer.compute_post proc_data ~initial:initial_state with
       | Some post ->
         (
@@ -346,16 +408,55 @@ module CFG = ProcCfg.NormalOneInstrPerNode
 
           (* Draw dot graph, use nodes and edges stored in post state *)
           let lts = Domain.LTS.create () in
-          Domain.LTSNodeSet.iter (fun node -> 
+          Domain.LTS.NodeSet.iter (fun node -> 
             log "%a = %d\n" Domain.LTSLocation.pp node.location node.id;
             Domain.LTS.add_vertex lts node;
           ) post.graph_nodes;
-          Domain.LTSEdgeSet.iter (fun edge -> 
+          Domain.LTS.EdgeSet.iter (fun edge -> 
             Domain.LTS.add_edge_e lts edge;
           ) post.graph_edges;
 
           let file = Out_channel.create "test_graph.dot" in
           let () = Domain.Dot.output_graph file lts in
+          Out_channel.close file;
+
+          log "[INITIAL NORMS]\n";
+          Exp.Set.iter (fun norm -> log "  %a\n" Exp.pp norm) post.initial_norms;
+          let dcp = Domain.LTS.create () in
+          Domain.LTS.NodeSet.iter (fun node -> 
+            Domain.LTS.add_vertex dcp node;
+          ) post.graph_nodes;
+
+
+          (* Much easier to implement and more readable in imperative style *)
+          let unprocessed_norms = ref post.initial_norms in
+          let processed_norms = ref Exp.Set.empty in
+          let graph_edges = ref post.graph_edges in
+          while not (Exp.Set.is_empty !unprocessed_norms) do (
+            let norm = Exp.Set.min_elt !unprocessed_norms in
+            unprocessed_norms := Exp.Set.remove norm !unprocessed_norms;
+            processed_norms := Exp.Set.add norm !processed_norms;
+            graph_edges := Domain.LTS.EdgeSet.map (fun edge -> 
+              let test = norm in
+              edge
+            ) !graph_edges;
+            ()
+          ) done;
+          (* let final_norms = Domain.LTS.EdgeSet.fold (fun (src, edge_data, dst) acc ->
+            let edge_data, norms = Exp.Set.fold (fun norm acc -> 
+              Domain.GraphEdge.derive_constraints acc norm
+            ) post.initial_norms (edge_data, Exp.Set.empty)
+            in
+            Domain.LTS.add_edge_e dcp (src, edge_data, dst);
+            Exp.Set.union acc norms
+          ) post.graph_edges post.initial_norms
+          in
+
+          log "[FINAL NORMS]\n";
+          Exp.Set.iter (fun norm -> log "  %a\n" Exp.pp norm) final_norms; *)
+
+          let file = Out_channel.create "test_dcp.dot" in
+          let () = Domain.Dot.output_graph file dcp in
           Out_channel.close file;
 
           Payload.update_summary post summary

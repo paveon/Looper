@@ -21,6 +21,53 @@ module PvarSet = struct
     "[" ^ (String.rstrip tmp) ^ "]"
 end
 
+let rec exp_to_str exp = match exp with
+  | Exp.BinOp (op, lexp, rexp) -> (
+    let lexp = exp_to_str lexp in
+    let rexp = exp_to_str rexp in
+    let op = Binop.str Pp.text op in
+    F.sprintf "(%s %s %s)" lexp op rexp
+  )
+  | Exp.Lvar _ -> String.slice (Exp.to_string exp) 1 0
+  | _ -> Exp.to_string exp
+
+
+(* Difference Constraint of form "x <= y + c"
+ * Example: "(len - i) <= (len - i) + 1" *)
+module DC = struct
+  type t = (Exp.t * Exp.t)
+  [@@deriving compare]
+
+  let to_string (lexp, rexp) =
+    F.asprintf "%s' <= %s" (exp_to_str lexp) (exp_to_str rexp)
+    
+  let pp fmt formula = 
+    F.fprintf fmt "%s" (to_string formula)
+
+  module Set = struct
+    include Caml.Set.Make (struct 
+      type nonrec t = t
+      let compare = compare
+    end)
+
+    let add_checked : elt -> t -> t = fun (lhs, rhs) set -> (
+      let dc = (lhs, rhs) in
+      if Exp.equal lhs rhs then (
+        (* Check if set already contains some constraint with this left hand side *)
+        let should_add = is_empty (filter (fun (dc_lhs, _) -> 
+          Exp.equal lhs dc_lhs
+        ) set)
+        in
+        if should_add then add dc set else set
+      ) else (
+        (* Check if set already contains [e <= e] constraint and remove it if it does *)
+        let set = remove (lhs, lhs) set in
+        add dc set
+      )
+    )
+  end
+end
+
 
 module Formula = struct
   type operator = 
@@ -36,26 +83,18 @@ module Formula = struct
   | Assignment -> "="
 
   let to_string (lexp, op, rexp) =
-    let rec exp_to_str exp = match exp with
-    | Exp.BinOp (op, lexp, rexp) -> (
-      let lexp = exp_to_str lexp in
-      let rexp = exp_to_str rexp in
-      let op = Binop.str Pp.text op in
-      F.sprintf "(%s %s %s)" lexp op rexp
-    )
-    | Exp.Lvar _ -> String.slice (Exp.to_string exp) 1 0
-    | _ -> Exp.to_string exp
-    in
     let lexp_str = exp_to_str lexp in
     let rexp_str = exp_to_str rexp in
     F.asprintf "%s %s %s" lexp_str (operator_text op) rexp_str
     
-
   let pp fmt formula = 
     F.fprintf fmt "%s" (to_string formula)
-end
 
-module FormulaSet = Caml.Set.Make(Formula)
+  module Set = Caml.Set.Make (struct
+    type nonrec t = t
+    let compare = compare
+  end)
+end
 
 
 type prune_info = (Sil.if_kind * bool * Location.t)
@@ -102,27 +141,235 @@ module LTSLocation = struct
   let pp fmt loc = F.fprintf fmt "%s" (to_string loc)
 
   let equal = [%compare.equal: t]
+
+  module Map = Caml.Map.Make(struct
+    type nonrec t = t
+    let compare = compare
+  end)
 end
 
 module GraphEdge = struct
   type t = {
-    formulas: FormulaSet.t;
+    dcp: bool;
+    formulas: Formula.Set.t;
+    constraints: DC.Set.t;
 
     (* Last element of common path prefix *)
     path_prefix_end: prune_info option; 
   }
   [@@deriving compare]
+
   let equal = [%compare.equal: t]
-  let empty = { formulas = FormulaSet.empty; path_prefix_end = None; }
+
+
+  let make : Formula.Set.t -> prune_info option -> t = fun formulas prefix_end -> {
+    dcp = false;
+    formulas = formulas;
+    constraints = DC.Set.empty;
+    path_prefix_end = prefix_end; 
+  }
+
+  let empty = make Formula.Set.empty None
+
+  (* Required by Graph module interface *)
   let default = empty
 
-  let make : FormulaSet.t -> prune_info option -> t = fun formulas prefix_end -> 
-    { formulas = formulas; path_prefix_end = prefix_end; }
-
-  let add_formula : t -> Formula.t -> t = fun edge formula -> (
-    { edge with formulas = FormulaSet.add formula edge.formulas }
-  )
+  let add_formula : t -> Formula.t -> t = fun edge formula ->
+    { edge with formulas = Formula.Set.add formula edge.formulas }
   
+  (* Derive difference constraints "x <= y + c" based on edge formulas *)
+  let derive_constraints : t -> Exp.t -> (t * Exp.t option) = fun edge norm -> (
+    let dc_set = edge.constraints in
+    let dcs, new_norm = match norm with
+    | Exp.Lvar norm_pvar -> (
+      (* TODO: simplest form of norm, obtained from condition of form [x > 0] *)
+      dc_set, None
+    )
+    | Exp.BinOp (Binop.MinusA, Exp.Lvar norm_lexp, Exp.Lvar norm_rexp) -> (
+      (* Most common form of norm, obtained from condition of form [x > y] -> norm [x - y] *)
+
+      (* Derives DCs from norm of form [x -y] *)
+      let process_binop_norm lhs formula = 
+        match formula with
+        | (Exp.Lvar assigned, Formula.Assignment, formula_rhs) -> (
+          (* norm [x - y], formula [lhs = expr] *)
+          match formula_rhs with
+          | Exp.BinOp (op, Exp.Lvar rhs_pvar, Exp.Const increment) -> (
+            (* norm [x - y], formula [lhs = pvar OP const] *)
+            if Pvar.equal assigned rhs_pvar then (
+              match op with 
+              | Binop.PlusA -> (
+                (* norm [x - y], formula [x/y = x/y + const] -> [(x - y) OP const] *)
+                let operator = if lhs then Binop.PlusA else Binop.MinusA in
+                let new_dc = (norm, Exp.BinOp (operator, norm, Exp.Const increment)) in
+                DC.Set.add_checked new_dc dc_set, None
+              )
+              | Binop.MinusA -> (
+                (* norm [x - y], formula [x/y = x/y - const] -> [(x - y) OP const] *)
+                let operator = if lhs then Binop.MinusA else Binop.PlusA in
+                let new_dc = (norm, Exp.BinOp (operator, norm, Exp.Const increment)) in
+                DC.Set.add_checked new_dc dc_set, None
+              )
+              | _ -> dc_set, None
+            ) else (
+              (* norm [x - y], formula [x = z OP const] -> constant reset, TODO *)
+              dc_set, None
+            )
+          )
+          | Exp.Lvar rhs_pvar -> (
+            if Pvar.equal assigned rhs_pvar then (
+              (* norm [x - y], formula [x/y = x/y], no change *)
+              DC.Set.add_checked (norm, norm) dc_set, None
+            ) 
+            else (
+              if lhs then (
+                if Pvar.equal assigned norm_rexp then (
+                  (* norm [x - y], formula [x = y], zero interval *)
+                  let new_norm = Exp.Const (Const.Cint IntLit.zero) in
+                  DC.Set.add_checked (norm, new_norm) dc_set, Some new_norm
+                ) else (
+                  (* norm [x - y], formula [x = z] -> [z - y] *)
+                  (* TODO: Check if both z and y are not formals to confirm that [z - y] is truly a norm *)
+                  let new_norm = Exp.BinOp (Binop.MinusA, Exp.Lvar rhs_pvar, Exp.Lvar norm_rexp) in
+                  DC.Set.add (norm, new_norm) dc_set, Some new_norm
+                )
+              )
+              else (
+                if Pvar.equal assigned norm_lexp then (
+                  (* norm [x - y], formula [y = x], zero interval *)
+                  let new_norm = Exp.Const (Const.Cint IntLit.zero) in
+                  DC.Set.add_checked (norm, new_norm) dc_set, Some new_norm
+                ) else (
+                  (* norm [x - y], formula [y = z] -> [x - z] *)
+                  (* TODO: Check if both x and z are not formals to confirm that [x - z] is truly a norm *)
+                  let new_norm = Exp.BinOp (Binop.MinusA, Exp.Lvar norm_lexp, Exp.Lvar rhs_pvar) in
+                  DC.Set.add (norm, new_norm) dc_set, Some new_norm
+                )
+              )
+            )
+          )
+          | Exp.Const (Const.Cint const) when IntLit.iszero const -> (
+            if lhs then (
+              (* TODO: What to do here? Do nothing for now *)
+              (* norm [x - y], formula [x = 0] -> [-y] *)
+              dc_set, None
+            ) else (
+              (* norm [x - y], formula [y = 0] -> [x] *)
+              let new_norm = Exp.Lvar norm_lexp in
+              DC.Set.add_checked (norm, new_norm) dc_set, Some new_norm
+            )
+          )
+          | _ -> dc_set, None
+        )
+        | _ -> dc_set, None
+      in
+
+      let lexp_assignments = Formula.Set.filter (function
+        | (Exp.Lvar assigned, Formula.Assignment, _) when Pvar.equal assigned norm_lexp -> true
+        | _ -> false
+      ) edge.formulas 
+      in
+      let rexp_assignments = Formula.Set.filter (function 
+        | (Exp.Lvar assigned, Formula.Assignment, _) when Pvar.equal assigned norm_rexp -> true
+        | _ -> false
+      ) edge.formulas 
+      in
+      if Formula.Set.cardinal lexp_assignments > 1 || Formula.Set.cardinal rexp_assignments > 1 then (
+        L.(die InternalError)"Multiple formulas with same left hand side on single edge!"
+      );
+      (* Fold over all edge formulas and find which formulas affect specified norm *)
+      let dcs, new_norm = Formula.Set.fold (fun formula acc -> 
+        let dcs, new_norm = acc in
+        match formula with
+        | (Exp.Lvar assigned, Formula.Assignment, formula_rhs) when Pvar.equal assigned norm_lexp -> (
+          (* norm [x - y], formula [x = expr] *)
+          match formula_rhs with
+          | Exp.BinOp (op, Exp.Lvar rhs_pvar, Exp.Const increment) -> (
+            (* norm [x - y], formula [x = pvar OP const] *)
+            if Pvar.equal assigned rhs_pvar then (
+              match op with 
+              | Binop.PlusA -> (
+                (* norm [x - y], formula [x = x + const] -> [(x - y) + const] *)
+                let new_dc = (norm, Exp.BinOp (Binop.PlusA, norm, Exp.Const increment)) in
+                DC.Set.add_checked new_dc dcs, new_norm
+              )
+              | Binop.MinusA -> (
+                (* norm [x - y], formula [x = x - const] -> [(x -y) - const] *)
+                let new_dc = (norm, Exp.BinOp (Binop.MinusA, norm, Exp.Const increment)) in
+                DC.Set.add_checked new_dc dcs, new_norm
+              )
+              | _ -> acc
+            ) else (
+              (* norm [x - y], formula [x = z OP const] -> constant reset, TODO *)
+              acc
+            )
+          )
+          | Exp.Lvar rhs_pvar when Pvar.equal assigned rhs_pvar -> (
+            (* norm [x - y], formula [x = x], no change *)
+            DC.Set.add_checked (norm, norm) dcs, new_norm
+          )
+          | _ -> acc
+        )
+        | (Exp.Lvar assigned, Formula.Assignment, formula_rhs) when Pvar.equal assigned norm_rexp -> (
+          match formula_rhs with
+          | Exp.BinOp (op, Exp.Lvar rhs_pvar, Exp.Const increment) -> (
+            (* norm [x - y], formula [y = pvar OP const] *)
+            if Pvar.equal assigned rhs_pvar then (
+              match op with
+              | Binop.PlusA -> (
+                (* norm [x - y], formula [y = y + const] -> [(x - y) - const] *)
+                let new_dc = (norm, Exp.BinOp (Binop.MinusA, norm, Exp.Const increment)) in
+                DC.Set.add_checked new_dc dcs, new_norm
+              )
+              | Binop.MinusA -> (
+                (* norm [x - y], formula [y = y - const] -> [(x - y) + const] *)
+                let new_dc = (norm, Exp.BinOp (Binop.PlusA, norm, Exp.Const increment)) in
+                DC.Set.add_checked new_dc dcs, new_norm
+              )
+              | _ -> acc
+            ) else (
+              (* norm [x - y], formula [y = z OP const] -> constant reset, TODO *)
+              acc
+            )
+          )
+          | Exp.Lvar rhs_pvar -> (
+            if Pvar.equal assigned rhs_pvar then (
+              (* norm [x - y], formula [y = y], no change *)
+              DC.Set.add_checked (norm, norm) dcs, new_norm
+            ) else if Pvar.equal assigned norm_lexp then (
+              (* norm [x - y], formula [y = x], zero interval *)
+              let new_norm = Exp.Const (Const.Cint IntLit.zero) in
+              DC.Set.add_checked (norm, new_norm) dcs, Some new_norm
+            ) else (
+              (* norm [x - y], formula [y = z] -> [x - z] *)
+              (* TODO: Check if both x and z are not formals to confirm that [x - z] is truly a norm *)
+              let new_norm = Exp.BinOp (Binop.MinusA, Exp.Lvar norm_lexp, Exp.Lvar norm_rexp) in
+              DC.Set.add (norm, new_norm) dcs, Some new_norm
+            )
+          )
+          | Exp.Const (Const.Cint const) when IntLit.iszero const -> (
+            (* norm [x - y], formula [y = 0] -> [x] *)
+            let new_norm = Exp.Lvar norm_lexp in
+            DC.Set.add_checked (norm, new_norm) dcs, Some new_norm
+          )
+          | _ -> acc
+        )
+        | _ -> (
+          acc
+        )
+      ) edge.formulas (DC.Set.empty, None)
+      in
+      dcs, new_norm
+    )
+    | _ -> DC.Set.empty, None
+    in
+    let edge_data = { edge with 
+      constraints = DC.Set.union edge.constraints dcs; 
+      dcp = true; 
+    }
+    in
+    edge_data, new_norm
+  )
 end
 
 module GraphNode = struct
@@ -169,30 +416,32 @@ module JoinLocations = Caml.Map.Make(struct
 end)
 
 
-module PruneLocations = Caml.Map.Make(LTSLocation)
-
-
 (* Labeled Transition System *)
-module LTS = Graph.Imperative.Digraph.ConcreteBidirectionalLabeled(GraphNode)(GraphEdge)
-(* module LTS = Graph.Persistent.Digraph.ConcreteBidirectionalLabeled(GraphNode)(GraphEdge) *)
+module LTS = struct 
+  (* include Graph.Persistent.Digraph.ConcreteBidirectionalLabeled(GraphNode)(GraphEdge) *)
+  include Graph.Imperative.Digraph.ConcreteBidirectionalLabeled(GraphNode)(GraphEdge)
+  module NodeSet = Caml.Set.Make(V)
+  module EdgeSet = Caml.Set.Make(E)
+end
 
 module DotConfig = struct
   include LTS
 
   let edge_attributes : LTS.E.t -> 'a list = fun (_src, edge, _dst) -> (
-    let label = match edge.path_prefix_end with
-    | Some prune_info -> F.asprintf "%a\n" pp_prune_info prune_info
-    | None -> "\n"
+    let label = if edge.dcp then (
+      DC.Set.fold (fun dc acc -> 
+        acc ^ (DC.to_string dc) ^ "\n"
+      ) edge.constraints ""
+    ) else (
+      let label = match edge.path_prefix_end with
+      | Some prune_info -> F.asprintf "%a\n" pp_prune_info prune_info
+      | None -> "\n"
+      in
+      Formula.Set.fold (fun exp acc -> 
+        acc ^ (Formula.to_string exp) ^ "\n"
+      ) edge.formulas label
+    )
     in
-    let label = FormulaSet.fold (fun exp acc -> 
-      acc ^ (Formula.to_string exp) ^ "\n"
-    ) edge.formulas label
-    in
-    (* let len = String.length label in
-    let label = if not (FormulaSet.is_empty edge.formulas) then (
-      String.slice label 0 (len - 3)
-    ) else label 
-    in *)
     [`Label label; `Color 4711]
   )
   
@@ -254,93 +503,95 @@ module Edge = struct
     PvarSet.pp edge.modified_vars
 
   let modified_to_string edge = PvarSet.to_string edge.modified_vars
-    
+
+  module Set = Caml.Set.Make(struct
+    type nonrec t = t
+    let compare = compare
+  end)
 end
-
-module EdgeSet = Caml.Set.Make(Edge)
-
-module LTSNodeSet = Caml.Set.Make(LTS.V)
-module LTSEdgeSet = Caml.Set.Make(LTS.E)
-
 
 module AggregateJoin = struct
   type t = {
     join_nodes: IntSet.t;
     rhs: LTSLocation.t;
     lhs: LTSLocation.t;
-    edges: LTSEdgeSet.t;
+    edges: LTS.EdgeSet.t;
   } [@@deriving compare]
 
   let initial : t = {
     join_nodes = IntSet.empty;
     lhs = LTSLocation.Dummy;
     rhs = LTSLocation.Dummy;
-    edges = LTSEdgeSet.empty;
+    edges = LTS.EdgeSet.empty;
   }
 
   let add_node_id : t -> int -> t = fun aggregate join_id ->
     { aggregate with join_nodes = IntSet.add join_id aggregate.join_nodes }
 
   let add_edge : t -> LTS.E.t -> t = fun info edge -> 
-    { info with edges = LTSEdgeSet.add edge info.edges } 
+    { info with edges = LTS.EdgeSet.add edge info.edges } 
 
   let make : int -> LTSLocation.t -> LTSLocation.t -> t = fun join_id rhs lhs ->
-    { join_nodes = IntSet.add join_id IntSet.empty; lhs = lhs; rhs = rhs; edges = LTSEdgeSet.empty; }
+    { join_nodes = IntSet.add join_id IntSet.empty; lhs = lhs; rhs = rhs; edges = LTS.EdgeSet.empty; }
 end
 
 
 type astate = {
-  lastNode: GraphNode.t;
+  last_node: GraphNode.t;
   branchingPath: prune_info list;
   branchLocs: LocSet.t;
   lastLoc: LTSLocation.t;
-  edges: EdgeSet.t;
+  edges: Edge.Set.t;
   current_edge: Edge.t;
   branch: bool;
   pvars: PvarSet.t;
   joinLocs: int JoinLocations.t;
-  pruneLocs: GraphNode.t PruneLocations.t;
+  pruneLocs: GraphNode.t LTSLocation.Map.t;
 
+  initial_norms: Exp.Set.t;
+  tracked_formals: PvarSet.t;
   locals: PvarSet.t;
   ident_map: Pvar.t Ident.Map.t;
   modified_pvars: PvarSet.t;
-  edge_formulas: FormulaSet.t;
-  graph_nodes: LTSNodeSet.t;
-  graph_edges: LTSEdgeSet.t;
+  edge_formulas: Formula.Set.t;
+  graph_nodes: LTS.NodeSet.t;
+  graph_edges: LTS.EdgeSet.t;
   aggregate_join: AggregateJoin.t;
 }
 
 let initial : LTSLocation.t -> PvarSet.t -> astate = fun beginLoc locals -> (
   let entryPoint = GraphNode.make beginLoc in
   {
-    lastNode = entryPoint;
+    last_node = entryPoint;
     branchingPath = [];
     branchLocs = LocSet.empty;
     lastLoc = beginLoc;
-    edges = EdgeSet.empty;
+    edges = Edge.Set.empty;
     current_edge = Edge.initial beginLoc;
     branch = false;
     pvars = PvarSet.empty;
     joinLocs = JoinLocations.empty;
-    pruneLocs = PruneLocations.empty;
+    pruneLocs = LTSLocation.Map.empty;
 
+    initial_norms = Exp.Set.empty;
+    tracked_formals = PvarSet.empty;
     locals = locals;
     ident_map = Ident.Map.empty;
     modified_pvars = PvarSet.empty;
-    edge_formulas = FormulaSet.empty;
-    graph_nodes = LTSNodeSet.add entryPoint LTSNodeSet.empty;
-    graph_edges = LTSEdgeSet.empty;
+    edge_formulas = Formula.Set.empty;
+    graph_nodes = LTS.NodeSet.add entryPoint LTS.NodeSet.empty;
+    graph_edges = LTS.EdgeSet.empty;
     aggregate_join = AggregateJoin.initial;
   }
 )
 
 let generate_missing_formulas astate =
-  let unmodified_pvars = PvarSet.diff astate.locals astate.modified_pvars in
+  let unmodified_pvars = PvarSet.diff (PvarSet.union astate.locals astate.tracked_formals) astate.modified_pvars in
   PvarSet.fold (fun pvar acc ->
     let pvar_exp = Exp.Lvar pvar in
     let formula = (pvar_exp, Formula.Assignment, pvar_exp) in
-    FormulaSet.add formula acc
-  ) unmodified_pvars FormulaSet.empty
+    Formula.Set.add formula acc
+  ) unmodified_pvars Formula.Set.empty
 
 let is_loop_prune : Sil.if_kind -> bool = function
   | Ik_dowhile | Ik_for | Ik_while -> true
@@ -366,14 +617,14 @@ let get_edge_label path = match List.last path with
 let ( <= ) ~lhs ~rhs =
   (* L.stdout "[Partial order <= ]\n"; *)
   (* L.stdout "  [LHS]\n"; *)
-  EdgeSet.equal lhs.edges rhs.edges || (EdgeSet.cardinal lhs.edges < EdgeSet.cardinal rhs.edges)
+  Edge.Set.equal lhs.edges rhs.edges || (Edge.Set.cardinal lhs.edges < Edge.Set.cardinal rhs.edges)
 
 
 let join_cnt = ref 0
 
 
 let join : astate -> astate -> astate = fun lhs rhs ->
-  L.stdout "\n[JOIN] %a | %a\n" LTSLocation.pp lhs.lastNode.location LTSLocation.pp rhs.lastNode.location;
+  L.stdout "\n[JOIN] %a | %a\n" LTSLocation.pp lhs.last_node.location LTSLocation.pp rhs.last_node.location;
 
   (* Creates common path prefix of provided paths *)
   let rec common_path_prefix = fun (prefix, _) pathA pathB ->
@@ -414,16 +665,16 @@ let join : astate -> astate -> astate = fun lhs rhs ->
   )
   in
 
-  let graph_nodes = LTSNodeSet.union lhs.graph_nodes rhs.graph_nodes in
-  let graph_edges = LTSEdgeSet.union lhs.graph_edges rhs.graph_edges in
+  let graph_nodes = LTS.NodeSet.union lhs.graph_nodes rhs.graph_nodes in
+  let graph_edges = LTS.EdgeSet.union lhs.graph_edges rhs.graph_edges in
 
   let join_location = LTSLocation.Join (IntSet.add join_id IntSet.empty) in
-  let is_consecutive_join = GraphNode.is_join_node lhs.lastNode || GraphNode.is_join_node rhs.lastNode in
+  let is_consecutive_join = GraphNode.is_join_node lhs.last_node || GraphNode.is_join_node rhs.last_node in
 
   let join_node, aggregate_join = if is_consecutive_join then (
     (* Consecutive join, merge join nodes and possibly add new edge to aggregated join node *)
-    let other_state, join_state = if GraphNode.is_join_node lhs.lastNode then rhs, lhs else lhs, rhs in
-    let aggregate_join = match other_state.lastNode.location with
+    let other_state, join_state = if GraphNode.is_join_node lhs.last_node then rhs, lhs else lhs, rhs in
+    let aggregate_join = match other_state.last_node.location with
     | LTSLocation.Start _ -> (
       (* Don't add new edge if it's from the beginning location *)
       join_state.aggregate_join
@@ -435,24 +686,24 @@ let join : astate -> astate -> astate = fun lhs rhs ->
         join_state.aggregate_join
       ) else (
         (* Add edge from non-join node to current set of edges pointing to aggregated join node *)
-        let formulas = FormulaSet.union other_state.edge_formulas (generate_missing_formulas other_state) in
+        let formulas = Formula.Set.union other_state.edge_formulas (generate_missing_formulas other_state) in
         let edge_data = GraphEdge.make formulas (List.last other_state.branchingPath) in
-        let lts_edge = LTS.E.create other_state.lastNode edge_data join_state.lastNode in
+        let lts_edge = LTS.E.create other_state.last_node edge_data join_state.last_node in
         let aggregate_join = AggregateJoin.add_edge join_state.aggregate_join lts_edge in
         aggregate_join
       )
     )
     in
-    join_state.lastNode, AggregateJoin.add_node_id aggregate_join join_id
+    join_state.last_node, AggregateJoin.add_node_id aggregate_join join_id
   ) else (
     (* First join in a row, create new join node and join info *)
     let join_node = GraphNode.make join_location in
-    let lhs_formulas = FormulaSet.union lhs.edge_formulas (generate_missing_formulas lhs) in
-    let rhs_formulas = FormulaSet.union rhs.edge_formulas (generate_missing_formulas rhs) in
+    let lhs_formulas = Formula.Set.union lhs.edge_formulas (generate_missing_formulas lhs) in
+    let rhs_formulas = Formula.Set.union rhs.edge_formulas (generate_missing_formulas rhs) in
     let lhs_edge_data = GraphEdge.make lhs_formulas (List.last lhs_path) in
     let rhs_edge_data = GraphEdge.make rhs_formulas (List.last rhs_path) in
-    let lhs_lts_edge = LTS.E.create lhs.lastNode lhs_edge_data join_node in
-    let rhs_lts_edge = LTS.E.create rhs.lastNode rhs_edge_data join_node in
+    let lhs_lts_edge = LTS.E.create lhs.last_node lhs_edge_data join_node in
+    let rhs_lts_edge = LTS.E.create rhs.last_node rhs_edge_data join_node in
     let aggregate_join =  AggregateJoin.make join_id lhs.lastLoc rhs.lastLoc in
     let aggregate_join = AggregateJoin.add_edge aggregate_join lhs_lts_edge in
     let aggregate_join = AggregateJoin.add_edge aggregate_join rhs_lts_edge in
@@ -462,9 +713,9 @@ let join : astate -> astate -> astate = fun lhs rhs ->
 
   let lhsEdge = Edge.set_end lhs.current_edge join_location in
   let rhsEdge = Edge.set_end rhs.current_edge join_location in
-  let edgeSet = EdgeSet.union lhs.edges rhs.edges in
-  let edgeSet = EdgeSet.add lhsEdge edgeSet in
-  let edgeSet = EdgeSet.add rhsEdge edgeSet in
+  let edgeSet = Edge.Set.union lhs.edges rhs.edges in
+  let edgeSet = Edge.Set.add lhsEdge edgeSet in
+  let edgeSet = Edge.Set.add rhsEdge edgeSet in
 
   let ident_map = Ident.Map.union (fun _key a b ->
     if not (Pvar.equal a b) then 
@@ -484,23 +735,25 @@ let join : astate -> astate -> astate = fun lhs rhs ->
     joinLocs = join_locs;
     pruneLocs = lhs.pruneLocs;
 
+    initial_norms = Exp.Set.union lhs.initial_norms rhs.initial_norms;
+    tracked_formals = PvarSet.union lhs.tracked_formals rhs.tracked_formals;
     locals = lhs.locals;
     modified_pvars = PvarSet.empty;
     ident_map = ident_map;
-    edge_formulas = FormulaSet.empty;
-    lastNode = join_node;
-    graph_nodes = LTSNodeSet.add join_node graph_nodes;
+    edge_formulas = Formula.Set.empty;
+    last_node = join_node;
+    graph_nodes = LTS.NodeSet.add join_node graph_nodes;
     graph_edges = graph_edges;
     aggregate_join = aggregate_join;
   }
 
 let widen ~prev ~next ~num_iters:_ = 
   (* L.stdout "\n[WIDEN]\n"; *)
-  {next with edges = EdgeSet.union prev.edges next.edges;}
+  {next with edges = Edge.Set.union prev.edges next.edges;}
 
 let pp fmt astate =
   (* PvarSet.iter (Pvar.pp_value fmt) astate.pvars *)
-  EdgeSet.iter (fun edge -> 
+  Edge.Set.iter (fun edge -> 
     F.fprintf fmt "%a\n" Edge.pp edge
   ) astate.edges
 
