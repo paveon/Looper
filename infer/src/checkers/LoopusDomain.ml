@@ -178,197 +178,181 @@ module GraphEdge = struct
     { edge with formulas = Formula.Set.add formula edge.formulas }
   
   (* Derive difference constraints "x <= y + c" based on edge formulas *)
-  let derive_constraints : t -> Exp.t -> (t * Exp.t option) = fun edge norm -> (
+  let derive_constraints : t -> Exp.t -> (t * Exp.Set.t) = fun edge norm -> (
+    let zero_norm = Exp.Const (Const.Cint IntLit.zero) in
     let dc_set = edge.constraints in
-    let dcs, new_norm = match norm with
-    | Exp.Lvar norm_pvar -> (
+    let norm_set = Exp.Set.empty in
+    let dc_set, norm_set = match norm with
+    | Exp.Lvar _ -> (
       (* TODO: simplest form of norm, obtained from condition of form [x > 0] *)
-      dc_set, None
+      dc_set, norm_set
     )
     | Exp.BinOp (Binop.MinusA, Exp.Lvar norm_lexp, Exp.Lvar norm_rexp) -> (
       (* Most common form of norm, obtained from condition of form [x > y] -> norm [x - y] *)
-
-      (* Derives DCs from norm of form [x -y] *)
-      let process_binop_norm lhs formula = 
-        match formula with
-        | (Exp.Lvar assigned, Formula.Assignment, formula_rhs) -> (
-          (* norm [x - y], formula [lhs = expr] *)
-          match formula_rhs with
-          | Exp.BinOp (op, Exp.Lvar rhs_pvar, Exp.Const increment) -> (
-            (* norm [x - y], formula [lhs = pvar OP const] *)
-            if Pvar.equal assigned rhs_pvar then (
-              match op with 
-              | Binop.PlusA -> (
-                (* norm [x - y], formula [x/y = x/y + const] -> [(x - y) OP const] *)
-                let operator = if lhs then Binop.PlusA else Binop.MinusA in
-                let new_dc = (norm, Exp.BinOp (operator, norm, Exp.Const increment)) in
-                DC.Set.add_checked new_dc dc_set, None
-              )
-              | Binop.MinusA -> (
-                (* norm [x - y], formula [x/y = x/y - const] -> [(x - y) OP const] *)
-                let operator = if lhs then Binop.MinusA else Binop.PlusA in
-                let new_dc = (norm, Exp.BinOp (operator, norm, Exp.Const increment)) in
-                DC.Set.add_checked new_dc dc_set, None
-              )
-              | _ -> dc_set, None
-            ) else (
-              (* norm [x - y], formula [x = z OP const] -> constant reset, TODO *)
-              dc_set, None
-            )
-          )
-          | Exp.Lvar rhs_pvar -> (
-            if Pvar.equal assigned rhs_pvar then (
-              (* norm [x - y], formula [x/y = x/y], no change *)
-              DC.Set.add_checked (norm, norm) dc_set, None
-            ) 
-            else (
-              if lhs then (
-                if Pvar.equal assigned norm_rexp then (
-                  (* norm [x - y], formula [x = y], zero interval *)
-                  let new_norm = Exp.Const (Const.Cint IntLit.zero) in
-                  DC.Set.add_checked (norm, new_norm) dc_set, Some new_norm
-                ) else (
-                  (* norm [x - y], formula [x = z] -> [z - y] *)
-                  (* TODO: Check if both z and y are not formals to confirm that [z - y] is truly a norm *)
-                  let new_norm = Exp.BinOp (Binop.MinusA, Exp.Lvar rhs_pvar, Exp.Lvar norm_rexp) in
-                  DC.Set.add (norm, new_norm) dc_set, Some new_norm
-                )
-              )
-              else (
-                if Pvar.equal assigned norm_lexp then (
-                  (* norm [x - y], formula [y = x], zero interval *)
-                  let new_norm = Exp.Const (Const.Cint IntLit.zero) in
-                  DC.Set.add_checked (norm, new_norm) dc_set, Some new_norm
-                ) else (
-                  (* norm [x - y], formula [y = z] -> [x - z] *)
-                  (* TODO: Check if both x and z are not formals to confirm that [x - z] is truly a norm *)
-                  let new_norm = Exp.BinOp (Binop.MinusA, Exp.Lvar norm_lexp, Exp.Lvar rhs_pvar) in
-                  DC.Set.add (norm, new_norm) dc_set, Some new_norm
-                )
-              )
-            )
-          )
-          | Exp.Const (Const.Cint const) when IntLit.iszero const -> (
-            if lhs then (
-              (* TODO: What to do here? Do nothing for now *)
-              (* norm [x - y], formula [x = 0] -> [-y] *)
-              dc_set, None
-            ) else (
-              (* norm [x - y], formula [y = 0] -> [x] *)
-              let new_norm = Exp.Lvar norm_lexp in
-              DC.Set.add_checked (norm, new_norm) dc_set, Some new_norm
-            )
-          )
-          | _ -> dc_set, None
-        )
-        | _ -> dc_set, None
-      in
-
       let lexp_assignments = Formula.Set.filter (function
-        | (Exp.Lvar assigned, Formula.Assignment, _) when Pvar.equal assigned norm_lexp -> true
+        | (Exp.Lvar formula_lhs, Formula.Assignment, _) when Pvar.equal formula_lhs norm_lexp -> true
         | _ -> false
       ) edge.formulas 
       in
       let rexp_assignments = Formula.Set.filter (function 
-        | (Exp.Lvar assigned, Formula.Assignment, _) when Pvar.equal assigned norm_rexp -> true
+        | (Exp.Lvar formula_lhs, Formula.Assignment, _) when Pvar.equal formula_lhs norm_rexp -> true
         | _ -> false
       ) edge.formulas 
       in
       if Formula.Set.cardinal lexp_assignments > 1 || Formula.Set.cardinal rexp_assignments > 1 then (
         L.(die InternalError)"Multiple formulas with same left hand side on single edge!"
       );
-      (* Fold over all edge formulas and find which formulas affect specified norm *)
-      let dcs, new_norm = Formula.Set.fold (fun formula acc -> 
-        let dcs, new_norm = acc in
+
+      let lexp_assignment = Formula.Set.min_elt_opt lexp_assignments in
+      let rexp_assignment = Formula.Set.min_elt_opt rexp_assignments in
+
+      (* Derives DCs from norm of form [x -y] *)
+      let process_binop_norm lhs formula dc_set norm_set = 
         match formula with
-        | (Exp.Lvar assigned, Formula.Assignment, formula_rhs) when Pvar.equal assigned norm_lexp -> (
-          (* norm [x - y], formula [x = expr] *)
+        | (Exp.Lvar formula_lhs, Formula.Assignment, formula_rhs) -> (
+          (* norm [x - y], formula [lhs = expr] *)
           match formula_rhs with
           | Exp.BinOp (op, Exp.Lvar rhs_pvar, Exp.Const increment) -> (
-            (* norm [x - y], formula [x = pvar OP const] *)
-            if Pvar.equal assigned rhs_pvar then (
+            (* norm [x - y], formula [lhs = pvar OP const] *)
+            if Pvar.equal formula_lhs rhs_pvar then (
               match op with 
               | Binop.PlusA -> (
-                (* norm [x - y], formula [x = x + const] -> [(x - y) + const] *)
-                let new_dc = (norm, Exp.BinOp (Binop.PlusA, norm, Exp.Const increment)) in
-                DC.Set.add_checked new_dc dcs, new_norm
+                (* norm [x - y], formula [x/y = x/y + const] -> [(x - y) OP const] *)
+                let operator = if lhs then Binop.PlusA else Binop.MinusA in
+                let new_dc = (norm, Exp.BinOp (operator, norm, Exp.Const increment)) in
+                DC.Set.add_checked new_dc dc_set, norm_set
               )
               | Binop.MinusA -> (
-                (* norm [x - y], formula [x = x - const] -> [(x -y) - const] *)
-                let new_dc = (norm, Exp.BinOp (Binop.MinusA, norm, Exp.Const increment)) in
-                DC.Set.add_checked new_dc dcs, new_norm
+                (* norm [x - y], formula [x/y = x/y - const] -> [(x - y) OP const] *)
+                let operator = if lhs then Binop.MinusA else Binop.PlusA in
+                let new_dc = (norm, Exp.BinOp (operator, norm, Exp.Const increment)) in
+                DC.Set.add_checked new_dc dc_set, norm_set
               )
-              | _ -> acc
+              | _ -> dc_set, norm_set
             ) else (
               (* norm [x - y], formula [x = z OP const] -> constant reset, TODO *)
-              acc
-            )
-          )
-          | Exp.Lvar rhs_pvar when Pvar.equal assigned rhs_pvar -> (
-            (* norm [x - y], formula [x = x], no change *)
-            DC.Set.add_checked (norm, norm) dcs, new_norm
-          )
-          | _ -> acc
-        )
-        | (Exp.Lvar assigned, Formula.Assignment, formula_rhs) when Pvar.equal assigned norm_rexp -> (
-          match formula_rhs with
-          | Exp.BinOp (op, Exp.Lvar rhs_pvar, Exp.Const increment) -> (
-            (* norm [x - y], formula [y = pvar OP const] *)
-            if Pvar.equal assigned rhs_pvar then (
-              match op with
-              | Binop.PlusA -> (
-                (* norm [x - y], formula [y = y + const] -> [(x - y) - const] *)
-                let new_dc = (norm, Exp.BinOp (Binop.MinusA, norm, Exp.Const increment)) in
-                DC.Set.add_checked new_dc dcs, new_norm
-              )
-              | Binop.MinusA -> (
-                (* norm [x - y], formula [y = y - const] -> [(x - y) + const] *)
-                let new_dc = (norm, Exp.BinOp (Binop.PlusA, norm, Exp.Const increment)) in
-                DC.Set.add_checked new_dc dcs, new_norm
-              )
-              | _ -> acc
-            ) else (
-              (* norm [x - y], formula [y = z OP const] -> constant reset, TODO *)
-              acc
+              dc_set, norm_set
             )
           )
           | Exp.Lvar rhs_pvar -> (
-            if Pvar.equal assigned rhs_pvar then (
-              (* norm [x - y], formula [y = y], no change *)
-              DC.Set.add_checked (norm, norm) dcs, new_norm
-            ) else if Pvar.equal assigned norm_lexp then (
-              (* norm [x - y], formula [y = x], zero interval *)
-              let new_norm = Exp.Const (Const.Cint IntLit.zero) in
-              DC.Set.add_checked (norm, new_norm) dcs, Some new_norm
-            ) else (
-              (* norm [x - y], formula [y = z] -> [x - z] *)
-              (* TODO: Check if both x and z are not formals to confirm that [x - z] is truly a norm *)
-              let new_norm = Exp.BinOp (Binop.MinusA, Exp.Lvar norm_lexp, Exp.Lvar norm_rexp) in
-              DC.Set.add (norm, new_norm) dcs, Some new_norm
+            if Pvar.equal formula_lhs rhs_pvar then (
+              (* norm [x - y], formula [x/y = x/y], no change *)
+              DC.Set.add_checked (norm, norm) dc_set, norm_set
+            ) 
+            else (
+              if lhs then (
+                match rexp_assignment with
+                | Some (_, _, expr) -> (
+                  if Exp.equal formula_rhs expr then (
+                    (* norm [x - y], formulas [x = var], [y = var] -> zero interval *)
+                    DC.Set.add_checked (norm, zero_norm) dc_set, Exp.Set.add zero_norm norm_set
+                  ) else (
+                    (* norm [x - y], formulas [x = var], [y = expr] -> [var - expr] *)
+                    let new_norm = Exp.BinOp (Binop.MinusA, formula_rhs, expr) in
+                    DC.Set.add_checked (norm, new_norm) dc_set, Exp.Set.add new_norm norm_set
+                  )
+                )
+                | _ -> (
+                  if Pvar.equal rhs_pvar norm_rexp then (
+                    (* norm [x - y], formula [x = y], zero interval *)
+                    DC.Set.add_checked (norm, zero_norm) dc_set, Exp.Set.add zero_norm norm_set
+                  ) else (
+                    (* norm [x - y], formula [x = z] -> [z - y] *)
+                    (* TODO: Check if both z and y are not formals to confirm that [z - y] is truly a norm *)
+                    let new_norm = Exp.BinOp (Binop.MinusA, formula_rhs, Exp.Lvar norm_rexp) in
+                    DC.Set.add (norm, new_norm) dc_set, Exp.Set.add new_norm norm_set
+                  )
+                )
+              )
+              else (
+                match lexp_assignment with
+                | Some (_, _, expr) -> (
+                  if Exp.equal formula_rhs expr then (
+                    (* norm [x - y], formulas [y = var], [x = var] -> zero interval *)
+                    DC.Set.add_checked (norm, zero_norm) dc_set, Exp.Set.add zero_norm norm_set
+                  ) else (
+                    (* norm [x - y], formulas [y = var], [x = expr] -> [expr - var] *)
+                    let new_norm = Exp.BinOp (Binop.MinusA, expr, formula_rhs) in
+                    DC.Set.add_checked (norm, new_norm) dc_set, Exp.Set.add new_norm norm_set
+                  )
+                )
+                | _ -> (
+                  if Pvar.equal rhs_pvar norm_lexp then (
+                    (* norm [x - y], formula [y = x], zero interval *)
+                    DC.Set.add_checked (norm, zero_norm) dc_set, Exp.Set.add zero_norm norm_set
+                  ) else (
+                    (* norm [x - y], formula [y = z] -> [x - z] *)
+                    (* TODO: Check if both x and z are not formals to confirm that [x - z] is truly a norm *)
+                    let new_norm = Exp.BinOp (Binop.MinusA, Exp.Lvar norm_lexp, formula_rhs) in
+                    DC.Set.add (norm, new_norm) dc_set, Exp.Set.add new_norm norm_set
+                  )
+                )
+              )
             )
           )
           | Exp.Const (Const.Cint const) when IntLit.iszero const -> (
-            (* norm [x - y], formula [y = 0] -> [x] *)
-            let new_norm = Exp.Lvar norm_lexp in
-            DC.Set.add_checked (norm, new_norm) dcs, Some new_norm
+            if lhs then (
+              match rexp_assignment with
+              | Some (_, _, expr) -> (
+                if Exp.equal formula_rhs expr then (
+                  (* norm [x - y], formulas [x = 0], [y = 0] -> [0] *)
+                  DC.Set.add_checked (norm, zero_norm) dc_set, Exp.Set.add zero_norm norm_set
+                ) else (
+                  (* TODO: What to do here?*)
+                  (* norm [x - y], formulas [x = 0], [y = expr] -> [-expr] *)
+                  let new_norm = Exp.UnOp (Unop.Neg, expr, None) in
+                  DC.Set.add_checked (norm, new_norm) dc_set, Exp.Set.add new_norm norm_set
+                )
+              )
+              | _ -> (
+                (* TODO: What to do here? *)
+                (* norm [x - y], formula [x = 0] -> [-y] *)
+                let new_norm = Exp.UnOp (Unop.Neg, Exp.Lvar norm_rexp, None) in
+                DC.Set.add_checked (norm, new_norm) dc_set, Exp.Set.add new_norm norm_set
+              )
+            ) else (
+              match lexp_assignment with
+              | Some (_, _, expr) -> (
+                if Exp.equal formula_rhs expr then (
+                  (* norm [x - y], formulas [y = 0], [x = 0] -> [0] *)
+                  DC.Set.add_checked (norm, zero_norm) dc_set, Exp.Set.add zero_norm norm_set
+                ) else (
+                  (* norm [x - y], formulas [y = 0], [x = expr] -> [expr] *)
+                  DC.Set.add_checked (norm, expr) dc_set, Exp.Set.add expr norm_set
+                )
+              )
+              | _ -> (
+                (* norm [x - y], formula [y = 0] -> [x] *)
+                let new_norm = Exp.Lvar norm_lexp in
+                DC.Set.add_checked (norm, new_norm) dc_set, Exp.Set.add new_norm norm_set
+              )
+            )
           )
-          | _ -> acc
+          | _ -> dc_set, norm_set
         )
-        | _ -> (
-          acc
-        )
-      ) edge.formulas (DC.Set.empty, None)
+        | _ -> dc_set, norm_set
       in
-      dcs, new_norm
+
+      let dc_set, norm_set = if not (Formula.Set.is_empty lexp_assignments) then (
+        let formula = Formula.Set.min_elt lexp_assignments in
+        process_binop_norm true formula dc_set norm_set
+      ) else dc_set, norm_set
+      in
+      let dc_set, norm_set = if not (Formula.Set.is_empty rexp_assignments) then (
+        let formula = Formula.Set.min_elt rexp_assignments in
+        process_binop_norm false formula dc_set norm_set
+      ) else dc_set, norm_set
+      in
+      dc_set, norm_set
     )
-    | _ -> DC.Set.empty, None
-    in
+    | _ -> dc_set, norm_set
+    in 
     let edge_data = { edge with 
-      constraints = DC.Set.union edge.constraints dcs; 
+      constraints = dc_set;
       dcp = true; 
     }
     in
-    edge_data, new_norm
+    edge_data, norm_set
   )
 end
 
@@ -428,15 +412,16 @@ module DotConfig = struct
   include LTS
 
   let edge_attributes : LTS.E.t -> 'a list = fun (_src, edge, _dst) -> (
+    let label = match edge.path_prefix_end with
+    | Some prune_info -> F.asprintf "%a\n" pp_prune_info prune_info
+    | None -> ""
+    in
+
     let label = if edge.dcp then (
       DC.Set.fold (fun dc acc -> 
         acc ^ (DC.to_string dc) ^ "\n"
-      ) edge.constraints ""
+      ) edge.constraints label
     ) else (
-      let label = match edge.path_prefix_end with
-      | Some prune_info -> F.asprintf "%a\n" pp_prune_info prune_info
-      | None -> "\n"
-      in
       Formula.Set.fold (fun exp acc -> 
         acc ^ (Formula.to_string exp) ^ "\n"
       ) edge.formulas label

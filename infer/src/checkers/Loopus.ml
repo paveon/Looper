@@ -436,24 +436,34 @@ module CFG = ProcCfg.NormalOneInstrPerNode
             let norm = Exp.Set.min_elt !unprocessed_norms in
             unprocessed_norms := Exp.Set.remove norm !unprocessed_norms;
             processed_norms := Exp.Set.add norm !processed_norms;
-            graph_edges := Domain.LTS.EdgeSet.map (fun edge -> 
-              let test = norm in
-              edge
-            ) !graph_edges;
-            ()
+            match norm with
+            | Exp.BinOp _ -> (
+              log "[PROCESSING NORM] %a\n" Exp.pp norm;
+              graph_edges := Domain.LTS.EdgeSet.map (fun (src, edge_data, dst) -> 
+                let edge_data, new_norms = Domain.GraphEdge.derive_constraints edge_data norm in
+
+                (* Remove duplicate norms and add new norms to unprocessed set *)
+                let new_norms = Exp.Set.diff new_norms (Exp.Set.inter new_norms !processed_norms) in
+                if not (Exp.Set.is_empty new_norms) then (
+                  log "[NEW NORMS] ";
+                  Exp.Set.iter (fun exp -> 
+                    log "%a " Exp.pp exp;
+                  ) new_norms;
+                  log "\n";
+                );
+                unprocessed_norms := Exp.Set.union new_norms !unprocessed_norms;
+                (src, edge_data, dst)
+              ) !graph_edges;
+            )
+            | _ -> () (* Ignore other norms for now *)
           ) done;
-          (* let final_norms = Domain.LTS.EdgeSet.fold (fun (src, edge_data, dst) acc ->
-            let edge_data, norms = Exp.Set.fold (fun norm acc -> 
-              Domain.GraphEdge.derive_constraints acc norm
-            ) post.initial_norms (edge_data, Exp.Set.empty)
-            in
-            Domain.LTS.add_edge_e dcp (src, edge_data, dst);
-            Exp.Set.union acc norms
-          ) post.graph_edges post.initial_norms
-          in
+
+          Domain.LTS.EdgeSet.iter (fun edge ->
+            Domain.LTS.add_edge_e dcp edge;
+          ) !graph_edges;
 
           log "[FINAL NORMS]\n";
-          Exp.Set.iter (fun norm -> log "  %a\n" Exp.pp norm) final_norms; *)
+          Exp.Set.iter (fun norm -> log "  %a\n" Exp.pp norm) !processed_norms;
 
           let file = Out_channel.create "test_dcp.dot" in
           let () = Domain.Dot.output_graph file dcp in
