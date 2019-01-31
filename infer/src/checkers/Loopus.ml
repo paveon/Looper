@@ -1,14 +1,4 @@
 open! IStd
-open Z3
-open Z3.Symbol
-open Z3.Sort
-open Z3.Expr
-open Z3.Boolean
-open Z3.FuncDecl
-open Z3.Tactic
-open Z3.Tactic.ApplyResult
-open Z3.Probe
-open Z3.Arithmetic
 
 module F = Format
 module L = Logging
@@ -96,8 +86,9 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
         let newLocSet = LocSet.add loc astate.branchLocs in
         let newEdge = Edge.set_end astate.current_edge lts_loc in
 
-        let missing_formulas = generate_missing_formulas astate in
-        let formulas = Formula.Set.union astate.edge_formulas missing_formulas in
+        let edge_data = GraphEdge.add_invariants astate.edge_data (get_unmodified_pvars astate) in
+        (* let missing_formulas = generate_missing_assignments astate in *)
+        (* let formulas = Assignment.Set.union astate.edge_assignments missing_formulas in *)
 
         let prune_node = GraphNode.make lts_loc in
         let lhs = astate.aggregate_join.lhs in
@@ -120,25 +111,36 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
         ) else (
           (* Add all accumulated edges pointing to aggregated join node and
            * new edge pointing from aggregated join node to this prune node *)
-
-          let path_end = List.last astate.branchingPath in
-          let edge_data = GraphEdge.make formulas path_end in
-          let new_lts_edge = LTS.E.create astate.last_node edge_data prune_node in
-          let graph_edges = LTS.EdgeSet.add new_lts_edge astate.graph_edges in
-          let graph_edges = LTS.EdgeSet.union astate.aggregate_join.edges graph_edges in
-          graph_edges, graph_nodes
+          let edge_count = AggregateJoin.edge_count astate.aggregate_join in
+          let is_empty_edge = GraphEdge.equal astate.edge_data GraphEdge.empty in
+          if not (is_loop_prune kind) && Int.equal edge_count 2 && is_empty_edge then (
+            let graph_edges = LTS.EdgeSet.map (fun (src, data, dst) -> 
+              (src, data, prune_node)
+            ) astate.aggregate_join.edges
+            in
+            let graph_nodes = LTS.NodeSet.remove astate.last_node graph_nodes in
+            (LTS.EdgeSet.union astate.graph_edges graph_edges), graph_nodes
+          ) else (
+            let path_end = List.last astate.branchingPath in
+            let edge_data = GraphEdge.set_path_end edge_data path_end in
+            let new_lts_edge = LTS.E.create astate.last_node edge_data prune_node in
+            let graph_edges = LTS.EdgeSet.add new_lts_edge astate.graph_edges in
+            let graph_edges = LTS.EdgeSet.union astate.aggregate_join.edges graph_edges in
+            graph_edges, graph_nodes
+          );
         )
         in
 
+        let zero_exp = Exp.Const (Const.Cint IntLit.zero) in
         let pvar_condition = substitute_pvars cond in
-        let prune_formula = match pvar_condition with
-        | Exp.BinOp (op, lexp, rexp) -> (lexp, Formula.Binop op, rexp)
+        let prune_condition = match pvar_condition with
+        | Exp.BinOp _ -> pvar_condition
         | Exp.UnOp (LNot, exp, _) -> (
           (* Currently handles only "!exp" *)
           match exp with
           | Exp.BinOp (op, lexp, rexp) -> (
             (* Handles "!(lexp BINOP rexp)" *)
-            let negate_binop binop = match binop with
+            let negate_binop = match op with
             | Binop.Lt -> Binop.Ge
             | Binop.Gt -> Binop.Le
             | Binop.Le -> Binop.Gt
@@ -147,15 +149,12 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
             | Binop.Ne -> Binop.Eq
             | _ -> L.(die InternalError)"Unsupported prune condition type!"
             in
-            (lexp, Formula.Binop (negate_binop op), rexp)
+            Exp.BinOp (negate_binop, lexp, rexp)
           )
-          | Exp.Const const -> (
-            (* Handles "!CONST" *)
-            (Exp.Const const, Formula.Binop Binop.Eq, Exp.Const (Const.Cint IntLit.zero))
-          )
+          | Exp.Const const -> Exp.BinOp (Binop.Eq, Exp.Const const, zero_exp)
           | _ -> L.(die InternalError)"Unsupported prune condition type!"
         )
-        | Exp.Const _ -> (cond, Formula.Binop Binop.Ne, Exp.Const (Const.Cint IntLit.zero))
+        | Exp.Const const -> Exp.BinOp (Binop.Ne, Exp.Const const, zero_exp)
         | _ -> L.(die InternalError)"Unsupported prune condition type!"
         in
 
@@ -172,9 +171,12 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
         ) else astate.tracked_formals
         in
 
+        (* Derive norm from prune condition.
+         * [x > y] -> [x - y] > 0
+         * [x >= y] -> [x - y + 1] > 0 *)
         let norms = if branch && is_loop_prune kind then (
-          match prune_formula with
-          | (lexp, Formula.Binop op, rexp) -> (
+          match prune_condition with
+          | Exp.BinOp (op, lexp, rexp) -> (
             match op with
             | Binop.Lt -> Exp.Set.add (Exp.BinOp (Binop.MinusA, rexp, lexp)) astate.initial_norms
             | Binop.Le -> (
@@ -196,8 +198,8 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
         )
         in
 
-
-        let formulas = Formula.Set.add (prune_formula) Formula.Set.empty in
+        let edge_data = GraphEdge.add_condition GraphEdge.empty prune_condition in
+        (* let formulas = Formula.Set.add (prune_formula) Formula.Set.empty in *)
         { astate with
           branchingPath = astate.branchingPath @ [(kind, branch, loc)];
           branchLocs = newLocSet; 
@@ -208,7 +210,7 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
           initial_norms = norms;
           tracked_formals = tracked_formals;
           modified_pvars = PvarSet.empty;
-          edge_formulas = formulas;
+          edge_data = edge_data;
           last_node = prune_node;
           graph_nodes = graph_nodes;
           graph_edges = graph_edges;
@@ -248,14 +250,12 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
 
           let exit_node = GraphNode.make LTSLocation.Exit in
           let path_end = List.last astate.branchingPath in
-          let edge_data = GraphEdge.make astate.edge_formulas path_end in
+          let edge_data = GraphEdge.set_path_end astate.edge_data path_end in
           let new_lts_edge = LTS.E.create astate.last_node edge_data exit_node in
           let graph_edges = LTS.EdgeSet.add new_lts_edge astate.graph_edges in
-          let graph_edges = LTS.EdgeSet.union astate.aggregate_join.edges graph_edges in
-          let graph_nodes = LTS.NodeSet.add exit_node astate.graph_nodes in
           { astate with
-            graph_nodes = graph_nodes;
-            graph_edges = graph_edges;
+            graph_nodes = LTS.NodeSet.add exit_node astate.graph_nodes;
+            graph_edges = LTS.EdgeSet.union astate.aggregate_join.edges graph_edges;
           }
         ) else (
           astate
@@ -265,23 +265,6 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
     | Store (lexp, _expType, rexp, loc) ->
       (
         log "[STORE] (%a) | %a = %a | %B\n" Location.pp loc Exp.pp lexp Exp.pp rexp is_pvar_decl_node;
-        (* let find_formula_rhs lhs_pvar = 
-          let rhs_set = Formula.Set.filter (fun formula -> 
-            match formula with 
-            | (Exp.Lvar lexp_pvar, Formula.Assignment, rexp) when Pvar.equal lhs_pvar lexp_pvar -> true
-            | _ -> false
-          ) astate.edge_formulas
-          in
-          Formula.Set.min_elt_opt rhs_set
-        in *)
-
-        let find_formula_rhs lexp = Formula.Set.fold (fun formula acc -> 
-            match formula with 
-            | (lhs, Formula.Assignment, rexp) when Exp.equal lexp lhs -> rexp
-            | _ -> acc
-          ) astate.edge_formulas lexp 
-        in
-
         let pvar_rexp = substitute_pvars rexp in
 
         (* Substitute rexp based on previous assignments, 
@@ -289,8 +272,7 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
         let pvar_rexp = match pvar_rexp with
         | Exp.BinOp (Binop.PlusA, Exp.Lvar lexp, Exp.Const (Const.Cint c1)) -> (
           (* [BINOP] PVAR + CONST *)
-          let formula_rhs = find_formula_rhs (Exp.Lvar lexp) in
-          match formula_rhs with
+          match (GraphEdge.get_assignment_rhs astate.edge_data (Exp.Lvar lexp)) with
           | Exp.BinOp (Binop.PlusA, lexp, Exp.Const (Const.Cint c2)) -> (
             (* [BINOP] (PVAR + C1) + C2 -> PVAR + (C1 + C2) *)
             let const = Exp.Const (Const.Cint (IntLit.add c1 c2)) in
@@ -299,24 +281,15 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
           | _ -> pvar_rexp
         )
         | Exp.Lvar rhs_pvar -> (
-          let rhs_pvar = Formula.Set.fold (fun formula acc -> 
-            match formula with 
-            | (Exp.Lvar lexp_pvar, Formula.Assignment, Exp.Lvar rexp_pvar) when Pvar.equal rhs_pvar lexp_pvar -> rexp_pvar
-            | _ -> acc
-          ) astate.edge_formulas rhs_pvar in
-          Exp.Lvar rhs_pvar
+          GraphEdge.get_assignment_rhs astate.edge_data (Exp.Lvar rhs_pvar)
         )
         | _ -> pvar_rexp
         in
 
-        (* Check if set already contains assignment formula
-         * with specified lhs and replace it with updated formulas if so *)
-        let formulas = Formula.Set.filter (function
-          | (lhs, Formula.Assignment, _) when Exp.equal lexp lhs -> false
-          | _ -> true
-        ) astate.edge_formulas
-        in
-        let formulas = Formula.Set.add (lexp, Formula.Assignment, pvar_rexp) formulas in
+        (* Check if set already contains assignment with specified
+         * lhs and replace it with updated formulas if so. Needed
+         * when one edge contains multiple assignments to single variable *)
+        let edge_data = GraphEdge.add_assignment astate.edge_data (lexp, pvar_rexp) in
 
         let modified_pvars = match lexp with
         | Exp.Lvar pvar -> PvarSet.add pvar astate.modified_pvars
@@ -326,7 +299,7 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
         let edge = Edge.add_modified astate.current_edge pvars in
         { astate with 
           current_edge = edge; 
-          edge_formulas = formulas; 
+          edge_data = edge_data;
           modified_pvars = modified_pvars;
         }
       )
@@ -367,12 +340,16 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
 
 
 
-let basic_tests ( ctx : context ) =
+let basic_tests ( ctx : Z3.context ) =
+  let open Z3 in
+  let open Z3.Symbol in
+  let open Z3.Boolean in
+  let open Z3.Arithmetic in
   log "BasicTests\n" ;
   (* let fname = mk_string ctx "f" in *)
   let int_sort = Integer.mk_sort ctx in
-  let len = Expr.mk_const ctx (mk_string ctx "len") int_sort in
-  let idx = Expr.mk_const ctx (mk_string ctx "idx") int_sort in
+  let len = Expr.mk_const_s ctx "len" int_sort in
+  let idx = Expr.mk_const_s ctx "idx" int_sort in
   let bs = Boolean.mk_sort ctx in
   let domain = [ bs; bs ] in
   (* let f = (FuncDecl.mk_func_decl ctx fname domain bs) in *)
@@ -396,9 +373,9 @@ let basic_tests ( ctx : context ) =
   else (
     let proof = Solver.get_proof solver in
     log "Not satisfiable\n";
-    match proof with
+    (* match proof with
     | Some expr -> log "PROOF: %s\n" (Expr.to_string expr)
-    | _ -> ();
+    | _ -> (); *)
   )
 
 
@@ -516,10 +493,10 @@ module CFG = ProcCfg.NormalOneInstrPerNode
           let () = Domain.Dot.output_graph file dcp in
           Out_channel.close file;
 
-          log "Running Z3 version %s\n" Version.to_string ;
-          log "Z3 full version string: %s\n" Version.full_version ;
+          log "Running Z3 version %s\n" Z3.Version.to_string ;
+          log "Z3 full version string: %s\n" Z3.Version.full_version ;
           let cfg = [("model", "true"); ("proof", "true")] in
-          let ctx = (mk_context cfg) in
+          let ctx = (Z3.mk_context cfg) in
           basic_tests ctx;
           log "Disposing...\n";
           Gc.full_major ();

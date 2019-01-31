@@ -38,11 +38,11 @@ module DC = struct
   type t = (Exp.t * Exp.t)
   [@@deriving compare]
 
-  let to_string (lexp, rexp) =
+  let to_string : t -> string = fun (lexp, rexp) ->
     F.asprintf "%s' <= %s" (exp_to_str lexp) (exp_to_str rexp)
     
-  let pp fmt formula = 
-    F.fprintf fmt "%s" (to_string formula)
+  let pp fmt dc = 
+    F.fprintf fmt "%s" (to_string dc)
 
   module Set = struct
     include Caml.Set.Make (struct 
@@ -66,34 +66,6 @@ module DC = struct
       )
     )
   end
-end
-
-
-module Formula = struct
-  type operator = 
-    | Binop of Binop.t
-    | Assignment
-  [@@deriving compare]
-
-  type t = (Exp.t * operator * Exp.t)
-  [@@deriving compare]
-
-  let operator_text = function
-  | Binop op -> Binop.str Pp.text op
-  | Assignment -> "="
-
-  let to_string (lexp, op, rexp) =
-    let lexp_str = exp_to_str lexp in
-    let rexp_str = exp_to_str rexp in
-    F.asprintf "%s %s %s" lexp_str (operator_text op) rexp_str
-    
-  let pp fmt formula = 
-    F.fprintf fmt "%s" (to_string formula)
-
-  module Set = Caml.Set.Make (struct
-    type nonrec t = t
-    let compare = compare
-  end)
 end
 
 
@@ -148,11 +120,51 @@ module LTSLocation = struct
   end)
 end
 
+
+module Assignment = struct
+  type t = (Exp.t * Exp.t)
+  [@@deriving compare]
+
+  type data = t
+
+  let to_string : t -> string = fun (lexp, rexp) ->
+    let lexp_str = exp_to_str lexp in
+    let rexp_str = exp_to_str rexp in
+    F.asprintf "%s = %s" lexp_str rexp_str
+    
+  let pp fmt assignment = 
+    F.fprintf fmt "%s" (to_string assignment)
+
+  module Set = struct
+    include Caml.Set.Make (struct 
+      type nonrec t = t
+      let compare = compare
+    end)
+    
+    let get_rhs : Exp.t -> t -> Exp.t = fun lhs_key set ->
+      fold (fun assignment acc -> 
+        match assignment with 
+        | (lhs, rhs) when Exp.equal lhs_key lhs -> rhs
+        | _ -> acc
+      ) set lhs_key
+
+    let add_or_replace : elt -> t -> t = fun (lhs_key, rhs) set ->
+      let set = filter (function 
+      | (lhs, _) when Exp.equal lhs_key lhs -> false
+      | _ -> true
+      ) set in
+      add (lhs_key, rhs) set
+  end
+end
+
+
 module GraphEdge = struct
   type t = {
     dcp: bool;
-    formulas: Formula.Set.t;
+    conditions: Exp.Set.t;
+    assignments: Assignment.Set.t;
     constraints: DC.Set.t;
+    guards: Exp.Set.t;
 
     (* Last element of common path prefix *)
     path_prefix_end: prune_info option; 
@@ -162,22 +174,96 @@ module GraphEdge = struct
   let equal = [%compare.equal: t]
 
 
-  let make : Formula.Set.t -> prune_info option -> t = fun formulas prefix_end -> {
+  let make : Assignment.Set.t -> prune_info option -> t = fun assignments prefix_end -> {
     dcp = false;
-    formulas = formulas;
+    conditions = Exp.Set.empty;
+    assignments = assignments;
     constraints = DC.Set.empty;
+    guards = Exp.Set.empty;
     path_prefix_end = prefix_end; 
   }
 
-  let empty = make Formula.Set.empty None
+  let empty = make Assignment.Set.empty None
 
   (* Required by Graph module interface *)
   let default = empty
 
-  let add_formula : t -> Formula.t -> t = fun edge formula ->
-    { edge with formulas = Formula.Set.add formula edge.formulas }
+  let add_condition : t -> Exp.t -> t = fun edge cond ->
+    { edge with conditions = Exp.Set.add cond edge.conditions }
+
+  let add_assignment : t -> Assignment.t -> t = fun edge assignment ->
+    { edge with assignments = Assignment.Set.add_or_replace assignment edge.assignments }
+
+  let add_invariants : t -> PvarSet.t -> t = fun edge unmodified ->
+    (* let unmodified_pvars = PvarSet.diff (PvarSet.union astate.locals astate.tracked_formals) astate.modified_pvars in *)
+    let invariants = PvarSet.fold (fun pvar acc ->
+      let pvar_exp = Exp.Lvar pvar in
+      Assignment.Set.add (pvar_exp, pvar_exp) acc
+    ) unmodified Assignment.Set.empty
+    in
+    { edge with assignments = Assignment.Set.union invariants edge.assignments }
+
+  let set_path_end : t -> prune_info option -> t = fun edge path_end ->
+    { edge with path_prefix_end = path_end }
+
+  let get_assignment_rhs : t -> Exp.t -> Exp.t = fun edge lhs_key ->
+    Assignment.Set.get_rhs lhs_key edge.assignments
+
+  let derive_guards : t -> Exp.Set.t -> Z3.context -> t = fun edge norms smt_ctx -> (
+    let int_sort = Z3.Arithmetic.Integer.mk_sort smt_ctx in
+    let cond_expressions = Exp.Set.fold (fun cond acc -> 
+      match cond with
+      | Exp.BinOp (op, Exp.Lvar lexp, Exp.Lvar rexp) -> (
+        let lexp_const = Z3.Expr.mk_const_s smt_ctx (Pvar.to_string lexp) int_sort in
+        let rexp_const = Z3.Expr.mk_const_s smt_ctx (Pvar.to_string rexp) int_sort in
+        match op with
+        | Binop.Lt -> List.append [Z3.Arithmetic.mk_lt smt_ctx lexp_const rexp_const] acc
+        | Binop.Le -> List.append [Z3.Arithmetic.mk_le smt_ctx lexp_const rexp_const] acc
+        | Binop.Gt -> List.append [Z3.Arithmetic.mk_gt smt_ctx lexp_const rexp_const] acc
+        | Binop.Ge -> List.append [Z3.Arithmetic.mk_ge smt_ctx lexp_const rexp_const] acc
+        | _ -> acc
+      )
+      | _ -> acc
+    ) edge.conditions [] 
+    in
+    let lhs = Z3.Boolean.mk_and smt_ctx cond_expressions in
+    let guards = Exp.Set.fold (fun norm acc -> 
+      let rec aux exp = match exp with
+      | Exp.Const (Const.Cint const) -> (
+        let const_value = IntLit.to_int_exn const in
+        Z3.Arithmetic.Integer.mk_numeral_i smt_ctx const_value
+      )
+      | Exp.Lvar pvar -> Z3.Expr.mk_const_s smt_ctx (Pvar.to_string pvar) int_sort
+      | Exp.BinOp (op, lexp, rexp) -> (
+        let lexp = aux lexp in
+        let rexp = aux rexp in
+        match op with
+        | Binop.MinusA -> Z3.Arithmetic.mk_sub smt_ctx [lexp; rexp]
+        | Binop.PlusA -> Z3.Arithmetic.mk_add smt_ctx [lexp; rexp]
+        | _ -> L.(die InternalError)"Norm expression contains invalid binary operator!"
+      )
+      | _ -> L.(die InternalError)"Norm expression contains invalid element!"
+      in
+      acc
+    ) norms Exp.Set.empty 
+    in
+    { edge with guards = guards }
+    (* let int_sort = Integer.mk_sort ctx in
+    let len = Expr.mk_const ctx (mk_string ctx "len") int_sort in
+    let idx = Expr.mk_const ctx (mk_string ctx "idx") int_sort in
+    let bs = Boolean.mk_sort ctx in
+    let domain = [ bs; bs ] in
+    (* let f = (FuncDecl.mk_func_decl ctx fname domain bs) in *)
+    (* let fapp = (mk_app ctx f 
+      [ (Expr.mk_const ctx x bs); (Expr.mk_const ctx y bs) ]) in *)
+    (* let rhs = mk_gt ctx (mk_sub ctx len idx) (Integer.mk_numeral_i ctx 0) in *)
+    let zero_const = Integer.mk_numeral_i ctx 0 in
+    let lhs = Arithmetic.mk_gt ctx len idx in
+    let rhs = Arithmetic.mk_gt ctx (Arithmetic.mk_sub ctx [len; idx]) zero_const in
+    let formula = mk_not ctx (mk_implies ctx lhs rhs) in *)
+  )
   
-  (* Derive difference constraints "x <= y + c" based on edge formulas *)
+  (* Derive difference constraints "x <= y + c" based on edge assignments *)
   let derive_constraints : t -> Exp.t -> (t * Exp.Set.t) = fun edge norm -> (
     let zero_norm = Exp.Const (Const.Cint IntLit.zero) in
     let dc_set = edge.constraints in
@@ -189,101 +275,101 @@ module GraphEdge = struct
     )
     | Exp.BinOp (Binop.MinusA, Exp.Lvar norm_lexp, Exp.Lvar norm_rexp) -> (
       (* Most common form of norm, obtained from condition of form [x > y] -> norm [x - y] *)
-      let lexp_assignments = Formula.Set.filter (function
-        | (Exp.Lvar formula_lhs, Formula.Assignment, _) when Pvar.equal formula_lhs norm_lexp -> true
+      let lexp_assignments = Assignment.Set.filter (function
+        | (Exp.Lvar assignment_lhs, _) when Pvar.equal assignment_lhs norm_lexp -> true
         | _ -> false
-      ) edge.formulas 
+      ) edge.assignments 
       in
-      let rexp_assignments = Formula.Set.filter (function 
-        | (Exp.Lvar formula_lhs, Formula.Assignment, _) when Pvar.equal formula_lhs norm_rexp -> true
+      let rexp_assignments = Assignment.Set.filter (function 
+        | (Exp.Lvar assignment_lhs, _) when Pvar.equal assignment_lhs norm_rexp -> true
         | _ -> false
-      ) edge.formulas 
+      ) edge.assignments 
       in
-      if Formula.Set.cardinal lexp_assignments > 1 || Formula.Set.cardinal rexp_assignments > 1 then (
-        L.(die InternalError)"Multiple formulas with same left hand side on single edge!"
+      if Assignment.Set.cardinal lexp_assignments > 1 || Assignment.Set.cardinal rexp_assignments > 1 then (
+        L.(die InternalError)"Multiple assignments to the same variable on single edge!"
       );
 
-      let lexp_assignment = Formula.Set.min_elt_opt lexp_assignments in
-      let rexp_assignment = Formula.Set.min_elt_opt rexp_assignments in
+      let lexp_assignment = Assignment.Set.min_elt_opt lexp_assignments in
+      let rexp_assignment = Assignment.Set.min_elt_opt rexp_assignments in
 
       (* Derives DCs from norm of form [x -y] *)
-      let process_binop_norm lhs formula dc_set norm_set = 
-        match formula with
-        | (Exp.Lvar formula_lhs, Formula.Assignment, formula_rhs) -> (
-          (* norm [x - y], formula [lhs = expr] *)
-          match formula_rhs with
+      let process_binop_norm lhs assignment dc_set norm_set = 
+        match assignment with
+        | (Exp.Lvar assignment_lhs, assignment_rhs) -> (
+          (* norm [x - y], assignment [lhs = expr] *)
+          match assignment_rhs with
           | Exp.BinOp (op, Exp.Lvar rhs_pvar, Exp.Const increment) -> (
-            (* norm [x - y], formula [lhs = pvar OP const] *)
-            if Pvar.equal formula_lhs rhs_pvar then (
+            (* norm [x - y], assignment [lhs = pvar OP const] *)
+            if Pvar.equal assignment_lhs rhs_pvar then (
               match op with 
               | Binop.PlusA -> (
-                (* norm [x - y], formula [x/y = x/y + const] -> [(x - y) OP const] *)
+                (* norm [x - y], assignment [x/y = x/y + const] -> [(x - y) OP const] *)
                 let operator = if lhs then Binop.PlusA else Binop.MinusA in
                 let new_dc = (norm, Exp.BinOp (operator, norm, Exp.Const increment)) in
                 DC.Set.add_checked new_dc dc_set, norm_set
               )
               | Binop.MinusA -> (
-                (* norm [x - y], formula [x/y = x/y - const] -> [(x - y) OP const] *)
+                (* norm [x - y], assignment [x/y = x/y - const] -> [(x - y) OP const] *)
                 let operator = if lhs then Binop.MinusA else Binop.PlusA in
                 let new_dc = (norm, Exp.BinOp (operator, norm, Exp.Const increment)) in
                 DC.Set.add_checked new_dc dc_set, norm_set
               )
               | _ -> dc_set, norm_set
             ) else (
-              (* norm [x - y], formula [x = z OP const] -> constant reset, TODO *)
+              (* norm [x - y], assignment [x = z OP const] -> constant reset, TODO *)
               dc_set, norm_set
             )
           )
           | Exp.Lvar rhs_pvar -> (
-            if Pvar.equal formula_lhs rhs_pvar then (
-              (* norm [x - y], formula [x/y = x/y], no change *)
+            if Pvar.equal assignment_lhs rhs_pvar then (
+              (* norm [x - y], assignment [x/y = x/y], no change *)
               DC.Set.add_checked (norm, norm) dc_set, norm_set
             ) 
             else (
               if lhs then (
                 match rexp_assignment with
-                | Some (_, _, expr) -> (
-                  if Exp.equal formula_rhs expr then (
-                    (* norm [x - y], formulas [x = var], [y = var] -> zero interval *)
+                | Some (_, expr) -> (
+                  if Exp.equal assignment_rhs expr then (
+                    (* norm [x - y], assignment [x = var], [y = var] -> zero interval *)
                     DC.Set.add_checked (norm, zero_norm) dc_set, Exp.Set.add zero_norm norm_set
                   ) else (
-                    (* norm [x - y], formulas [x = var], [y = expr] -> [var - expr] *)
-                    let new_norm = Exp.BinOp (Binop.MinusA, formula_rhs, expr) in
+                    (* norm [x - y], assignment [x = var], [y = expr] -> [var - expr] *)
+                    let new_norm = Exp.BinOp (Binop.MinusA, assignment_rhs, expr) in
                     DC.Set.add_checked (norm, new_norm) dc_set, Exp.Set.add new_norm norm_set
                   )
                 )
                 | _ -> (
                   if Pvar.equal rhs_pvar norm_rexp then (
-                    (* norm [x - y], formula [x = y], zero interval *)
+                    (* norm [x - y], assignment [x = y], zero interval *)
                     DC.Set.add_checked (norm, zero_norm) dc_set, Exp.Set.add zero_norm norm_set
                   ) else (
-                    (* norm [x - y], formula [x = z] -> [z - y] *)
+                    (* norm [x - y], assignment [x = z] -> [z - y] *)
                     (* TODO: Check if both z and y are not formals to confirm that [z - y] is truly a norm *)
-                    let new_norm = Exp.BinOp (Binop.MinusA, formula_rhs, Exp.Lvar norm_rexp) in
+                    let new_norm = Exp.BinOp (Binop.MinusA, assignment_rhs, Exp.Lvar norm_rexp) in
                     DC.Set.add (norm, new_norm) dc_set, Exp.Set.add new_norm norm_set
                   )
                 )
               )
               else (
                 match lexp_assignment with
-                | Some (_, _, expr) -> (
-                  if Exp.equal formula_rhs expr then (
-                    (* norm [x - y], formulas [y = var], [x = var] -> zero interval *)
+                | Some (_, expr) -> (
+                  if Exp.equal assignment_rhs expr then (
+                    (* norm [x - y], assignments [y = var], [x = var] -> zero interval *)
                     DC.Set.add_checked (norm, zero_norm) dc_set, Exp.Set.add zero_norm norm_set
                   ) else (
-                    (* norm [x - y], formulas [y = var], [x = expr] -> [expr - var] *)
-                    let new_norm = Exp.BinOp (Binop.MinusA, expr, formula_rhs) in
+                    (* norm [x - y], assignments [y = var], [x = expr] -> [expr - var] *)
+                    let new_norm = Exp.BinOp (Binop.MinusA, expr, assignment_rhs) in
                     DC.Set.add_checked (norm, new_norm) dc_set, Exp.Set.add new_norm norm_set
                   )
                 )
                 | _ -> (
                   if Pvar.equal rhs_pvar norm_lexp then (
-                    (* norm [x - y], formula [y = x], zero interval *)
+                    (* norm [x - y], assignment [y = x], zero interval *)
                     DC.Set.add_checked (norm, zero_norm) dc_set, Exp.Set.add zero_norm norm_set
                   ) else (
-                    (* norm [x - y], formula [y = z] -> [x - z] *)
+                    (* norm [x - y], assignment [y = z] -> [x - z] *)
                     (* TODO: Check if both x and z are not formals to confirm that [x - z] is truly a norm *)
-                    let new_norm = Exp.BinOp (Binop.MinusA, Exp.Lvar norm_lexp, formula_rhs) in
+                    let new_norm = Exp.BinOp (Binop.MinusA, Exp.Lvar norm_lexp, assignment_rhs) in
                     DC.Set.add (norm, new_norm) dc_set, Exp.Set.add new_norm norm_set
                   )
                 )
@@ -293,36 +379,36 @@ module GraphEdge = struct
           | Exp.Const (Const.Cint const) when IntLit.iszero const -> (
             if lhs then (
               match rexp_assignment with
-              | Some (_, _, expr) -> (
-                if Exp.equal formula_rhs expr then (
-                  (* norm [x - y], formulas [x = 0], [y = 0] -> [0] *)
+              | Some (_, expr) -> (
+                if Exp.equal assignment_rhs expr then (
+                  (* norm [x - y], assignments [x = 0], [y = 0] -> [0] *)
                   DC.Set.add_checked (norm, zero_norm) dc_set, Exp.Set.add zero_norm norm_set
                 ) else (
                   (* TODO: What to do here?*)
-                  (* norm [x - y], formulas [x = 0], [y = expr] -> [-expr] *)
+                  (* norm [x - y], assignments [x = 0], [y = expr] -> [-expr] *)
                   let new_norm = Exp.UnOp (Unop.Neg, expr, None) in
                   DC.Set.add_checked (norm, new_norm) dc_set, Exp.Set.add new_norm norm_set
                 )
               )
               | _ -> (
                 (* TODO: What to do here? *)
-                (* norm [x - y], formula [x = 0] -> [-y] *)
+                (* norm [x - y], assignment [x = 0] -> [-y] *)
                 let new_norm = Exp.UnOp (Unop.Neg, Exp.Lvar norm_rexp, None) in
                 DC.Set.add_checked (norm, new_norm) dc_set, Exp.Set.add new_norm norm_set
               )
             ) else (
               match lexp_assignment with
-              | Some (_, _, expr) -> (
-                if Exp.equal formula_rhs expr then (
-                  (* norm [x - y], formulas [y = 0], [x = 0] -> [0] *)
+              | Some (_, expr) -> (
+                if Exp.equal assignment_rhs expr then (
+                  (* norm [x - y], assignments [y = 0], [x = 0] -> [0] *)
                   DC.Set.add_checked (norm, zero_norm) dc_set, Exp.Set.add zero_norm norm_set
                 ) else (
-                  (* norm [x - y], formulas [y = 0], [x = expr] -> [expr] *)
+                  (* norm [x - y], assignments [y = 0], [x = expr] -> [expr] *)
                   DC.Set.add_checked (norm, expr) dc_set, Exp.Set.add expr norm_set
                 )
               )
               | _ -> (
-                (* norm [x - y], formula [y = 0] -> [x] *)
+                (* norm [x - y], assignment [y = 0] -> [x] *)
                 let new_norm = Exp.Lvar norm_lexp in
                 DC.Set.add_checked (norm, new_norm) dc_set, Exp.Set.add new_norm norm_set
               )
@@ -333,14 +419,14 @@ module GraphEdge = struct
         | _ -> dc_set, norm_set
       in
 
-      let dc_set, norm_set = if not (Formula.Set.is_empty lexp_assignments) then (
-        let formula = Formula.Set.min_elt lexp_assignments in
-        process_binop_norm true formula dc_set norm_set
+      let dc_set, norm_set = if not (Assignment.Set.is_empty lexp_assignments) then (
+        let assignment = Assignment.Set.min_elt lexp_assignments in
+        process_binop_norm true assignment dc_set norm_set
       ) else dc_set, norm_set
       in
-      let dc_set, norm_set = if not (Formula.Set.is_empty rexp_assignments) then (
-        let formula = Formula.Set.min_elt rexp_assignments in
-        process_binop_norm false formula dc_set norm_set
+      let dc_set, norm_set = if not (Assignment.Set.is_empty rexp_assignments) then (
+        let assignment = Assignment.Set.min_elt rexp_assignments in
+        process_binop_norm false assignment dc_set norm_set
       ) else dc_set, norm_set
       in
       dc_set, norm_set
@@ -422,9 +508,13 @@ module DotConfig = struct
         acc ^ (DC.to_string dc) ^ "\n"
       ) edge.constraints label
     ) else (
-      Formula.Set.fold (fun exp acc -> 
-        acc ^ (Formula.to_string exp) ^ "\n"
-      ) edge.formulas label
+      let label = Exp.Set.fold (fun condition acc ->
+        acc ^ exp_to_str condition ^ "\n"
+      ) edge.conditions label
+      in
+      Assignment.Set.fold (fun exp acc -> 
+        acc ^ (Assignment.to_string exp) ^ "\n"
+      ) edge.assignments label
     )
     in
     [`Label label; `Color 4711]
@@ -510,6 +600,8 @@ module AggregateJoin = struct
     edges = LTS.EdgeSet.empty;
   }
 
+  let edge_count : t -> int = fun node -> LTS.EdgeSet.cardinal node.edges
+
   let add_node_id : t -> int -> t = fun aggregate join_id ->
     { aggregate with join_nodes = IntSet.add join_id aggregate.join_nodes }
 
@@ -538,7 +630,7 @@ type astate = {
   locals: PvarSet.t;
   ident_map: Pvar.t Ident.Map.t;
   modified_pvars: PvarSet.t;
-  edge_formulas: Formula.Set.t;
+  edge_data: GraphEdge.t;
   graph_nodes: LTS.NodeSet.t;
   graph_edges: LTS.EdgeSet.t;
   aggregate_join: AggregateJoin.t;
@@ -563,20 +655,18 @@ let initial : LTSLocation.t -> PvarSet.t -> astate = fun beginLoc locals -> (
     locals = locals;
     ident_map = Ident.Map.empty;
     modified_pvars = PvarSet.empty;
-    edge_formulas = Formula.Set.empty;
+    edge_data = GraphEdge.empty;
     graph_nodes = LTS.NodeSet.add entryPoint LTS.NodeSet.empty;
     graph_edges = LTS.EdgeSet.empty;
     aggregate_join = AggregateJoin.initial;
   }
 )
 
-let generate_missing_formulas astate =
-  let unmodified_pvars = PvarSet.diff (PvarSet.union astate.locals astate.tracked_formals) astate.modified_pvars in
-  PvarSet.fold (fun pvar acc ->
-    let pvar_exp = Exp.Lvar pvar in
-    let formula = (pvar_exp, Formula.Assignment, pvar_exp) in
-    Formula.Set.add formula acc
-  ) unmodified_pvars Formula.Set.empty
+let get_tracked_pvars : astate -> PvarSet.t = fun astate ->
+  PvarSet.union astate.locals astate.tracked_formals
+
+let get_unmodified_pvars : astate -> PvarSet.t = fun astate ->
+  PvarSet.diff (get_tracked_pvars astate) astate.modified_pvars
 
 let is_loop_prune : Sil.if_kind -> bool = function
   | Ik_dowhile | Ik_for | Ik_while -> true
@@ -671,8 +761,11 @@ let join : astate -> astate -> astate = fun lhs rhs ->
         join_state.aggregate_join
       ) else (
         (* Add edge from non-join node to current set of edges pointing to aggregated join node *)
-        let formulas = Formula.Set.union other_state.edge_formulas (generate_missing_formulas other_state) in
-        let edge_data = GraphEdge.make formulas (List.last other_state.branchingPath) in
+        let unmodified = get_unmodified_pvars other_state in
+        let edge_data = GraphEdge.add_invariants other_state.edge_data unmodified in
+        let edge_data = GraphEdge.set_path_end edge_data (List.last other_state.branchingPath) in
+        (* let assignments = Assignment.Set.union other_state.edge_assignments (generate_missing_assignments other_state) in *)
+        (* let edge_data = GraphEdge.make assignments (List.last other_state.branchingPath) in *)
         let lts_edge = LTS.E.create other_state.last_node edge_data join_state.last_node in
         let aggregate_join = AggregateJoin.add_edge join_state.aggregate_join lts_edge in
         aggregate_join
@@ -683,10 +776,14 @@ let join : astate -> astate -> astate = fun lhs rhs ->
   ) else (
     (* First join in a row, create new join node and join info *)
     let join_node = GraphNode.make join_location in
-    let lhs_formulas = Formula.Set.union lhs.edge_formulas (generate_missing_formulas lhs) in
-    let rhs_formulas = Formula.Set.union rhs.edge_formulas (generate_missing_formulas rhs) in
-    let lhs_edge_data = GraphEdge.make lhs_formulas (List.last lhs_path) in
-    let rhs_edge_data = GraphEdge.make rhs_formulas (List.last rhs_path) in
+    let lhs_edge_data = GraphEdge.add_invariants lhs.edge_data (get_unmodified_pvars lhs) in
+    let lhs_edge_data = GraphEdge.set_path_end lhs_edge_data (List.last lhs_path) in
+    let rhs_edge_data = GraphEdge.add_invariants rhs.edge_data (get_unmodified_pvars rhs) in
+    let rhs_edge_data = GraphEdge.set_path_end rhs_edge_data (List.last rhs_path) in
+    (* let lhs_assignments = Assignment.Set.union lhs.edge_assignments (generate_missing_assignments lhs) in *)
+    (* let rhs_assignments = Assignment.Set.union rhs.edge_assignments (generate_missing_assignments rhs) in *)
+    (* let lhs_edge_data = GraphEdge.make lhs_assignments (List.last lhs_path) in *)
+    (* let rhs_edge_data = GraphEdge.make rhs_assignments (List.last rhs_path) in *)
     let lhs_lts_edge = LTS.E.create lhs.last_node lhs_edge_data join_node in
     let rhs_lts_edge = LTS.E.create rhs.last_node rhs_edge_data join_node in
     let aggregate_join =  AggregateJoin.make join_id lhs.lastLoc rhs.lastLoc in
@@ -725,7 +822,7 @@ let join : astate -> astate -> astate = fun lhs rhs ->
     locals = lhs.locals;
     modified_pvars = PvarSet.empty;
     ident_map = ident_map;
-    edge_formulas = Formula.Set.empty;
+    edge_data = GraphEdge.empty;
     last_node = join_node;
     graph_nodes = LTS.NodeSet.add join_node graph_nodes;
     graph_edges = graph_edges;
