@@ -1,4 +1,15 @@
 open! IStd
+open Z3
+open Z3.Symbol
+open Z3.Sort
+open Z3.Expr
+open Z3.Boolean
+open Z3.FuncDecl
+open Z3.Tactic
+open Z3.Tactic.ApplyResult
+open Z3.Probe
+open Z3.Arithmetic
+
 module F = Format
 module L = Logging
 module Domain = LoopusDomain
@@ -355,6 +366,42 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
  end
 
 
+
+let basic_tests ( ctx : context ) =
+  log "BasicTests\n" ;
+  (* let fname = mk_string ctx "f" in *)
+  let int_sort = Integer.mk_sort ctx in
+  let len = Expr.mk_const ctx (mk_string ctx "len") int_sort in
+  let idx = Expr.mk_const ctx (mk_string ctx "idx") int_sort in
+  let bs = Boolean.mk_sort ctx in
+  let domain = [ bs; bs ] in
+  (* let f = (FuncDecl.mk_func_decl ctx fname domain bs) in *)
+  (* let fapp = (mk_app ctx f 
+		[ (Expr.mk_const ctx x bs); (Expr.mk_const ctx y bs) ]) in *)
+  (* let rhs = mk_gt ctx (mk_sub ctx len idx) (Integer.mk_numeral_i ctx 0) in *)
+  let zero_const = Integer.mk_numeral_i ctx 0 in
+  let lhs = Arithmetic.mk_gt ctx len idx in
+  let rhs = Arithmetic.mk_gt ctx (Arithmetic.mk_sub ctx [len; idx]) zero_const in
+  let formula = mk_not ctx (mk_implies ctx lhs rhs) in
+  (* let g = (Goal.mk_goal ctx true false false) in
+  (Goal.add g [ formula ]) ;
+  log "%s\n" ("Goal: " ^ (Goal.to_string g)) ; *)
+  let solver = (Solver.mk_solver ctx None) in
+  (* let formulas = Goal.get_formulas g in *)
+  Solver.add solver [formula];
+  (* (List.iter (fun a -> (Solver.add solver [ a ])) (get_formulas g)) ; *)
+  let solve_status = Solver.check solver [] in
+  if phys_equal solve_status Solver.SATISFIABLE then
+    log "Satisfiable\n"
+  else (
+    let proof = Solver.get_proof solver in
+    log "Not satisfiable\n";
+    match proof with
+    | Some expr -> log "PROOF: %s\n" (Expr.to_string expr)
+    | _ -> ();
+  )
+
+
 module CFG = ProcCfg.NormalOneInstrPerNode
 (* module CFG = ProcCfg.Normal *)
   module Analyzer = AbstractInterpreter.Make (CFG) (TransferFunctions)
@@ -468,6 +515,14 @@ module CFG = ProcCfg.NormalOneInstrPerNode
           let file = Out_channel.create "test_dcp.dot" in
           let () = Domain.Dot.output_graph file dcp in
           Out_channel.close file;
+
+          log "Running Z3 version %s\n" Version.to_string ;
+          log "Z3 full version string: %s\n" Version.full_version ;
+          let cfg = [("model", "true"); ("proof", "true")] in
+          let ctx = (mk_context cfg) in
+          basic_tests ctx;
+          log "Disposing...\n";
+          Gc.full_major ();
 
           Payload.update_summary post summary
         ) 
