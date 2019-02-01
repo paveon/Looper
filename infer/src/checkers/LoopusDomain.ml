@@ -651,7 +651,7 @@ type astate = {
   aggregate_join: AggregateJoin.t;
 }
 
-let initial : LTSLocation.t -> PvarSet.t -> astate = fun beginLoc locals -> (
+let initial : LTSLocation.t -> astate = fun beginLoc -> (
   let entryPoint = GraphNode.make beginLoc in
   {
     last_node = entryPoint;
@@ -667,7 +667,7 @@ let initial : LTSLocation.t -> PvarSet.t -> astate = fun beginLoc locals -> (
 
     initial_norms = Exp.Set.empty;
     tracked_formals = PvarSet.empty;
-    locals = locals;
+    locals = PvarSet.empty;
     ident_map = Ident.Map.empty;
     modified_pvars = PvarSet.empty;
     edge_data = GraphEdge.empty;
@@ -789,15 +789,29 @@ let join : astate -> astate -> astate = fun lhs rhs ->
   ) else (
     (* First join in a row, create new join node and join info *)
     let join_node = GraphNode.make join_location in
-    let lhs_edge_data = GraphEdge.add_invariants lhs.edge_data (get_unmodified_pvars lhs) in
-    let lhs_edge_data = GraphEdge.set_path_end lhs_edge_data (List.last lhs_path) in
-    let rhs_edge_data = GraphEdge.add_invariants rhs.edge_data (get_unmodified_pvars rhs) in
-    let rhs_edge_data = GraphEdge.set_path_end rhs_edge_data (List.last rhs_path) in
-    let lhs_lts_edge = LTS.E.create lhs.last_node lhs_edge_data join_node in
-    let rhs_lts_edge = LTS.E.create rhs.last_node rhs_edge_data join_node in
     let aggregate_join =  AggregateJoin.make join_id lhs.lastLoc rhs.lastLoc in
-    let aggregate_join = AggregateJoin.add_edge aggregate_join lhs_lts_edge in
-    let aggregate_join = AggregateJoin.add_edge aggregate_join rhs_lts_edge in
+    let aggregate_join = match lhs.last_node.location with
+    | LTSLocation.Start _ -> (
+      aggregate_join
+    )
+    | _ -> (
+      let lhs_edge_data = GraphEdge.add_invariants lhs.edge_data (get_unmodified_pvars lhs) in
+      let lhs_edge_data = GraphEdge.set_path_end lhs_edge_data (List.last lhs_path) in
+      let lhs_lts_edge = LTS.E.create lhs.last_node lhs_edge_data join_node in
+      AggregateJoin.add_edge aggregate_join lhs_lts_edge
+    )
+    in
+    let aggregate_join = match rhs.last_node.location with
+    | LTSLocation.Start _ -> (
+      aggregate_join
+    )
+    | _ -> (
+      let rhs_edge_data = GraphEdge.add_invariants rhs.edge_data (get_unmodified_pvars rhs) in
+      let rhs_edge_data = GraphEdge.set_path_end rhs_edge_data (List.last rhs_path) in
+      let rhs_lts_edge = LTS.E.create rhs.last_node rhs_edge_data join_node in
+      AggregateJoin.add_edge aggregate_join rhs_lts_edge
+    )
+    in
     join_node, aggregate_join
   )
   in
@@ -828,7 +842,7 @@ let join : astate -> astate -> astate = fun lhs rhs ->
 
     initial_norms = Exp.Set.union lhs.initial_norms rhs.initial_norms;
     tracked_formals = PvarSet.union lhs.tracked_formals rhs.tracked_formals;
-    locals = lhs.locals;
+    locals = PvarSet.inter lhs.locals rhs.locals;
     modified_pvars = PvarSet.empty;
     ident_map = ident_map;
     edge_data = GraphEdge.empty;

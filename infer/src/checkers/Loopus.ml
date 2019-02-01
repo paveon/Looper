@@ -114,6 +114,16 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
           let edge_count = AggregateJoin.edge_count astate.aggregate_join in
           let is_empty_edge = GraphEdge.equal astate.edge_data GraphEdge.empty in
           if not (is_loop_prune kind) && Int.equal edge_count 2 && is_empty_edge then (
+            (* LTS simplification, skip simple JOIN node and redirect edges pointing to it *)
+            let graph_edges = LTS.EdgeSet.map (fun (src, data, dst) -> 
+              (src, data, prune_node)
+            ) astate.aggregate_join.edges
+            in
+            let graph_nodes = LTS.NodeSet.remove astate.last_node graph_nodes in
+            (LTS.EdgeSet.union astate.graph_edges graph_edges), graph_nodes
+          ) else if Int.equal edge_count 1 then (
+            (* JOIN node with single incoming edge (useless node).
+             * Redirect incoming edge to prune node and delete join node *)
             let graph_edges = LTS.EdgeSet.map (fun (src, data, dst) -> 
               (src, data, prune_node)
             ) astate.aggregate_join.edges
@@ -290,18 +300,25 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
          * lhs and replace it with updated formulas if so. Needed
          * when one edge contains multiple assignments to single variable *)
         let edge_data = GraphEdge.add_assignment astate.edge_data (lexp, pvar_rexp) in
-
-        let modified_pvars = match lexp with
-        | Exp.Lvar pvar -> PvarSet.add pvar astate.modified_pvars
-        | _ -> astate.modified_pvars
-        in
-        let pvars = Sequence.append (Exp.program_vars lexp) (Exp.program_vars rexp) in
-        let edge = Edge.add_modified astate.current_edge pvars in
-        { astate with 
-          current_edge = edge; 
-          edge_data = edge_data;
-          modified_pvars = modified_pvars;
-        }
+        let astate = {astate with edge_data = edge_data} in
+        match lexp with
+        | Exp.Lvar assigned_pvar -> (
+          let locals = if is_pvar_decl_node then (
+            PvarSet.add assigned_pvar astate.locals
+          ) else (
+            astate.locals
+          )
+          in
+          let pvars = Sequence.append (Exp.program_vars lexp) (Exp.program_vars rexp) in
+          let edge = Edge.add_modified astate.current_edge pvars in
+          { astate with 
+            current_edge = edge;
+            locals = locals;
+            edge_data = edge_data;
+            modified_pvars = PvarSet.add assigned_pvar astate.modified_pvars;
+          }
+        )
+        | _ -> astate
       )
 
     | Load (ident, lexp, _typ, loc) ->
@@ -419,7 +436,7 @@ module CFG = ProcCfg.NormalOneInstrPerNode
       let extras = (locals, formals) in
       let proc_data = ProcData.make proc_desc tenv extras in
       let begin_loc = Domain.LTSLocation.Start beginLoc in
-      let initial_state = Domain.initial begin_loc locals in
+      let initial_state = Domain.initial begin_loc in
       match Analyzer.compute_post proc_data ~initial:initial_state with
       | Some post ->
         (
