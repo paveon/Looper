@@ -389,9 +389,6 @@ module CFG = ProcCfg.NormalOneInstrPerNode
       log "\n- ANALYZING %s" (Typ.Procname.to_simplified_string proc_name);
       log "\n---------------------------------\n";
       log " Begin location: %a\n" Location.pp beginLoc;
-
-      let locals = Procdesc.get_locals proc_desc in
-      List.iter locals ~f:(fun local -> log "%a\n" Procdesc.pp_local local);
       (* Procdesc.pp_local locals; *)
 
       (* let reportBugs : Domain.astate -> unit = fun post ->
@@ -412,8 +409,9 @@ module CFG = ProcCfg.NormalOneInstrPerNode
         Domain.PvarSet.add formal_pvar acc
       )
       in
-      let locals_list = Procdesc.get_locals proc_desc in
+      let locals = Procdesc.get_locals proc_desc in
       let locals = List.fold locals ~init:Domain.PvarSet.empty ~f:(fun acc (local : ProcAttributes.var_data) ->
+        log "%a\n" Procdesc.pp_local local;
         let pvar = Pvar.mk local.name proc_name in
         Domain.PvarSet.add pvar acc
       )
@@ -452,7 +450,9 @@ module CFG = ProcCfg.NormalOneInstrPerNode
           ) post.graph_nodes;
 
 
-          (* Much easier to implement and more readable in imperative style *)
+          (* Much easier to implement and more readable in imperative style.
+           * Derive difference constrains for each edge for each norm and
+           * add newly created norms unprocessed_norms set during the process *)
           let unprocessed_norms = ref post.initial_norms in
           let processed_norms = ref Exp.Set.empty in
           let graph_edges = ref post.graph_edges in
@@ -482,9 +482,25 @@ module CFG = ProcCfg.NormalOneInstrPerNode
             | _ -> () (* Ignore other norms for now *)
           ) done;
 
+          (* All DCs and norms are derived, now derive guards.
+           * Use Z3 SMT solver to check which norms on which
+           * transitions are guaranted to be greater than 0
+           * based on conditions that hold on specified transition.
+           * For example if transition is guarded by conditions
+           * [x >= 0] and [y > x] then we can prove that
+           * norm [x + y] > 0 thus it is a guard on this transition *)
+          let cfg = [("model", "true"); ("proof", "true")] in
+          let ctx = (Z3.mk_context cfg) in
+          let solver = (Z3.Solver.mk_solver ctx None) in
+          let graph_edges = Domain.LTS.EdgeSet.map (fun (src, data, dst) -> 
+            let guarded = Domain.GraphEdge.derive_guards data !processed_norms solver ctx in
+            (src, guarded, dst)
+          ) !graph_edges
+          in
+
           Domain.LTS.EdgeSet.iter (fun edge ->
             Domain.LTS.add_edge_e dcp edge;
-          ) !graph_edges;
+          ) graph_edges;
 
           log "[FINAL NORMS]\n";
           Exp.Set.iter (fun norm -> log "  %a\n" Exp.pp norm) !processed_norms;
@@ -492,14 +508,6 @@ module CFG = ProcCfg.NormalOneInstrPerNode
           let file = Out_channel.create "test_dcp.dot" in
           let () = Domain.Dot.output_graph file dcp in
           Out_channel.close file;
-
-          log "Running Z3 version %s\n" Z3.Version.to_string ;
-          log "Z3 full version string: %s\n" Z3.Version.full_version ;
-          let cfg = [("model", "true"); ("proof", "true")] in
-          let ctx = (Z3.mk_context cfg) in
-          basic_tests ctx;
-          log "Disposing...\n";
-          Gc.full_major ();
 
           Payload.update_summary post summary
         ) 

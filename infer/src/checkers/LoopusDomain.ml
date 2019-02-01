@@ -195,7 +195,6 @@ module GraphEdge = struct
     { edge with assignments = Assignment.Set.add_or_replace assignment edge.assignments }
 
   let add_invariants : t -> PvarSet.t -> t = fun edge unmodified ->
-    (* let unmodified_pvars = PvarSet.diff (PvarSet.union astate.locals astate.tracked_formals) astate.modified_pvars in *)
     let invariants = PvarSet.fold (fun pvar acc ->
       let pvar_exp = Exp.Lvar pvar in
       Assignment.Set.add (pvar_exp, pvar_exp) acc
@@ -209,7 +208,7 @@ module GraphEdge = struct
   let get_assignment_rhs : t -> Exp.t -> Exp.t = fun edge lhs_key ->
     Assignment.Set.get_rhs lhs_key edge.assignments
 
-  let derive_guards : t -> Exp.Set.t -> Z3.context -> t = fun edge norms smt_ctx -> (
+  let derive_guards : t -> Exp.Set.t -> Z3.Solver.solver -> Z3.context -> t = fun edge norms solver smt_ctx -> (
     let int_sort = Z3.Arithmetic.Integer.mk_sort smt_ctx in
     let cond_expressions = Exp.Set.fold (fun cond acc -> 
       match cond with
@@ -226,41 +225,53 @@ module GraphEdge = struct
       | _ -> acc
     ) edge.conditions [] 
     in
-    let lhs = Z3.Boolean.mk_and smt_ctx cond_expressions in
-    let guards = Exp.Set.fold (fun norm acc -> 
-      let rec aux exp = match exp with
-      | Exp.Const (Const.Cint const) -> (
-        let const_value = IntLit.to_int_exn const in
-        Z3.Arithmetic.Integer.mk_numeral_i smt_ctx const_value
-      )
-      | Exp.Lvar pvar -> Z3.Expr.mk_const_s smt_ctx (Pvar.to_string pvar) int_sort
-      | Exp.BinOp (op, lexp, rexp) -> (
-        let lexp = aux lexp in
-        let rexp = aux rexp in
-        match op with
-        | Binop.MinusA -> Z3.Arithmetic.mk_sub smt_ctx [lexp; rexp]
-        | Binop.PlusA -> Z3.Arithmetic.mk_add smt_ctx [lexp; rexp]
-        | _ -> L.(die InternalError)"Norm expression contains invalid binary operator!"
-      )
-      | _ -> L.(die InternalError)"Norm expression contains invalid element!"
+    if List.is_empty cond_expressions then (
+      edge
+    ) else (
+      let lhs = Z3.Boolean.mk_and smt_ctx cond_expressions in
+      let zero_const = Z3.Arithmetic.Integer.mk_numeral_i smt_ctx 0 in
+      let guards = Exp.Set.fold (fun norm acc -> 
+        match norm with
+        | Exp.BinOp _ -> (
+          let rec exp_to_z3_expr exp = match exp with
+          | Exp.Const (Const.Cint const) -> (
+            let const_value = IntLit.to_int_exn const in
+            Z3.Arithmetic.Integer.mk_numeral_i smt_ctx const_value
+          )
+          | Exp.Lvar pvar -> Z3.Expr.mk_const_s smt_ctx (Pvar.to_string pvar) int_sort
+          | Exp.BinOp (op, lexp, rexp) -> (
+            let lexp = exp_to_z3_expr lexp in
+            let rexp = exp_to_z3_expr rexp in
+            match op with
+            | Binop.MinusA -> Z3.Arithmetic.mk_sub smt_ctx [lexp; rexp]
+            | Binop.PlusA -> Z3.Arithmetic.mk_add smt_ctx [lexp; rexp]
+            | _ -> L.(die InternalError)"Norm expression contains invalid binary operator!"
+          )
+          | _ -> L.(die InternalError)"Norm expression contains invalid element!"
+          in
+          let rhs = Z3.Arithmetic.mk_gt smt_ctx (exp_to_z3_expr norm) zero_const in
+          let formula = Z3.Boolean.mk_not smt_ctx (Z3.Boolean.mk_implies smt_ctx lhs rhs) in
+          let goal = (Z3.Goal.mk_goal smt_ctx true false false) in
+          Z3.Goal.add goal [formula];
+          Z3.Solver.reset solver;
+          Z3.Solver.add solver (Z3.Goal.get_formulas goal);
+          (* L.stdout "%s\n" ("Goal: " ^ (Z3.Goal.to_string goal)); *)
+          let solve_status = Z3.Solver.check solver [] in
+          if phys_equal solve_status Z3.Solver.UNSATISFIABLE then (
+            (* L.stdout "[STATUS] Not satisfiable\n"; *)
+            (* Implication [conditions] => [norm > 0] always holds *)
+            Exp.Set.add norm acc
+          )
+          else (
+            (* L.stdout "[STATUS] Satisfiable\n"; *)
+            acc
+          )
+        )
+        | _ -> acc
+      ) norms Exp.Set.empty 
       in
-      acc
-    ) norms Exp.Set.empty 
-    in
-    { edge with guards = guards }
-    (* let int_sort = Integer.mk_sort ctx in
-    let len = Expr.mk_const ctx (mk_string ctx "len") int_sort in
-    let idx = Expr.mk_const ctx (mk_string ctx "idx") int_sort in
-    let bs = Boolean.mk_sort ctx in
-    let domain = [ bs; bs ] in
-    (* let f = (FuncDecl.mk_func_decl ctx fname domain bs) in *)
-    (* let fapp = (mk_app ctx f 
-      [ (Expr.mk_const ctx x bs); (Expr.mk_const ctx y bs) ]) in *)
-    (* let rhs = mk_gt ctx (mk_sub ctx len idx) (Integer.mk_numeral_i ctx 0) in *)
-    let zero_const = Integer.mk_numeral_i ctx 0 in
-    let lhs = Arithmetic.mk_gt ctx len idx in
-    let rhs = Arithmetic.mk_gt ctx (Arithmetic.mk_sub ctx [len; idx]) zero_const in
-    let formula = mk_not ctx (mk_implies ctx lhs rhs) in *)
+      { edge with guards = guards }
+    );
   )
   
   (* Derive difference constraints "x <= y + c" based on edge assignments *)
@@ -504,6 +515,10 @@ module DotConfig = struct
     in
 
     let label = if edge.dcp then (
+      let label = Exp.Set.fold (fun guard acc -> 
+        acc ^ exp_to_str guard ^ " > 0\n"
+      ) edge.guards label
+      in
       DC.Set.fold (fun dc acc -> 
         acc ^ (DC.to_string dc) ^ "\n"
       ) edge.constraints label
@@ -764,8 +779,6 @@ let join : astate -> astate -> astate = fun lhs rhs ->
         let unmodified = get_unmodified_pvars other_state in
         let edge_data = GraphEdge.add_invariants other_state.edge_data unmodified in
         let edge_data = GraphEdge.set_path_end edge_data (List.last other_state.branchingPath) in
-        (* let assignments = Assignment.Set.union other_state.edge_assignments (generate_missing_assignments other_state) in *)
-        (* let edge_data = GraphEdge.make assignments (List.last other_state.branchingPath) in *)
         let lts_edge = LTS.E.create other_state.last_node edge_data join_state.last_node in
         let aggregate_join = AggregateJoin.add_edge join_state.aggregate_join lts_edge in
         aggregate_join
@@ -780,10 +793,6 @@ let join : astate -> astate -> astate = fun lhs rhs ->
     let lhs_edge_data = GraphEdge.set_path_end lhs_edge_data (List.last lhs_path) in
     let rhs_edge_data = GraphEdge.add_invariants rhs.edge_data (get_unmodified_pvars rhs) in
     let rhs_edge_data = GraphEdge.set_path_end rhs_edge_data (List.last rhs_path) in
-    (* let lhs_assignments = Assignment.Set.union lhs.edge_assignments (generate_missing_assignments lhs) in *)
-    (* let rhs_assignments = Assignment.Set.union rhs.edge_assignments (generate_missing_assignments rhs) in *)
-    (* let lhs_edge_data = GraphEdge.make lhs_assignments (List.last lhs_path) in *)
-    (* let rhs_edge_data = GraphEdge.make rhs_assignments (List.last rhs_path) in *)
     let lhs_lts_edge = LTS.E.create lhs.last_node lhs_edge_data join_node in
     let rhs_lts_edge = LTS.E.create rhs.last_node rhs_edge_data join_node in
     let aggregate_join =  AggregateJoin.make join_id lhs.lastLoc rhs.lastLoc in
