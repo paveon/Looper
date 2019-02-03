@@ -272,17 +272,19 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
         )  
       )
 
-    | Store (lexp, _expType, rexp, loc) ->
+    | Store (Exp.Lvar assigned, _expType, rexp, loc) ->
       (
-        log "[STORE] (%a) | %a = %a | %B\n" Location.pp loc Exp.pp lexp Exp.pp rexp is_pvar_decl_node;
-        let pvar_rexp = substitute_pvars rexp in
+        log "[STORE] (%a) | %a = %a | %B\n" 
+        Location.pp loc Pvar.pp_value assigned Exp.pp rexp is_pvar_decl_node;
+
 
         (* Substitute rexp based on previous assignments, 
          * eg. [beg = i; end = beg;] becomes [beg = i; end = i] *)
+        let pvar_rexp = substitute_pvars rexp in
         let pvar_rexp = match pvar_rexp with
         | Exp.BinOp (Binop.PlusA, Exp.Lvar lexp, Exp.Const (Const.Cint c1)) -> (
           (* [BINOP] PVAR + CONST *)
-          match (GraphEdge.get_assignment_rhs astate.edge_data (Exp.Lvar lexp)) with
+          match (GraphEdge.get_assignment_rhs astate.edge_data lexp) with
           | Exp.BinOp (Binop.PlusA, lexp, Exp.Const (Const.Cint c2)) -> (
             (* [BINOP] (PVAR + C1) + C2 -> PVAR + (C1 + C2) *)
             let const = Exp.Const (Const.Cint (IntLit.add c1 c2)) in
@@ -291,7 +293,7 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
           | _ -> pvar_rexp
         )
         | Exp.Lvar rhs_pvar -> (
-          GraphEdge.get_assignment_rhs astate.edge_data (Exp.Lvar rhs_pvar)
+          GraphEdge.get_assignment_rhs astate.edge_data rhs_pvar
         )
         | _ -> pvar_rexp
         in
@@ -299,26 +301,22 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
         (* Check if set already contains assignment with specified
          * lhs and replace it with updated formulas if so. Needed
          * when one edge contains multiple assignments to single variable *)
-        let edge_data = GraphEdge.add_assignment astate.edge_data (lexp, pvar_rexp) in
+        let edge_data = GraphEdge.add_assignment astate.edge_data assigned pvar_rexp in
         let astate = {astate with edge_data = edge_data} in
-        match lexp with
-        | Exp.Lvar assigned_pvar -> (
-          let locals = if is_pvar_decl_node then (
-            PvarSet.add assigned_pvar astate.locals
-          ) else (
-            astate.locals
-          )
-          in
-          let pvars = Sequence.append (Exp.program_vars lexp) (Exp.program_vars rexp) in
-          let edge = Edge.add_modified astate.current_edge pvars in
-          { astate with 
-            current_edge = edge;
-            locals = locals;
-            edge_data = edge_data;
-            modified_pvars = PvarSet.add assigned_pvar astate.modified_pvars;
-          }
+        let locals = if is_pvar_decl_node then (
+          PvarSet.add assigned astate.locals
+        ) else (
+          astate.locals
         )
-        | _ -> astate
+        in
+        let pvars = Sequence.shift_right (Exp.program_vars rexp) assigned in
+        let edge = Edge.add_modified astate.current_edge pvars in
+        { astate with 
+          current_edge = edge;
+          locals = locals;
+          edge_data = edge_data;
+          modified_pvars = PvarSet.add assigned astate.modified_pvars;
+        }
       )
 
     | Load (ident, lexp, _typ, loc) ->
@@ -400,6 +398,8 @@ module CFG = ProcCfg.NormalOneInstrPerNode
 (* module CFG = ProcCfg.Normal *)
   module Analyzer = AbstractInterpreter.Make (CFG) (TransferFunctions)
     let checker {Callbacks.tenv; proc_desc; summary} : Summary.t =
+      let open Domain in
+
       let beginLoc = Procdesc.get_loc proc_desc in
       let proc_name = Procdesc.get_proc_name proc_desc in 
       log "\n\n---------------------------------";
@@ -421,49 +421,50 @@ module CFG = ProcCfg.NormalOneInstrPerNode
 
       let proc_name = Procdesc.get_proc_name proc_desc in
       let formals_mangled = Procdesc.get_formals proc_desc in
-      let formals = List.fold formals_mangled ~init:Domain.PvarSet.empty ~f:(fun acc (name, _) ->
+      let formals = List.fold formals_mangled ~init:PvarSet.empty ~f:(fun acc (name, _) ->
         let formal_pvar = Pvar.mk name proc_name in
-        Domain.PvarSet.add formal_pvar acc
+        PvarSet.add formal_pvar acc
       )
       in
       let locals = Procdesc.get_locals proc_desc in
-      let locals = List.fold locals ~init:Domain.PvarSet.empty ~f:(fun acc (local : ProcAttributes.var_data) ->
+      let locals = List.fold locals ~init:PvarSet.empty ~f:(fun acc (local : ProcAttributes.var_data) ->
         log "%a\n" Procdesc.pp_local local;
         let pvar = Pvar.mk local.name proc_name in
-        Domain.PvarSet.add pvar acc
+        PvarSet.add pvar acc
       )
       in
       let extras = (locals, formals) in
       let proc_data = ProcData.make proc_desc tenv extras in
-      let begin_loc = Domain.LTSLocation.Start beginLoc in
-      let initial_state = Domain.initial begin_loc in
+      let begin_loc = LTSLocation.Start beginLoc in
+      let entry_point = GraphNode.make begin_loc in
+      let initial_state = initial entry_point in
       match Analyzer.compute_post proc_data ~initial:initial_state with
       | Some post ->
         (
           log "\n---------------------------------";
           log "\n------- [ANALYSIS REPORT] -------";
           log "\n---------------------------------\n";
-          log "%a" Domain.pp post;
+          log "%a" pp post;
 
           (* Draw dot graph, use nodes and edges stored in post state *)
-          let lts = Domain.LTS.create () in
-          Domain.LTS.NodeSet.iter (fun node -> 
-            log "%a = %d\n" Domain.LTSLocation.pp node.location node.id;
-            Domain.LTS.add_vertex lts node;
+          let lts = LTS.create () in
+          LTS.NodeSet.iter (fun node -> 
+            log "%a = %d\n" LTSLocation.pp node.location node.id;
+            LTS.add_vertex lts node;
           ) post.graph_nodes;
-          Domain.LTS.EdgeSet.iter (fun edge -> 
-            Domain.LTS.add_edge_e lts edge;
+          LTS.EdgeSet.iter (fun edge -> 
+            LTS.add_edge_e lts edge;
           ) post.graph_edges;
 
           let file = Out_channel.create "test_graph.dot" in
-          let () = Domain.Dot.output_graph file lts in
+          let () = Dot.output_graph file lts in
           Out_channel.close file;
 
           log "[INITIAL NORMS]\n";
           Exp.Set.iter (fun norm -> log "  %a\n" Exp.pp norm) post.initial_norms;
-          let dcp = Domain.LTS.create () in
-          Domain.LTS.NodeSet.iter (fun node -> 
-            Domain.LTS.add_vertex dcp node;
+          let dcp = LTS.create () in
+          LTS.NodeSet.iter (fun node -> 
+            LTS.add_vertex dcp node;
           ) post.graph_nodes;
 
 
@@ -479,25 +480,28 @@ module CFG = ProcCfg.NormalOneInstrPerNode
             processed_norms := Exp.Set.add norm !processed_norms;
             match norm with
             | Exp.BinOp _ -> (
-              log "[PROCESSING NORM] %a\n" Exp.pp norm;
-              graph_edges := Domain.LTS.EdgeSet.map (fun (src, edge_data, dst) -> 
-                let edge_data, new_norms = Domain.GraphEdge.derive_constraints edge_data norm in
+              (* log "[PROCESSING NORM] %a\n" Exp.pp norm; *)
+              graph_edges := LTS.EdgeSet.map (fun (src, edge_data, dst) -> 
+                let edge_data, new_norms = GraphEdge.derive_constraints edge_data norm in
 
                 (* Remove duplicate norms and add new norms to unprocessed set *)
                 let new_norms = Exp.Set.diff new_norms (Exp.Set.inter new_norms !processed_norms) in
-                if not (Exp.Set.is_empty new_norms) then (
+                (* if not (Exp.Set.is_empty new_norms) then (
                   log "[NEW NORMS] ";
                   Exp.Set.iter (fun exp -> 
                     log "%a " Exp.pp exp;
                   ) new_norms;
                   log "\n";
-                );
+                ); *)
                 unprocessed_norms := Exp.Set.union new_norms !unprocessed_norms;
                 (src, edge_data, dst)
               ) !graph_edges;
             )
             | _ -> () (* Ignore other norms for now *)
           ) done;
+
+          log "[FINAL NORMS]\n";
+          Exp.Set.iter (fun norm -> log "  %a\n" Exp.pp norm) !processed_norms;
 
           (* All DCs and norms are derived, now derive guards.
            * Use Z3 SMT solver to check which norms on which
@@ -509,21 +513,79 @@ module CFG = ProcCfg.NormalOneInstrPerNode
           let cfg = [("model", "true"); ("proof", "true")] in
           let ctx = (Z3.mk_context cfg) in
           let solver = (Z3.Solver.mk_solver ctx None) in
-          let graph_edges = Domain.LTS.EdgeSet.map (fun (src, data, dst) -> 
-            let guarded = Domain.GraphEdge.derive_guards data !processed_norms solver ctx in
+          let graph_edges = LTS.EdgeSet.map (fun (src, data, dst) -> 
+            let guarded = GraphEdge.derive_guards data !processed_norms solver ctx in
             (src, guarded, dst)
           ) !graph_edges
           in
 
-          Domain.LTS.EdgeSet.iter (fun edge ->
-            Domain.LTS.add_edge_e dcp edge;
+          LTS.EdgeSet.iter (fun edge ->
+            LTS.add_edge_e dcp edge;
           ) graph_edges;
 
-          log "[FINAL NORMS]\n";
-          Exp.Set.iter (fun norm -> log "  %a\n" Exp.pp norm) !processed_norms;
+          
+          let guarded_nodes = LTS.fold_edges_e (fun (_, edge_data, dst) acc -> 
+            if not (Exp.Set.is_empty edge_data.guards) then (
+              log "Guarded node: %a\n" GraphNode.pp dst;
+              LTS.NodeSet.add dst acc
+            )
+            else (
+              acc
+            )
+          ) dcp LTS.NodeSet.empty
+          in
+
+          (* Propagate guard to all outgoing edges if all incoming edges
+           * are guarded by this guard and the guard itself is not decreased
+           * on any of those incoming edges (guard is a norm) *)
+          let rec propagate_guards : LTS.NodeSet.t -> unit = fun nodes -> (
+            if not (LTS.NodeSet.is_empty nodes) then (
+              let node = LTS.NodeSet.min_elt nodes in
+              let nodes = LTS.NodeSet.remove node nodes in
+              let incoming_edges = LTS.pred_e dcp node in
+              
+              let rec aux : Exp.Set.t -> LTS.edge list -> Exp.Set.t =
+              fun acc edges -> match edges with
+              | (_, edge_data, _) :: edges -> (
+                (* Get edge guards that are not decreased on this edge *)
+                let acc = Exp.Set.fold (fun guard acc -> 
+                  match DC.Map.get_dc guard edge_data.constraints with
+                  | Some dc -> if DC.is_decreasing dc then acc else Exp.Set.add guard acc
+                  | _ -> Exp.Set.add guard acc
+                ) edge_data.guards Exp.Set.empty
+                in
+                Exp.Set.inter acc (aux acc edges)
+              )
+              | [] -> acc
+              in
+              
+              (* Get guards that are used on all incoming
+               * edges and which are not decreased *)
+              let guards = aux Exp.Set.empty incoming_edges in
+              let nodes = if Exp.Set.is_empty guards then (
+                nodes
+              ) else (
+                (* Propagate guards to all outgoing edges and add
+                 * destination nodes of those edges to the processing queue *)
+                let out_edges = LTS.succ_e dcp node in
+                List.fold out_edges ~init:nodes ~f:(fun acc (_, (edge_data : GraphEdge.t), dst) -> 
+                  Exp.Set.iter (fun guard -> 
+                    edge_data.guards <- Exp.Set.add guard edge_data.guards;
+                  ) guards;
+                  LTS.NodeSet.add dst acc
+                )
+              )
+              in
+              propagate_guards nodes
+            ) else (
+              ()
+            )
+          )
+          in
+          propagate_guards guarded_nodes;
 
           let file = Out_channel.create "test_dcp.dot" in
-          let () = Domain.Dot.output_graph file dcp in
+          let () = Dot.output_graph file dcp in
           Out_channel.close file;
 
           Payload.update_summary post summary

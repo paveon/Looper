@@ -35,34 +35,62 @@ let rec exp_to_str exp = match exp with
 (* Difference Constraint of form "x <= y + c"
  * Example: "(len - i) <= (len - i) + 1" *)
 module DC = struct
-  type t = (Exp.t * Exp.t)
+  type t = (Exp.t * Exp.t * IntLit.t)
   [@@deriving compare]
 
-  let to_string : t -> string = fun (lexp, rexp) ->
-    F.asprintf "%s' <= %s" (exp_to_str lexp) (exp_to_str rexp)
+  type dc = t
+  type rhs = (Exp.t * IntLit.t)
+  [@@deriving compare]
+
+  let make ?(const = IntLit.zero) lhs rhs_norm =
+    (lhs, rhs_norm, const)
+
+  let make_rhs ?(const = IntLit.zero) (rhs_norm: Exp.t) = 
+    (rhs_norm, const)
+
+  let is_decreasing : t -> bool = fun (lhs, rhs, const) ->
+    Exp.equal lhs rhs && IntLit.isnegative const
+
+  let is_increasing : t -> bool = fun (lhs, rhs, const) ->
+    Exp.equal lhs rhs && not (IntLit.isnegative const) && not (IntLit.iszero const)
+
+  let to_string : t -> string = fun (lhs, rhs_norm, rhs_const) ->
+    let dc = F.asprintf "%s' <= %s" (exp_to_str lhs) (exp_to_str rhs_norm) in
+    if IntLit.iszero rhs_const then (
+      dc
+    ) else if IntLit.isnegative rhs_const then (
+      dc ^ " - " ^ IntLit.to_string (IntLit.neg rhs_const)
+    ) else (
+      dc ^ " + " ^ IntLit.to_string rhs_const
+    )
     
   let pp fmt dc = 
     F.fprintf fmt "%s" (to_string dc)
 
-  module Set = struct
-    include Caml.Set.Make (struct 
-      type nonrec t = t
-      let compare = compare
+  module Map = struct
+    include Caml.Map.Make (struct 
+      type nonrec t = Exp.t
+      let compare = Exp.compare
     end)
 
-    let add_checked : elt -> t -> t = fun (lhs, rhs) set -> (
-      let dc = (lhs, rhs) in
-      if Exp.equal lhs rhs then (
+    let get_dc : Exp.t -> rhs t -> dc option = fun key map ->
+      match find_opt key map with
+      | Some (rhs_norm, const) -> Some (key, rhs_norm, const)
+      | None -> None
+
+    let add_dc : Exp.t -> rhs -> rhs t -> rhs t = fun dc_lhs dc_rhs map -> (
+      let rhs_norm, rhs_const = dc_rhs in
+      if Exp.equal dc_lhs rhs_norm && IntLit.iszero rhs_const then (
         (* Check if set already contains some constraint with this left hand side *)
-        let should_add = is_empty (filter (fun (dc_lhs, _) -> 
-          Exp.equal lhs dc_lhs
-        ) set)
-        in
-        if should_add then add dc set else set
+        if mem dc_lhs map then (
+          (* Do not replace [e <= expr] *)
+          map
+        ) else (
+          add dc_lhs dc_rhs map
+        )
       ) else (
-        (* Check if set already contains [e <= e] constraint and remove it if it does *)
-        let set = remove (lhs, lhs) set in
-        add dc set
+        (* Replace constant dc [e <= e] with [e <= expr] *)
+        add dc_lhs dc_rhs map
       )
     )
   end
@@ -121,40 +149,8 @@ module LTSLocation = struct
 end
 
 
-module Assignment = struct
-  type t = (Exp.t * Exp.t)
-  [@@deriving compare]
-
-  type data = t
-
-  let to_string : t -> string = fun (lexp, rexp) ->
-    let lexp_str = exp_to_str lexp in
-    let rexp_str = exp_to_str rexp in
-    F.asprintf "%s = %s" lexp_str rexp_str
-    
-  let pp fmt assignment = 
-    F.fprintf fmt "%s" (to_string assignment)
-
-  module Set = struct
-    include Caml.Set.Make (struct 
-      type nonrec t = t
-      let compare = compare
-    end)
-    
-    let get_rhs : Exp.t -> t -> Exp.t = fun lhs_key set ->
-      fold (fun assignment acc -> 
-        match assignment with 
-        | (lhs, rhs) when Exp.equal lhs_key lhs -> rhs
-        | _ -> acc
-      ) set lhs_key
-
-    let add_or_replace : elt -> t -> t = fun (lhs_key, rhs) set ->
-      let set = filter (function 
-      | (lhs, _) when Exp.equal lhs_key lhs -> false
-      | _ -> true
-      ) set in
-      add (lhs_key, rhs) set
-  end
+module AssignmentMap = struct
+  include Caml.Map.Make(Pvar)
 end
 
 
@@ -162,9 +158,9 @@ module GraphEdge = struct
   type t = {
     dcp: bool;
     conditions: Exp.Set.t;
-    assignments: Assignment.Set.t;
-    constraints: DC.Set.t;
-    guards: Exp.Set.t;
+    assignments: Exp.t AssignmentMap.t;
+    constraints: DC.rhs DC.Map.t;
+    mutable guards: Exp.Set.t;
 
     (* Last element of common path prefix *)
     path_prefix_end: prune_info option; 
@@ -174,16 +170,16 @@ module GraphEdge = struct
   let equal = [%compare.equal: t]
 
 
-  let make : Assignment.Set.t -> prune_info option -> t = fun assignments prefix_end -> {
+  let make : Exp.t AssignmentMap.t -> prune_info option -> t = fun assignments prefix_end -> {
     dcp = false;
     conditions = Exp.Set.empty;
     assignments = assignments;
-    constraints = DC.Set.empty;
+    constraints = DC.Map.empty;
     guards = Exp.Set.empty;
     path_prefix_end = prefix_end; 
   }
 
-  let empty = make Assignment.Set.empty None
+  let empty = make AssignmentMap.empty None
 
   (* Required by Graph module interface *)
   let default = empty
@@ -191,24 +187,31 @@ module GraphEdge = struct
   let add_condition : t -> Exp.t -> t = fun edge cond ->
     { edge with conditions = Exp.Set.add cond edge.conditions }
 
-  let add_assignment : t -> Assignment.t -> t = fun edge assignment ->
-    { edge with assignments = Assignment.Set.add_or_replace assignment edge.assignments }
+  let add_assignment : t -> Pvar.t -> Exp.t -> t = fun edge lhs rhs ->
+    { edge with assignments = AssignmentMap.add lhs rhs edge.assignments }
 
   let add_invariants : t -> PvarSet.t -> t = fun edge unmodified ->
-    let invariants = PvarSet.fold (fun pvar acc ->
-      let pvar_exp = Exp.Lvar pvar in
-      Assignment.Set.add (pvar_exp, pvar_exp) acc
-    ) unmodified Assignment.Set.empty
+    let with_invariants = PvarSet.fold (fun lhs acc ->
+      if AssignmentMap.mem lhs acc then (
+        L.stdout "[Warning] Assignment map already contains key";
+        acc
+      ) else (
+        AssignmentMap.add lhs (Exp.Lvar lhs) acc
+      )
+    ) unmodified edge.assignments
     in
-    { edge with assignments = Assignment.Set.union invariants edge.assignments }
+    { edge with assignments = with_invariants }
 
   let set_path_end : t -> prune_info option -> t = fun edge path_end ->
     { edge with path_prefix_end = path_end }
 
-  let get_assignment_rhs : t -> Exp.t -> Exp.t = fun edge lhs_key ->
-    Assignment.Set.get_rhs lhs_key edge.assignments
+  let get_assignment_rhs : t -> Pvar.t -> Exp.t = fun edge lhs ->
+    match AssignmentMap.find_opt lhs edge.assignments with
+    | Some rhs -> rhs
+    | None -> Exp.Lvar lhs
 
-  let derive_guards : t -> Exp.Set.t -> Z3.Solver.solver -> Z3.context -> t = fun edge norms solver smt_ctx -> (
+  let derive_guards : t -> Exp.Set.t -> Z3.Solver.solver -> Z3.context -> t = 
+  fun edge norms solver smt_ctx -> (
     let int_sort = Z3.Arithmetic.Integer.mk_sort smt_ctx in
     let cond_expressions = Exp.Set.fold (fun cond acc -> 
       match cond with
@@ -277,175 +280,158 @@ module GraphEdge = struct
   (* Derive difference constraints "x <= y + c" based on edge assignments *)
   let derive_constraints : t -> Exp.t -> (t * Exp.Set.t) = fun edge norm -> (
     let zero_norm = Exp.Const (Const.Cint IntLit.zero) in
-    let dc_set = edge.constraints in
+    let dc_map = edge.constraints in
     let norm_set = Exp.Set.empty in
-    let dc_set, norm_set = match norm with
+    let dc_map, norm_set = match norm with
     | Exp.Lvar _ -> (
       (* TODO: simplest form of norm, obtained from condition of form [x > 0] *)
-      dc_set, norm_set
+      dc_map, norm_set
     )
-    | Exp.BinOp (Binop.MinusA, Exp.Lvar norm_lexp, Exp.Lvar norm_rexp) -> (
+    | Exp.BinOp (Binop.MinusA, Exp.Lvar norm_lexp_pvar, Exp.Lvar norm_rexp_pvar) -> (
       (* Most common form of norm, obtained from condition of form [x > y] -> norm [x - y] *)
-      let lexp_assignments = Assignment.Set.filter (function
-        | (Exp.Lvar assignment_lhs, _) when Pvar.equal assignment_lhs norm_lexp -> true
-        | _ -> false
-      ) edge.assignments 
-      in
-      let rexp_assignments = Assignment.Set.filter (function 
-        | (Exp.Lvar assignment_lhs, _) when Pvar.equal assignment_lhs norm_rexp -> true
-        | _ -> false
-      ) edge.assignments 
-      in
-      if Assignment.Set.cardinal lexp_assignments > 1 || Assignment.Set.cardinal rexp_assignments > 1 then (
-        L.(die InternalError)"Multiple assignments to the same variable on single edge!"
-      );
-
-      let lexp_assignment = Assignment.Set.min_elt_opt lexp_assignments in
-      let rexp_assignment = Assignment.Set.min_elt_opt rexp_assignments in
+      let norm_lexp = Exp.Lvar norm_lexp_pvar in
+      let norm_rexp = Exp.Lvar norm_rexp_pvar in
+      let lexp_assignment_rhs = AssignmentMap.find_opt norm_lexp_pvar edge.assignments in
+      let rexp_assignment_rhs = AssignmentMap.find_opt norm_rexp_pvar edge.assignments in
 
       (* Derives DCs from norm of form [x -y] *)
-      let process_binop_norm lhs assignment dc_set norm_set = 
-        match assignment with
-        | (Exp.Lvar assignment_lhs, assignment_rhs) -> (
-          (* norm [x - y], assignment [lhs = expr] *)
-          match assignment_rhs with
-          | Exp.BinOp (op, Exp.Lvar rhs_pvar, Exp.Const increment) -> (
-            (* norm [x - y], assignment [lhs = pvar OP const] *)
-            if Pvar.equal assignment_lhs rhs_pvar then (
-              match op with 
-              | Binop.PlusA -> (
-                (* norm [x - y], assignment [x/y = x/y + const] -> [(x - y) OP const] *)
-                let operator = if lhs then Binop.PlusA else Binop.MinusA in
-                let new_dc = (norm, Exp.BinOp (operator, norm, Exp.Const increment)) in
-                DC.Set.add_checked new_dc dc_set, norm_set
-              )
-              | Binop.MinusA -> (
-                (* norm [x - y], assignment [x/y = x/y - const] -> [(x - y) OP const] *)
-                let operator = if lhs then Binop.MinusA else Binop.PlusA in
-                let new_dc = (norm, Exp.BinOp (operator, norm, Exp.Const increment)) in
-                DC.Set.add_checked new_dc dc_set, norm_set
-              )
-              | _ -> dc_set, norm_set
-            ) else (
-              (* norm [x - y], assignment [x = z OP const] -> constant reset, TODO *)
-              dc_set, norm_set
+      let process_binop_norm lhs (assignment_lhs, assignment_rhs) dc_map norm_set = 
+        (* norm [x - y], assignment [lhs = expr] *)
+        match assignment_rhs with
+        | Exp.BinOp (op, Exp.Lvar rhs_pvar, Exp.Const Const.Cint increment) -> (
+          (* norm [x - y], assignment [lhs = pvar OP const] *)
+          if Pvar.equal assignment_lhs rhs_pvar then (
+            (* norm [x - y], assignment [lhs = lhs OP const] *)
+            match op with 
+            | Binop.PlusA -> (
+              (* norm [x - y], assignment [x/y = x/y + const] -> [(x - y) OP const] *)
+              let const = if lhs then increment else (IntLit.neg increment) in
+              let dc_rhs = DC.make_rhs ~const norm in
+              (* let new_dc = (norm, Exp.BinOp (operator, norm, Exp.Const increment)) in *)
+              DC.Map.add_dc norm dc_rhs dc_map, norm_set
             )
-          )
-          | Exp.Lvar rhs_pvar -> (
-            if Pvar.equal assignment_lhs rhs_pvar then (
-              (* norm [x - y], assignment [x/y = x/y], no change *)
-              DC.Set.add_checked (norm, norm) dc_set, norm_set
-            ) 
-            else (
-              if lhs then (
-                match rexp_assignment with
-                | Some (_, expr) -> (
-                  if Exp.equal assignment_rhs expr then (
-                    (* norm [x - y], assignment [x = var], [y = var] -> zero interval *)
-                    DC.Set.add_checked (norm, zero_norm) dc_set, Exp.Set.add zero_norm norm_set
-                  ) else (
-                    (* norm [x - y], assignment [x = var], [y = expr] -> [var - expr] *)
-                    let new_norm = Exp.BinOp (Binop.MinusA, assignment_rhs, expr) in
-                    DC.Set.add_checked (norm, new_norm) dc_set, Exp.Set.add new_norm norm_set
-                  )
-                )
-                | _ -> (
-                  if Pvar.equal rhs_pvar norm_rexp then (
-                    (* norm [x - y], assignment [x = y], zero interval *)
-                    DC.Set.add_checked (norm, zero_norm) dc_set, Exp.Set.add zero_norm norm_set
-                  ) else (
-                    (* norm [x - y], assignment [x = z] -> [z - y] *)
-                    (* TODO: Check if both z and y are not formals to confirm that [z - y] is truly a norm *)
-                    let new_norm = Exp.BinOp (Binop.MinusA, assignment_rhs, Exp.Lvar norm_rexp) in
-                    DC.Set.add (norm, new_norm) dc_set, Exp.Set.add new_norm norm_set
-                  )
-                )
-              )
-              else (
-                match lexp_assignment with
-                | Some (_, expr) -> (
-                  if Exp.equal assignment_rhs expr then (
-                    (* norm [x - y], assignments [y = var], [x = var] -> zero interval *)
-                    DC.Set.add_checked (norm, zero_norm) dc_set, Exp.Set.add zero_norm norm_set
-                  ) else (
-                    (* norm [x - y], assignments [y = var], [x = expr] -> [expr - var] *)
-                    let new_norm = Exp.BinOp (Binop.MinusA, expr, assignment_rhs) in
-                    DC.Set.add_checked (norm, new_norm) dc_set, Exp.Set.add new_norm norm_set
-                  )
-                )
-                | _ -> (
-                  if Pvar.equal rhs_pvar norm_lexp then (
-                    (* norm [x - y], assignment [y = x], zero interval *)
-                    DC.Set.add_checked (norm, zero_norm) dc_set, Exp.Set.add zero_norm norm_set
-                  ) else (
-                    (* norm [x - y], assignment [y = z] -> [x - z] *)
-                    (* TODO: Check if both x and z are not formals to confirm that [x - z] is truly a norm *)
-                    let new_norm = Exp.BinOp (Binop.MinusA, Exp.Lvar norm_lexp, assignment_rhs) in
-                    DC.Set.add (norm, new_norm) dc_set, Exp.Set.add new_norm norm_set
-                  )
-                )
-              )
+            | Binop.MinusA -> (
+              (* norm [x - y], assignment [x/y = x/y - const] -> [(x - y) OP const] *)
+              let const = if lhs then IntLit.neg increment else increment in
+              let dc_rhs = DC.make_rhs ~const norm in
+              DC.Map.add_dc norm dc_rhs dc_map, norm_set
             )
+            | _ -> dc_map, norm_set
+          ) else (
+            (* norm [x - y], assignment [x = z OP const] -> constant reset, TODO *)
+            dc_map, norm_set
           )
-          | Exp.Const (Const.Cint const) when IntLit.iszero const -> (
-            if lhs then (
-              match rexp_assignment with
-              | Some (_, expr) -> (
-                if Exp.equal assignment_rhs expr then (
-                  (* norm [x - y], assignments [x = 0], [y = 0] -> [0] *)
-                  DC.Set.add_checked (norm, zero_norm) dc_set, Exp.Set.add zero_norm norm_set
-                ) else (
-                  (* TODO: What to do here?*)
-                  (* norm [x - y], assignments [x = 0], [y = expr] -> [-expr] *)
-                  let new_norm = Exp.UnOp (Unop.Neg, expr, None) in
-                  DC.Set.add_checked (norm, new_norm) dc_set, Exp.Set.add new_norm norm_set
-                )
-              )
-              | _ -> (
-                (* TODO: What to do here? *)
-                (* norm [x - y], assignment [x = 0] -> [-y] *)
-                let new_norm = Exp.UnOp (Unop.Neg, Exp.Lvar norm_rexp, None) in
-                DC.Set.add_checked (norm, new_norm) dc_set, Exp.Set.add new_norm norm_set
-              )
-            ) else (
-              match lexp_assignment with
-              | Some (_, expr) -> (
-                if Exp.equal assignment_rhs expr then (
-                  (* norm [x - y], assignments [y = 0], [x = 0] -> [0] *)
-                  DC.Set.add_checked (norm, zero_norm) dc_set, Exp.Set.add zero_norm norm_set
-                ) else (
-                  (* norm [x - y], assignments [y = 0], [x = expr] -> [expr] *)
-                  DC.Set.add_checked (norm, expr) dc_set, Exp.Set.add expr norm_set
-                )
-              )
-              | _ -> (
-                (* norm [x - y], assignment [y = 0] -> [x] *)
-                let new_norm = Exp.Lvar norm_lexp in
-                DC.Set.add_checked (norm, new_norm) dc_set, Exp.Set.add new_norm norm_set
-              )
-            )
-          )
-          | _ -> dc_set, norm_set
         )
-        | _ -> dc_set, norm_set
+        | Exp.Lvar rhs_pvar -> (
+          if Pvar.equal assignment_lhs rhs_pvar then (
+            (* norm [x - y], assignment [x/y = x/y], no change *)
+            DC.Map.add_dc norm (DC.make_rhs norm) dc_map, norm_set
+          ) 
+          else (
+            if lhs then (
+              match rexp_assignment_rhs with
+              | Some expr -> (
+                if Exp.equal assignment_rhs expr then (
+                  (* norm [x - y], assignment [x = var], [y = var] -> zero interval *)
+                  DC.Map.add_dc norm (DC.make_rhs zero_norm) dc_map, Exp.Set.add zero_norm norm_set
+                ) else (
+                  (* norm [x - y], assignment [x = var], [y = expr] -> [var - expr] *)
+                  let new_norm = Exp.BinOp (Binop.MinusA, assignment_rhs, expr) in
+                  DC.Map.add_dc norm (DC.make_rhs new_norm) dc_map, Exp.Set.add new_norm norm_set
+                )
+              )
+              | _ -> (
+                if Pvar.equal rhs_pvar norm_rexp_pvar then (
+                  (* norm [x - y], assignment [x = y], zero interval *)
+                  DC.Map.add_dc norm (DC.make_rhs zero_norm) dc_map, Exp.Set.add zero_norm norm_set
+                ) else (
+                  (* norm [x - y], assignment [x = z] -> [z - y] *)
+                  (* TODO: Check if both z and y are not formals to confirm that [z - y] is truly a norm *)
+                  let new_norm = Exp.BinOp (Binop.MinusA, assignment_rhs, norm_rexp) in
+                  DC.Map.add_dc norm (DC.make_rhs new_norm) dc_map, Exp.Set.add new_norm norm_set
+                )
+              )
+            )
+            else (
+              match lexp_assignment_rhs with
+              | Some expr -> (
+                if Exp.equal assignment_rhs expr then (
+                  (* norm [x - y], assignments [y = var], [x = var] -> zero interval *)
+                  DC.Map.add_dc norm (DC.make_rhs zero_norm) dc_map, Exp.Set.add zero_norm norm_set
+                ) else (
+                  (* norm [x - y], assignments [y = var], [x = expr] -> [expr - var] *)
+                  let new_norm = Exp.BinOp (Binop.MinusA, expr, assignment_rhs) in
+                  DC.Map.add_dc norm (DC.make_rhs new_norm) dc_map, Exp.Set.add new_norm norm_set
+                )
+              )
+              | _ -> (
+                if Pvar.equal rhs_pvar norm_lexp_pvar then (
+                  (* norm [x - y], assignment [y = x], zero interval *)
+                  DC.Map.add_dc norm (DC.make_rhs zero_norm) dc_map, Exp.Set.add zero_norm norm_set
+                ) else (
+                  (* norm [x - y], assignment [y = z] -> [x - z] *)
+                  (* TODO: Check if both x and z are not formals to confirm that [x - z] is truly a norm *)
+                  let new_norm = Exp.BinOp (Binop.MinusA, norm_lexp, assignment_rhs) in
+                  DC.Map.add_dc norm (DC.make_rhs new_norm) dc_map, Exp.Set.add new_norm norm_set
+                )
+              )
+            )
+          )
+        )
+        | Exp.Const (Const.Cint const) when IntLit.iszero const -> (
+          if lhs then (
+            match rexp_assignment_rhs with
+            | Some expr -> (
+              if Exp.equal assignment_rhs expr then (
+                (* norm [x - y], assignments [x = 0], [y = 0] -> [0] *)
+                DC.Map.add_dc norm (DC.make_rhs zero_norm) dc_map, Exp.Set.add zero_norm norm_set
+              ) else (
+                (* TODO: What to do here?*)
+                (* norm [x - y], assignments [x = 0], [y = expr] -> [-expr] *)
+                let new_norm = Exp.UnOp (Unop.Neg, expr, None) in
+                DC.Map.add_dc norm (DC.make_rhs new_norm) dc_map, Exp.Set.add new_norm norm_set
+              )
+            )
+            | _ -> (
+              (* TODO: What to do here? *)
+              (* norm [x - y], assignment [x = 0] -> [-y] *)
+              let new_norm = Exp.UnOp (Unop.Neg, norm_rexp, None) in
+              DC.Map.add_dc norm (DC.make_rhs new_norm) dc_map, Exp.Set.add new_norm norm_set
+            )
+          ) else (
+            match lexp_assignment_rhs with
+            | Some expr -> (
+              if Exp.equal assignment_rhs expr then (
+                (* norm [x - y], assignments [y = 0], [x = 0] -> [0] *)
+                DC.Map.add_dc norm (DC.make_rhs zero_norm) dc_map, Exp.Set.add zero_norm norm_set
+              ) else (
+                (* norm [x - y], assignments [y = 0], [x = expr] -> [expr] *)
+                DC.Map.add_dc norm (DC.make_rhs expr) dc_map, Exp.Set.add expr norm_set
+              )
+            )
+            | _ -> (
+              (* norm [x - y], assignment [y = 0] -> [x] *)
+              DC.Map.add_dc norm (DC.make_rhs norm_lexp) dc_map, Exp.Set.add norm_lexp norm_set
+            )
+          )
+        )
+        | _ -> dc_map, norm_set
       in
 
-      let dc_set, norm_set = if not (Assignment.Set.is_empty lexp_assignments) then (
-        let assignment = Assignment.Set.min_elt lexp_assignments in
-        process_binop_norm true assignment dc_set norm_set
-      ) else dc_set, norm_set
+      let dc_map, norm_set = match lexp_assignment_rhs with
+      | Some rhs -> process_binop_norm true (norm_lexp_pvar, rhs) dc_map norm_set
+      | None -> dc_map, norm_set
       in
-      let dc_set, norm_set = if not (Assignment.Set.is_empty rexp_assignments) then (
-        let assignment = Assignment.Set.min_elt rexp_assignments in
-        process_binop_norm false assignment dc_set norm_set
-      ) else dc_set, norm_set
+      let dc_map, norm_set = match rexp_assignment_rhs with
+      | Some rhs -> process_binop_norm false (norm_rexp_pvar, rhs) dc_map norm_set
+      | None -> dc_map, norm_set
       in
-      dc_set, norm_set
+      dc_map, norm_set
     )
-    | _ -> dc_set, norm_set
+    | _ -> dc_map, norm_set
     in 
     let edge_data = { edge with 
-      constraints = dc_set;
+      constraints = dc_map;
       dcp = true; 
     }
     in
@@ -469,11 +455,10 @@ module GraphNode = struct
   let hash = Hashtbl.hash
   let equal = [%compare.equal: t]
 
-  let add_join_id : t -> int -> t = fun node id -> (
+  let add_join_id : t -> int -> t = fun node id ->
     { node with location = LTSLocation.add_join_id node.location id }
-  )
 
-  let make : LTSLocation.t -> t = fun loc -> (
+  let make : LTSLocation.t -> t = fun loc ->
     let found = IdMap.mem loc !idMap in
     let node_id = if found then (
       (* L.stdout "EQUAL: %a - %a" LTSLocation.pp *)
@@ -488,7 +473,8 @@ module GraphNode = struct
       id = node_id;
       location = loc;
     }
-  )
+
+    let pp fmt node = F.fprintf fmt "%a" LTSLocation.pp node.location
 end
 
 module JoinLocations = Caml.Map.Make(struct
@@ -519,16 +505,17 @@ module DotConfig = struct
         acc ^ exp_to_str guard ^ " > 0\n"
       ) edge.guards label
       in
-      DC.Set.fold (fun dc acc -> 
-        acc ^ (DC.to_string dc) ^ "\n"
+      DC.Map.fold (fun lhs (norm, const) acc -> 
+        acc ^ (DC.to_string (lhs, norm, const)) ^ "\n"
       ) edge.constraints label
     ) else (
       let label = Exp.Set.fold (fun condition acc ->
         acc ^ exp_to_str condition ^ "\n"
       ) edge.conditions label
       in
-      Assignment.Set.fold (fun exp acc -> 
-        acc ^ (Assignment.to_string exp) ^ "\n"
+      AssignmentMap.fold (fun lhs rhs acc -> 
+        let str = F.sprintf "%s = %s\n" (Pvar.to_string lhs) (exp_to_str rhs) in
+        acc ^ str
       ) edge.assignments label
     )
     in
@@ -651,15 +638,15 @@ type astate = {
   aggregate_join: AggregateJoin.t;
 }
 
-let initial : LTSLocation.t -> astate = fun beginLoc -> (
-  let entryPoint = GraphNode.make beginLoc in
+let initial : GraphNode.t -> astate = fun entry_point -> (
+  (* let entry_point = GraphNode.make beginLoc in *)
   {
-    last_node = entryPoint;
+    last_node = entry_point;
     branchingPath = [];
     branchLocs = LocSet.empty;
-    lastLoc = beginLoc;
+    lastLoc = entry_point.location;
     edges = Edge.Set.empty;
-    current_edge = Edge.initial beginLoc;
+    current_edge = Edge.initial entry_point.location;
     branch = false;
     pvars = PvarSet.empty;
     joinLocs = JoinLocations.empty;
@@ -671,7 +658,7 @@ let initial : LTSLocation.t -> astate = fun beginLoc -> (
     ident_map = Ident.Map.empty;
     modified_pvars = PvarSet.empty;
     edge_data = GraphEdge.empty;
-    graph_nodes = LTS.NodeSet.add entryPoint LTS.NodeSet.empty;
+    graph_nodes = LTS.NodeSet.add entry_point LTS.NodeSet.empty;
     graph_edges = LTS.EdgeSet.empty;
     aggregate_join = AggregateJoin.initial;
   }
