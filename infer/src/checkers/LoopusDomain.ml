@@ -26,7 +26,7 @@ let rec exp_to_str exp = match exp with
     let lexp = exp_to_str lexp in
     let rexp = exp_to_str rexp in
     let op = Binop.str Pp.text op in
-    F.sprintf "(%s %s %s)" lexp op rexp
+    F.sprintf "%s %s %s" lexp op rexp
   )
   | Exp.Lvar _ -> String.slice (Exp.to_string exp) 1 0
   | _ -> Exp.to_string exp
@@ -42,20 +42,19 @@ module DC = struct
   type rhs = (Exp.t * IntLit.t)
   [@@deriving compare]
 
-  let make ?(const = IntLit.zero) lhs rhs_norm =
-    (lhs, rhs_norm, const)
+  let make ?(const = IntLit.zero) lhs rhs_norm = (lhs, rhs_norm, const)
 
-  let make_rhs ?(const = IntLit.zero) (rhs_norm: Exp.t) = 
-    (rhs_norm, const)
+  let make_rhs ?(const = IntLit.zero) (rhs_norm: Exp.t) = (rhs_norm, const)
 
-  let is_decreasing : t -> bool = fun (lhs, rhs, const) ->
-    Exp.equal lhs rhs && IntLit.isnegative const
+  let same_norms : t -> bool = fun (lhs, rhs, _) -> Exp.equal lhs rhs
 
-  let is_increasing : t -> bool = fun (lhs, rhs, const) ->
-    Exp.equal lhs rhs && not (IntLit.isnegative const) && not (IntLit.iszero const)
+  let is_decreasing : t -> bool = fun (_, _, const) -> IntLit.isnegative const
+
+  let is_increasing : t -> bool = fun (_, _, const) ->
+    not (IntLit.isnegative const) && not (IntLit.iszero const)
 
   let to_string : t -> string = fun (lhs, rhs_norm, rhs_const) ->
-    let dc = F.asprintf "%s' <= %s" (exp_to_str lhs) (exp_to_str rhs_norm) in
+    let dc = F.asprintf "[%s]' <= [%s]" (exp_to_str lhs) (exp_to_str rhs_norm) in
     if IntLit.iszero rhs_const then (
       dc
     ) else if IntLit.isnegative rhs_const then (
@@ -159,7 +158,7 @@ module GraphEdge = struct
     dcp: bool;
     conditions: Exp.Set.t;
     assignments: Exp.t AssignmentMap.t;
-    constraints: DC.rhs DC.Map.t;
+    mutable constraints: DC.rhs DC.Map.t;
     mutable guards: Exp.Set.t;
 
     (* Last element of common path prefix *)
@@ -210,7 +209,7 @@ module GraphEdge = struct
     | Some rhs -> rhs
     | None -> Exp.Lvar lhs
 
-  let derive_guards : t -> Exp.Set.t -> Z3.Solver.solver -> Z3.context -> t = 
+  let derive_guards : t -> Exp.Set.t -> Z3.Solver.solver -> Z3.context -> unit = 
   fun edge norms solver smt_ctx -> (
     let int_sort = Z3.Arithmetic.Integer.mk_sort smt_ctx in
     let cond_expressions = Exp.Set.fold (fun cond acc -> 
@@ -229,7 +228,7 @@ module GraphEdge = struct
     ) edge.conditions [] 
     in
     if List.is_empty cond_expressions then (
-      edge
+      ()
     ) else (
       let lhs = Z3.Boolean.mk_and smt_ctx cond_expressions in
       let zero_const = Z3.Arithmetic.Integer.mk_numeral_i smt_ctx 0 in
@@ -273,7 +272,7 @@ module GraphEdge = struct
         | _ -> acc
       ) norms Exp.Set.empty 
       in
-      { edge with guards = guards }
+      edge.guards <- guards;
     );
   )
   
@@ -476,10 +475,10 @@ module DotConfig = struct
     in
 
     let label = if edge.dcp then (
-      let label = Exp.Set.fold (fun guard acc -> 
+      (* let label = Exp.Set.fold (fun guard acc -> 
         acc ^ exp_to_str guard ^ " > 0\n"
       ) edge.guards label
-      in
+      in *)
       DC.Map.fold (fun lhs (norm, const) acc -> 
         acc ^ (DC.to_string (lhs, norm, const)) ^ "\n"
       ) edge.constraints label

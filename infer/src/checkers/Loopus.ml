@@ -396,192 +396,200 @@ let basic_tests ( ctx : Z3.context ) =
 
 module CFG = ProcCfg.NormalOneInstrPerNode
 (* module CFG = ProcCfg.Normal *)
-  module Analyzer = AbstractInterpreter.Make (CFG) (TransferFunctions)
-    let checker {Callbacks.tenv; proc_desc; summary} : Summary.t =
-      let open Domain in
 
-      let beginLoc = Procdesc.get_loc proc_desc in
-      let proc_name = Procdesc.get_proc_name proc_desc in 
-      log "\n\n---------------------------------";
-      log "\n- ANALYZING %s" (Typ.Procname.to_simplified_string proc_name);
+module Analyzer = AbstractInterpreter.Make (CFG) (TransferFunctions)
+  let checker {Callbacks.tenv; proc_desc; summary} : Summary.t =
+    let open Domain in
+
+    let beginLoc = Procdesc.get_loc proc_desc in
+    let proc_name = Procdesc.get_proc_name proc_desc in 
+    log "\n\n---------------------------------";
+    log "\n- ANALYZING %s" (Typ.Procname.to_simplified_string proc_name);
+    log "\n---------------------------------\n";
+    log " Begin location: %a\n" Location.pp beginLoc;
+    (* Procdesc.pp_local locals; *)
+
+    (* let reportBugs : Domain.astate -> unit = fun post ->
+      LocationMap.iter (fun loopLoc bugSet ->
+      let msg = F.asprintf "Redundant traversal of %a detected in loop" Domain.pp_footprint bugSet in
+      (* let msg = F.asprintf "Redundant traversal bug detected\n" in *)
+      let localised_msg = Localise.verbatim_desc msg in
+      let issue = IssueType.redundant_traversal in
+      let exn = Exceptions.Checkers (issue, localised_msg) in
+      Reporting.log_warning summary ~loc:loopLoc IssueType.redundant_traversal msg
+      ) post.bugLocs; 
+    in *)
+
+    let proc_name = Procdesc.get_proc_name proc_desc in
+    let formals_mangled = Procdesc.get_formals proc_desc in
+    let formals = List.fold formals_mangled ~init:PvarSet.empty ~f:(fun acc (name, _) ->
+      let formal_pvar = Pvar.mk name proc_name in
+      PvarSet.add formal_pvar acc
+    )
+    in
+    let locals = Procdesc.get_locals proc_desc in
+    let locals = List.fold locals ~init:PvarSet.empty ~f:(fun acc (local : ProcAttributes.var_data) ->
+      log "%a\n" Procdesc.pp_local local;
+      let pvar = Pvar.mk local.name proc_name in
+      PvarSet.add pvar acc
+    )
+    in
+    let extras = (locals, formals) in
+    let proc_data = ProcData.make proc_desc tenv extras in
+    let begin_loc = LTSLocation.Start beginLoc in
+    let entry_point = GraphNode.make begin_loc in
+    let initial_state = initial entry_point in
+    match Analyzer.compute_post proc_data ~initial:initial_state with
+    | Some post -> (
+      log "\n---------------------------------";
+      log "\n------- [ANALYSIS REPORT] -------";
       log "\n---------------------------------\n";
-      log " Begin location: %a\n" Location.pp beginLoc;
-      (* Procdesc.pp_local locals; *)
+      log "%a" pp post;
 
-      (* let reportBugs : Domain.astate -> unit = fun post ->
-        LocationMap.iter (fun loopLoc bugSet ->
-        let msg = F.asprintf "Redundant traversal of %a detected in loop" Domain.pp_footprint bugSet in
-        (* let msg = F.asprintf "Redundant traversal bug detected\n" in *)
-        let localised_msg = Localise.verbatim_desc msg in
-        let issue = IssueType.redundant_traversal in
-        let exn = Exceptions.Checkers (issue, localised_msg) in
-        Reporting.log_warning summary ~loc:loopLoc IssueType.redundant_traversal msg
-        ) post.bugLocs; 
-      in *)
+      (* Draw dot graph, use nodes and edges stored in post state *)
+      let lts = LTS.create () in
+      LTS.NodeSet.iter (fun node -> 
+        log "%a = %d\n" LTSLocation.pp node.location node.id;
+        LTS.add_vertex lts node;
+      ) post.graph_nodes;
+      LTS.EdgeSet.iter (fun edge -> 
+        LTS.add_edge_e lts edge;
+      ) post.graph_edges;
 
-      let proc_name = Procdesc.get_proc_name proc_desc in
-      let formals_mangled = Procdesc.get_formals proc_desc in
-      let formals = List.fold formals_mangled ~init:PvarSet.empty ~f:(fun acc (name, _) ->
-        let formal_pvar = Pvar.mk name proc_name in
-        PvarSet.add formal_pvar acc
-      )
+      let file = Out_channel.create "test_graph.dot" in
+      let () = Dot.output_graph file lts in
+      Out_channel.close file;
+
+      log "[INITIAL NORMS]\n";
+      Exp.Set.iter (fun norm -> log "  %a\n" Exp.pp norm) post.initial_norms;
+      let dcp = LTS.create () in
+      LTS.NodeSet.iter (fun node -> 
+        LTS.add_vertex dcp node;
+      ) post.graph_nodes;
+
+
+      (* Much easier to implement and more readable in imperative style.
+        * Derive difference constraints for each edge for each norm and
+        * add newly created norms unprocessed_norms set during the process *)
+      let unprocessed_norms = ref post.initial_norms in
+      let processed_norms = ref Exp.Set.empty in
+      let graph_edges = ref post.graph_edges in
+      while not (Exp.Set.is_empty !unprocessed_norms) do (
+        let norm = Exp.Set.min_elt !unprocessed_norms in
+        unprocessed_norms := Exp.Set.remove norm !unprocessed_norms;
+        processed_norms := Exp.Set.add norm !processed_norms;
+        match norm with
+        | Exp.BinOp _ -> (
+          graph_edges := LTS.EdgeSet.map (fun (src, edge_data, dst) -> 
+            let edge_data, new_norms = GraphEdge.derive_constraints edge_data norm formals in
+
+            (* Remove duplicate norms and add new norms to unprocessed set *)
+            let new_norms = Exp.Set.diff new_norms (Exp.Set.inter new_norms !processed_norms) in
+            unprocessed_norms := Exp.Set.union new_norms !unprocessed_norms;
+            (src, edge_data, dst)
+          ) !graph_edges;
+        )
+        | _ -> () (* Ignore other norms for now *)
+      ) done;
+
+      log "[FINAL NORMS]\n";
+      Exp.Set.iter (fun norm -> log "  %a\n" Exp.pp norm) !processed_norms;
+
+      (* All DCs and norms are derived, now derive guards.
+        * Use Z3 SMT solver to check which norms on which
+        * transitions are guaranted to be greater than 0
+        * based on conditions that hold on specified transition.
+        * For example if transition is guarded by conditions
+        * [x >= 0] and [y > x] then we can prove that
+        * norm [x + y] > 0 thus it is a guard on this transition *)
+      let cfg = [("model", "true"); ("proof", "true")] in
+      let ctx = (Z3.mk_context cfg) in
+      let solver = (Z3.Solver.mk_solver ctx None) in
+      LTS.EdgeSet.iter (fun (src, data, dst) -> 
+        GraphEdge.derive_guards data !processed_norms solver ctx;
+        LTS.add_edge_e dcp (src, data, dst);
+      ) !graph_edges;
+      
+      let guarded_nodes = LTS.fold_edges_e (fun (_, edge_data, dst) acc -> 
+        if Exp.Set.is_empty edge_data.guards then acc else LTS.NodeSet.add dst acc
+      ) dcp LTS.NodeSet.empty
       in
-      let locals = Procdesc.get_locals proc_desc in
-      let locals = List.fold locals ~init:PvarSet.empty ~f:(fun acc (local : ProcAttributes.var_data) ->
-        log "%a\n" Procdesc.pp_local local;
-        let pvar = Pvar.mk local.name proc_name in
-        PvarSet.add pvar acc
-      )
-      in
-      let extras = (locals, formals) in
-      let proc_data = ProcData.make proc_desc tenv extras in
-      let begin_loc = LTSLocation.Start beginLoc in
-      let entry_point = GraphNode.make begin_loc in
-      let initial_state = initial entry_point in
-      match Analyzer.compute_post proc_data ~initial:initial_state with
-      | Some post ->
-        (
-          log "\n---------------------------------";
-          log "\n------- [ANALYSIS REPORT] -------";
-          log "\n---------------------------------\n";
-          log "%a" pp post;
 
-          (* Draw dot graph, use nodes and edges stored in post state *)
-          let lts = LTS.create () in
-          LTS.NodeSet.iter (fun node -> 
-            log "%a = %d\n" LTSLocation.pp node.location node.id;
-            LTS.add_vertex lts node;
-          ) post.graph_nodes;
-          LTS.EdgeSet.iter (fun edge -> 
-            LTS.add_edge_e lts edge;
-          ) post.graph_edges;
-
-          let file = Out_channel.create "test_graph.dot" in
-          let () = Dot.output_graph file lts in
-          Out_channel.close file;
-
-          log "[INITIAL NORMS]\n";
-          Exp.Set.iter (fun norm -> log "  %a\n" Exp.pp norm) post.initial_norms;
-          let dcp = LTS.create () in
-          LTS.NodeSet.iter (fun node -> 
-            LTS.add_vertex dcp node;
-          ) post.graph_nodes;
-
-
-          (* Much easier to implement and more readable in imperative style.
-           * Derive difference constrains for each edge for each norm and
-           * add newly created norms unprocessed_norms set during the process *)
-          let unprocessed_norms = ref post.initial_norms in
-          let processed_norms = ref Exp.Set.empty in
-          let graph_edges = ref post.graph_edges in
-          while not (Exp.Set.is_empty !unprocessed_norms) do (
-            let norm = Exp.Set.min_elt !unprocessed_norms in
-            unprocessed_norms := Exp.Set.remove norm !unprocessed_norms;
-            processed_norms := Exp.Set.add norm !processed_norms;
-            match norm with
-            | Exp.BinOp _ -> (
-              graph_edges := LTS.EdgeSet.map (fun (src, edge_data, dst) -> 
-                let edge_data, new_norms = GraphEdge.derive_constraints edge_data norm formals in
-
-                (* Remove duplicate norms and add new norms to unprocessed set *)
-                let new_norms = Exp.Set.diff new_norms (Exp.Set.inter new_norms !processed_norms) in
-                unprocessed_norms := Exp.Set.union new_norms !unprocessed_norms;
-                (src, edge_data, dst)
-              ) !graph_edges;
-            )
-            | _ -> () (* Ignore other norms for now *)
-          ) done;
-
-          log "[FINAL NORMS]\n";
-          Exp.Set.iter (fun norm -> log "  %a\n" Exp.pp norm) !processed_norms;
-
-          (* All DCs and norms are derived, now derive guards.
-           * Use Z3 SMT solver to check which norms on which
-           * transitions are guaranted to be greater than 0
-           * based on conditions that hold on specified transition.
-           * For example if transition is guarded by conditions
-           * [x >= 0] and [y > x] then we can prove that
-           * norm [x + y] > 0 thus it is a guard on this transition *)
-          let cfg = [("model", "true"); ("proof", "true")] in
-          let ctx = (Z3.mk_context cfg) in
-          let solver = (Z3.Solver.mk_solver ctx None) in
-          let graph_edges = LTS.EdgeSet.map (fun (src, data, dst) -> 
-            let guarded = GraphEdge.derive_guards data !processed_norms solver ctx in
-            (src, guarded, dst)
-          ) !graph_edges
+      (* Propagate guard to all outgoing edges if all incoming edges
+        * are guarded by this guard and the guard itself is not decreased
+        * on any of those incoming edges (guard is a norm) *)
+      let rec propagate_guards : LTS.NodeSet.t -> unit = fun nodes -> (
+        if not (LTS.NodeSet.is_empty nodes) then (
+          let node = LTS.NodeSet.min_elt nodes in
+          let nodes = LTS.NodeSet.remove node nodes in
+          let incoming_edges = LTS.pred_e dcp node in
+          let rec aux : Exp.Set.t -> LTS.edge list -> Exp.Set.t =
+          fun acc edges -> match edges with
+          | (_, edge_data, _) :: edges -> (
+            (* Get edge guards that are not decreased on this edge *)
+            let acc = Exp.Set.fold (fun guard acc -> 
+              match DC.Map.get_dc guard edge_data.constraints with
+              | Some dc -> 
+                if DC.is_decreasing dc && DC.same_norms dc then acc 
+                else Exp.Set.add guard acc
+              | _ -> Exp.Set.add guard acc
+            ) edge_data.guards Exp.Set.empty
+            in
+            Exp.Set.inter acc (aux acc edges)
+          )
+          | [] -> acc
           in
-
-          LTS.EdgeSet.iter (fun edge ->
-            LTS.add_edge_e dcp edge;
-          ) graph_edges;
-
           
-          let guarded_nodes = LTS.fold_edges_e (fun (_, edge_data, dst) acc -> 
-            if not (Exp.Set.is_empty edge_data.guards) then (
-              log "Guarded node: %a\n" GraphNode.pp dst;
+          (* Get guards that are used on all incoming
+            * edges and which are not decreased *)
+          let guards = aux Exp.Set.empty incoming_edges in
+          let nodes = if Exp.Set.is_empty guards then (
+            nodes
+          ) else (
+            (* Propagate guards to all outgoing edges and add
+              * destination nodes of those edges to the processing queue *)
+            let out_edges = LTS.succ_e dcp node in
+            List.fold out_edges ~init:nodes ~f:(fun acc (_, (edge_data : GraphEdge.t), dst) -> 
+              Exp.Set.iter (fun guard -> 
+                edge_data.guards <- Exp.Set.add guard edge_data.guards;
+              ) guards;
               LTS.NodeSet.add dst acc
-            )
-            else (
-              acc
-            )
-          ) dcp LTS.NodeSet.empty
-          in
-
-          (* Propagate guard to all outgoing edges if all incoming edges
-           * are guarded by this guard and the guard itself is not decreased
-           * on any of those incoming edges (guard is a norm) *)
-          let rec propagate_guards : LTS.NodeSet.t -> unit = fun nodes -> (
-            if not (LTS.NodeSet.is_empty nodes) then (
-              let node = LTS.NodeSet.min_elt nodes in
-              let nodes = LTS.NodeSet.remove node nodes in
-              let incoming_edges = LTS.pred_e dcp node in
-              let rec aux : Exp.Set.t -> LTS.edge list -> Exp.Set.t =
-              fun acc edges -> match edges with
-              | (_, edge_data, _) :: edges -> (
-                (* Get edge guards that are not decreased on this edge *)
-                let acc = Exp.Set.fold (fun guard acc -> 
-                  match DC.Map.get_dc guard edge_data.constraints with
-                  | Some dc -> if DC.is_decreasing dc then acc else Exp.Set.add guard acc
-                  | _ -> Exp.Set.add guard acc
-                ) edge_data.guards Exp.Set.empty
-                in
-                Exp.Set.inter acc (aux acc edges)
-              )
-              | [] -> acc
-              in
-              
-              (* Get guards that are used on all incoming
-               * edges and which are not decreased *)
-              let guards = aux Exp.Set.empty incoming_edges in
-              let nodes = if Exp.Set.is_empty guards then (
-                nodes
-              ) else (
-                (* Propagate guards to all outgoing edges and add
-                 * destination nodes of those edges to the processing queue *)
-                let out_edges = LTS.succ_e dcp node in
-                List.fold out_edges ~init:nodes ~f:(fun acc (_, (edge_data : GraphEdge.t), dst) -> 
-                  Exp.Set.iter (fun guard -> 
-                    edge_data.guards <- Exp.Set.add guard edge_data.guards;
-                  ) guards;
-                  LTS.NodeSet.add dst acc
-                )
-              )
-              in
-              propagate_guards nodes
-            ) else (
-              ()
             )
           )
           in
-          propagate_guards guarded_nodes;
+          propagate_guards nodes
+        ) else (
+          ()
+        )
+      )
+      in
+      propagate_guards guarded_nodes;
 
-          let file = Out_channel.create "test_dcp.dot" in
-          let () = Dot.output_graph file dcp in
-          Out_channel.close file;
+      (* Convert DCP with guards to DCP without guards over natural numbers *)
+      let to_natural_numbers : LTS.EdgeSet.t -> unit = fun edges -> (
+        LTS.EdgeSet.iter (fun (_, edge_data, _) -> 
+          let constraints = DC.Map.map (fun (rhs, const) -> 
+            if IntLit.isnegative const then (
+              let const = if Exp.Set.mem rhs edge_data.guards then IntLit.minus_one else IntLit.zero in
+              rhs, const
+            ) else (
+              rhs, const
+            )
+          ) edge_data.constraints
+          in
+          edge_data.constraints <- constraints
+        ) edges
+      )
+      in
+      to_natural_numbers !graph_edges;
 
-          Payload.update_summary post summary
-        ) 
-      | None -> 
-        L.(die InternalError)
-        "Analyzer failed to compute post for %a" Typ.Procname.pp
-        (Procdesc.get_proc_name proc_data.pdesc)
+      let file = Out_channel.create "test_dcp.dot" in
+      let () = Dot.output_graph file dcp in
+      Out_channel.close file;
+
+      Payload.update_summary post summary
+    ) 
+    | None -> 
+      L.(die InternalError)
+      "Analyzer failed to compute post for %a" Typ.Procname.pp
+      (Procdesc.get_proc_name proc_data.pdesc)
