@@ -480,19 +480,11 @@ module CFG = ProcCfg.NormalOneInstrPerNode
             processed_norms := Exp.Set.add norm !processed_norms;
             match norm with
             | Exp.BinOp _ -> (
-              (* log "[PROCESSING NORM] %a\n" Exp.pp norm; *)
               graph_edges := LTS.EdgeSet.map (fun (src, edge_data, dst) -> 
-                let edge_data, new_norms = GraphEdge.derive_constraints edge_data norm in
+                let edge_data, new_norms = GraphEdge.derive_constraints edge_data norm formals in
 
                 (* Remove duplicate norms and add new norms to unprocessed set *)
                 let new_norms = Exp.Set.diff new_norms (Exp.Set.inter new_norms !processed_norms) in
-                (* if not (Exp.Set.is_empty new_norms) then (
-                  log "[NEW NORMS] ";
-                  Exp.Set.iter (fun exp -> 
-                    log "%a " Exp.pp exp;
-                  ) new_norms;
-                  log "\n";
-                ); *)
                 unprocessed_norms := Exp.Set.union new_norms !unprocessed_norms;
                 (src, edge_data, dst)
               ) !graph_edges;
@@ -543,7 +535,6 @@ module CFG = ProcCfg.NormalOneInstrPerNode
               let node = LTS.NodeSet.min_elt nodes in
               let nodes = LTS.NodeSet.remove node nodes in
               let incoming_edges = LTS.pred_e dcp node in
-              
               let rec aux : Exp.Set.t -> LTS.edge list -> Exp.Set.t =
               fun acc edges -> match edges with
               | (_, edge_data, _) :: edges -> (
