@@ -21,12 +21,17 @@ module PvarSet = struct
     "[" ^ (String.rstrip tmp) ^ "]"
 end
 
-let rec exp_to_str exp = match exp with
+let rec exp_to_str ?(braces = false) exp = match exp with
   | Exp.BinOp (op, lexp, rexp) -> (
-    let lexp = exp_to_str lexp in
-    let rexp = exp_to_str rexp in
+    let lexp = exp_to_str ~braces lexp in
+    let rexp = exp_to_str ~braces rexp in
     let op = Binop.str Pp.text op in
-    F.sprintf "%s %s %s" lexp op rexp
+    if braces then (
+      F.sprintf "(%s %s %s)" lexp op rexp
+    ) else (
+      F.sprintf "%s %s %s" lexp op rexp
+    )
+    
   )
   | Exp.Lvar _ -> String.slice (Exp.to_string exp) 1 0
   | _ -> Exp.to_string exp
@@ -53,8 +58,13 @@ module DC = struct
   let is_increasing : t -> bool = fun (_, _, const) ->
     not (IntLit.isnegative const) && not (IntLit.iszero const)
 
-  let to_string : t -> string = fun (lhs, rhs_norm, rhs_const) ->
-    let dc = F.asprintf "[%s]' <= [%s]" (exp_to_str lhs) (exp_to_str rhs_norm) in
+  let to_string : t -> bool -> string = fun (lhs, rhs_norm, rhs_const) guarded ->
+    let dc = if guarded then (
+      F.asprintf "%s' <= %s" (exp_to_str lhs ~braces:true) (exp_to_str rhs_norm ~braces:true)
+    ) else (
+      F.asprintf "[%s]' <= [%s]" (exp_to_str lhs) (exp_to_str rhs_norm)
+    ) 
+    in
     if IntLit.iszero rhs_const then (
       dc
     ) else if IntLit.isnegative rhs_const then (
@@ -63,8 +73,8 @@ module DC = struct
       dc ^ " + " ^ IntLit.to_string rhs_const
     )
     
-  let pp fmt dc = 
-    F.fprintf fmt "%s" (to_string dc)
+  let pp fmt dc guarded = 
+    F.fprintf fmt "%s" (to_string dc guarded)
 
   module Map = struct
     include Caml.Map.Make (struct 
@@ -154,8 +164,11 @@ end
 
 
 module GraphEdge = struct
+  type graph_type = LTS | GuardedDCP | DCP
+  [@@deriving compare]
+
   type t = {
-    dcp: bool;
+    mutable graph_type: graph_type;
     conditions: Exp.Set.t;
     assignments: Exp.t AssignmentMap.t;
     mutable constraints: DC.rhs DC.Map.t;
@@ -170,7 +183,7 @@ module GraphEdge = struct
 
 
   let make : Exp.t AssignmentMap.t -> prune_info option -> t = fun assignments prefix_end -> {
-    dcp = false;
+    graph_type = LTS;
     conditions = Exp.Set.empty;
     assignments = assignments;
     constraints = DC.Map.empty;
@@ -214,17 +227,28 @@ module GraphEdge = struct
     let int_sort = Z3.Arithmetic.Integer.mk_sort smt_ctx in
     let cond_expressions = Exp.Set.fold (fun cond acc -> 
       match cond with
-      | Exp.BinOp (op, Exp.Lvar lexp, Exp.Lvar rexp) -> (
-        let lexp_const = Z3.Expr.mk_const_s smt_ctx (Pvar.to_string lexp) int_sort in
-        let rexp_const = Z3.Expr.mk_const_s smt_ctx (Pvar.to_string rexp) int_sort in
+      | Exp.BinOp (_, Exp.Const _, Exp.Const _) -> (
+        acc
+      )
+      | Exp.BinOp (op, lexp, rexp) -> (
+        let cond_exp_to_z3 exp = match exp with
+        | Exp.Lvar pvar -> Z3.Expr.mk_const_s smt_ctx (Pvar.to_string pvar) int_sort
+        | Exp.Const (Const.Cint const) -> (
+          Z3.Arithmetic.Integer.mk_numeral_i smt_ctx (IntLit.to_int_exn const)          
+        )
+        | _ -> L.(die InternalError)"[Guards] Condition BINOP subexpression is not supported!"
+        in
+
+        let lexp_const = cond_exp_to_z3 lexp in
+        let rexp_const = cond_exp_to_z3 rexp in
         match op with
         | Binop.Lt -> List.append [Z3.Arithmetic.mk_lt smt_ctx lexp_const rexp_const] acc
         | Binop.Le -> List.append [Z3.Arithmetic.mk_le smt_ctx lexp_const rexp_const] acc
         | Binop.Gt -> List.append [Z3.Arithmetic.mk_gt smt_ctx lexp_const rexp_const] acc
         | Binop.Ge -> List.append [Z3.Arithmetic.mk_ge smt_ctx lexp_const rexp_const] acc
-        | _ -> acc
+        | _ -> L.(die InternalError)"[Guards] Condition binop [%a] is not supported!" Exp.pp cond
       )
-      | _ -> acc
+      | _ -> L.(die InternalError)"[Guards] Condition type is not supported by guard!"
     ) edge.conditions [] 
     in
     if List.is_empty cond_expressions then (
@@ -233,25 +257,25 @@ module GraphEdge = struct
       let lhs = Z3.Boolean.mk_and smt_ctx cond_expressions in
       let zero_const = Z3.Arithmetic.Integer.mk_numeral_i smt_ctx 0 in
       let guards = Exp.Set.fold (fun norm acc -> 
-        match norm with
-        | Exp.BinOp _ -> (
-          let rec exp_to_z3_expr exp = match exp with
-          | Exp.Const (Const.Cint const) -> (
-            let const_value = IntLit.to_int_exn const in
-            Z3.Arithmetic.Integer.mk_numeral_i smt_ctx const_value
-          )
-          | Exp.Lvar pvar -> Z3.Expr.mk_const_s smt_ctx (Pvar.to_string pvar) int_sort
-          | Exp.BinOp (op, lexp, rexp) -> (
-            let lexp = exp_to_z3_expr lexp in
-            let rexp = exp_to_z3_expr rexp in
-            match op with
-            | Binop.MinusA -> Z3.Arithmetic.mk_sub smt_ctx [lexp; rexp]
-            | Binop.PlusA -> Z3.Arithmetic.mk_add smt_ctx [lexp; rexp]
-            | _ -> L.(die InternalError)"Norm expression contains invalid binary operator!"
-          )
-          | _ -> L.(die InternalError)"Norm expression contains invalid element!"
-          in
-          let rhs = Z3.Arithmetic.mk_gt smt_ctx (exp_to_z3_expr norm) zero_const in
+        let rec exp_to_z3_expr exp = match exp with
+        | Exp.Const (Const.Cint const) -> (
+          let const_value = IntLit.to_int_exn const in
+          Z3.Arithmetic.Integer.mk_numeral_i smt_ctx const_value
+        )
+        | Exp.Lvar pvar -> Z3.Expr.mk_const_s smt_ctx (Pvar.to_string pvar) int_sort
+        | Exp.BinOp (op, lexp, rexp) -> (
+          let lexp = exp_to_z3_expr lexp in
+          let rexp = exp_to_z3_expr rexp in
+          match op with
+          | Binop.MinusA -> Z3.Arithmetic.mk_sub smt_ctx [lexp; rexp]
+          | Binop.PlusA -> Z3.Arithmetic.mk_add smt_ctx [lexp; rexp]
+          | _ -> L.(die InternalError)"[Guards] Norm expression contains invalid binary operator!"
+        )
+        | _ -> L.(die InternalError)"[Guards] Norm expression contains invalid element!"
+        in
+        
+        let solve_formula rhs =
+          let rhs = Z3.Arithmetic.mk_gt smt_ctx rhs zero_const in
           let formula = Z3.Boolean.mk_not smt_ctx (Z3.Boolean.mk_implies smt_ctx lhs rhs) in
           let goal = (Z3.Goal.mk_goal smt_ctx true false false) in
           Z3.Goal.add goal [formula];
@@ -268,23 +292,63 @@ module GraphEdge = struct
             (* L.stdout "[STATUS] Satisfiable\n"; *)
             acc
           )
+        in
+        match norm with
+        | Exp.BinOp _ | Exp.Lvar _ -> (
+          let rhs = exp_to_z3_expr norm in
+          solve_formula rhs
         )
-        | _ -> acc
-      ) norms Exp.Set.empty 
+        | Exp.Const Const.Cint _ -> acc
+        | _ -> (
+          L.(die InternalError)"[Guards] Norm expression %a is not supported!" Exp.pp norm
+        )
+
+      ) norms Exp.Set.empty
       in
       edge.guards <- guards;
     );
   )
   
   (* Derive difference constraints "x <= y + c" based on edge assignments *)
-  let derive_constraints : t -> Exp.t -> PvarSet.t -> (t * Exp.Set.t) = fun edge norm formals -> (
-    let zero_norm = Exp.Const (Const.Cint IntLit.zero) in
+  let derive_constraints : t -> Exp.t -> PvarSet.t -> Exp.Set.t = fun edge norm formals -> (
     let dc_map = edge.constraints in
     let norm_set = Exp.Set.empty in
     let dc_map, norm_set = match norm with
-    | Exp.Lvar _ -> (
-      (* TODO: simplest form of norm, obtained from condition of form [x > 0] *)
-      dc_map, norm_set
+    | Exp.Lvar x_pvar -> (
+      (* Norm [x] *)
+      if PvarSet.mem x_pvar formals then (
+        (* Ignore norms that are formal parameters *)
+        dc_map, norm_set
+      ) else (
+        let x_assignment = match AssignmentMap.find_opt x_pvar edge.assignments with
+        | Some x_rhs -> Some x_rhs
+        | None -> if PvarSet.mem x_pvar formals then Some (Exp.Lvar x_pvar) else None
+        in
+        match x_assignment with
+        | Some x_rhs -> (
+          if Exp.equal norm x_rhs then (
+            (* [x = x], unchanged *)
+            DC.Map.add_dc norm (DC.make_rhs norm) dc_map, norm_set
+          ) else (
+            match x_rhs with
+            | Exp.BinOp (op, Exp.Lvar rhs_pvar, Exp.Const Const.Cint increment) -> (
+              assert(Pvar.equal x_pvar rhs_pvar);
+              let const = match op with
+              | Binop.PlusA -> increment
+              | Binop.MinusA -> IntLit.neg increment
+              | _ -> L.(die InternalError)"[TODO] currently unsupported binop operator!"
+              in
+              let dc_rhs = DC.make_rhs ~const norm in
+              DC.Map.add_dc norm dc_rhs dc_map, norm_set
+            )
+            | Exp.Lvar _ | Exp.Const Const.Cint _-> (
+              DC.Map.add_dc norm (DC.make_rhs x_rhs) dc_map, Exp.Set.add x_rhs norm_set
+            )
+            | _ -> L.(die InternalError)"[TODO] currently unsupported assignment expression!"
+          )
+        )
+        | None -> dc_map, norm_set
+      )
     )
     | Exp.BinOp (Binop.MinusA, Exp.Lvar x_pvar, Exp.Lvar y_pvar) -> (
       (* Most common form of norm, obtained from condition of form [x > y] -> norm [x - y] *)
@@ -332,7 +396,7 @@ module GraphEdge = struct
           | Exp.Lvar rhs_pvar -> (
             if Pvar.equal rhs_pvar x_pvar then (
               (* norm [x - y], assignment [y = x], zero interval *)
-              DC.Map.add_dc norm (DC.make_rhs zero_norm) dc_map, Exp.Set.add zero_norm norm_set
+              DC.Map.add_dc norm (DC.make_rhs Exp.zero) dc_map, Exp.Set.add Exp.zero norm_set
             ) else (
               (* norm [x - y], assignment [y = z] -> [x - z] *)
               let new_norm = Exp.BinOp (Binop.MinusA, norm_lexp, y_rhs) in
@@ -369,7 +433,7 @@ module GraphEdge = struct
           | Exp.Lvar rhs_pvar -> (
             if Pvar.equal rhs_pvar x_pvar then (
               (* norm [x - y], assignment [x = y], zero interval *)
-              DC.Map.add_dc norm (DC.make_rhs zero_norm) dc_map, Exp.Set.add zero_norm norm_set
+              DC.Map.add_dc norm (DC.make_rhs Exp.zero) dc_map, Exp.Set.add Exp.zero norm_set
             ) else (
               (* norm [x - y], assignment [x = z] -> [z - y] *)
               let new_norm = Exp.BinOp (Binop.MinusA, x_rhs, norm_rexp) in
@@ -386,7 +450,7 @@ module GraphEdge = struct
         else (
           if Exp.equal x_rhs y_rhs then (
             (* norm [x - y], assignments [x = expr] and [y = expr] -> 0 *)  
-            DC.Map.add_dc norm (DC.make_rhs zero_norm) dc_map, Exp.Set.add zero_norm norm_set
+            DC.Map.add_dc norm (DC.make_rhs Exp.zero) dc_map, Exp.Set.add Exp.zero norm_set
           )
           else (
             (* TODO: [x = e1] && [y = e2] -> [e1 - e2] *)
@@ -402,14 +466,11 @@ module GraphEdge = struct
         dc_map, norm_set
       )
     )
-    | _ -> dc_map, norm_set
-    in 
-    let edge_data = { edge with 
-      constraints = dc_map;
-      dcp = true; 
-    }
+    | Exp.Const Const.Cint _ -> dc_map, norm_set
+    | _ -> L.(die InternalError)"[TODO] currently unsupported type of norm!"
     in
-    edge_data, norm_set
+    edge.constraints <- dc_map; 
+    norm_set
   )
 end
 
@@ -474,15 +535,22 @@ module DotConfig = struct
     | None -> ""
     in
 
-    let label = if edge.dcp then (
-      (* let label = Exp.Set.fold (fun guard acc -> 
+    let label = match edge.graph_type with
+    | GraphEdge.GuardedDCP -> (
+      let label = Exp.Set.fold (fun guard acc -> 
         acc ^ exp_to_str guard ^ " > 0\n"
       ) edge.guards label
-      in *)
+      in
       DC.Map.fold (fun lhs (norm, const) acc -> 
-        acc ^ (DC.to_string (lhs, norm, const)) ^ "\n"
+        acc ^ (DC.to_string (lhs, norm, const) true) ^ "\n"
       ) edge.constraints label
-    ) else (
+    )
+    | GraphEdge.DCP -> (
+      DC.Map.fold (fun lhs (norm, const) acc -> 
+        acc ^ (DC.to_string (lhs, norm, const) false) ^ "\n"
+      ) edge.constraints label
+    )
+    | GraphEdge.LTS -> (
       let label = Exp.Set.fold (fun condition acc ->
         acc ^ exp_to_str condition ^ "\n"
       ) edge.conditions label

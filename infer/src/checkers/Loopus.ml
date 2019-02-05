@@ -141,7 +141,6 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
         )
         in
 
-        let zero_exp = Exp.Const (Const.Cint IntLit.zero) in
         let pvar_condition = substitute_pvars cond in
         let prune_condition = match pvar_condition with
         | Exp.BinOp _ -> pvar_condition
@@ -161,10 +160,10 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
             in
             Exp.BinOp (negate_binop, lexp, rexp)
           )
-          | Exp.Const const -> Exp.BinOp (Binop.Eq, Exp.Const const, zero_exp)
+          | Exp.Const const -> Exp.BinOp (Binop.Eq, Exp.Const const, Exp.zero)
           | _ -> L.(die InternalError)"Unsupported prune condition type!"
         )
-        | Exp.Const const -> Exp.BinOp (Binop.Ne, Exp.Const const, zero_exp)
+        | Exp.Const const -> Exp.BinOp (Binop.Ne, Exp.Const const, Exp.zero)
         | _ -> L.(die InternalError)"Unsupported prune condition type!"
         in
 
@@ -185,24 +184,37 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
          * [x > y] -> [x - y] > 0
          * [x >= y] -> [x - y + 1] > 0 *)
         let norms = if branch && is_loop_prune kind then (
-          match prune_condition with
+          let normalize_condition exp = match exp with
           | Exp.BinOp (op, lexp, rexp) -> (
             match op with
-            | Binop.Lt -> Exp.Set.add (Exp.BinOp (Binop.MinusA, rexp, lexp)) astate.initial_norms
-            | Binop.Le -> (
-              let subexp = Exp.BinOp (Binop.MinusA, rexp, lexp) in
-              let norm = Exp.BinOp (Binop.PlusA, subexp, Exp.Const (Const.Cint IntLit.one)) in
-              Exp.Set.add norm astate.initial_norms
-            )
-            | Binop.Gt -> Exp.Set.add (Exp.BinOp (Binop.MinusA, lexp, rexp)) astate.initial_norms
-            | Binop.Ge -> (
-              let subexp = Exp.BinOp (Binop.MinusA, lexp, rexp) in
-              let norm = Exp.BinOp (Binop.PlusA, subexp, Exp.Const (Const.Cint IntLit.one)) in
-              Exp.Set.add norm astate.initial_norms
-            )
-            | _ -> astate.initial_norms
+            | Binop.Lt -> Exp.BinOp (Binop.Gt, rexp, lexp)
+            | Binop.Le -> Exp.BinOp (Binop.Ge, rexp, lexp)
+            | _ -> Exp.BinOp (op, lexp, rexp)
           )
-          | _ -> astate.initial_norms
+          | _ -> exp
+          in
+
+          match normalize_condition prune_condition with
+          | Exp.BinOp (op, lexp, rexp) -> (
+            let process_gt lhs rhs =
+              let lhs_is_zero = Exp.is_zero lhs in
+              let rhs_is_zero = Exp.is_zero rhs in
+              if lhs_is_zero && rhs_is_zero then Exp.zero
+              else if lhs_is_zero then Exp.UnOp (Unop.Neg, rhs, None)
+              else if rhs_is_zero then lhs
+              else Exp.BinOp (Binop.MinusA, lhs, rhs)
+            in
+
+            let process_op op = match op with
+              | Binop.Gt -> process_gt lexp rexp
+              | Binop.Ge -> Exp.BinOp (Binop.PlusA, (process_gt lexp rexp), Exp.one)
+              | _ -> L.(die InternalError)"Unsupported PRUNE binary operator!"
+            in
+
+            let new_norm = process_op op in
+            Exp.Set.add new_norm astate.initial_norms
+          )
+          | _ -> L.(die InternalError)"Unsupported PRUNE expression!"
         ) else (
           astate.initial_norms
         )
@@ -456,7 +468,7 @@ module Analyzer = AbstractInterpreter.Make (CFG) (TransferFunctions)
         LTS.add_edge_e lts edge;
       ) post.graph_edges;
 
-      let file = Out_channel.create "test_graph.dot" in
+      let file = Out_channel.create "LTS.dot" in
       let () = Dot.output_graph file lts in
       Out_channel.close file;
 
@@ -473,23 +485,17 @@ module Analyzer = AbstractInterpreter.Make (CFG) (TransferFunctions)
         * add newly created norms unprocessed_norms set during the process *)
       let unprocessed_norms = ref post.initial_norms in
       let processed_norms = ref Exp.Set.empty in
-      let graph_edges = ref post.graph_edges in
       while not (Exp.Set.is_empty !unprocessed_norms) do (
         let norm = Exp.Set.min_elt !unprocessed_norms in
         unprocessed_norms := Exp.Set.remove norm !unprocessed_norms;
         processed_norms := Exp.Set.add norm !processed_norms;
-        match norm with
-        | Exp.BinOp _ -> (
-          graph_edges := LTS.EdgeSet.map (fun (src, edge_data, dst) -> 
-            let edge_data, new_norms = GraphEdge.derive_constraints edge_data norm formals in
+        LTS.EdgeSet.iter (fun (_, edge_data, _) -> 
+          let new_norms = GraphEdge.derive_constraints edge_data norm formals in
 
-            (* Remove duplicate norms and add new norms to unprocessed set *)
-            let new_norms = Exp.Set.diff new_norms (Exp.Set.inter new_norms !processed_norms) in
-            unprocessed_norms := Exp.Set.union new_norms !unprocessed_norms;
-            (src, edge_data, dst)
-          ) !graph_edges;
-        )
-        | _ -> () (* Ignore other norms for now *)
+          (* Remove already processed norms and add new norms to unprocessed set *)
+          let new_norms = Exp.Set.diff new_norms (Exp.Set.inter new_norms !processed_norms) in
+          unprocessed_norms := Exp.Set.union new_norms !unprocessed_norms;
+        ) post.graph_edges;
       ) done;
 
       log "[FINAL NORMS]\n";
@@ -505,10 +511,11 @@ module Analyzer = AbstractInterpreter.Make (CFG) (TransferFunctions)
       let cfg = [("model", "true"); ("proof", "true")] in
       let ctx = (Z3.mk_context cfg) in
       let solver = (Z3.Solver.mk_solver ctx None) in
-      LTS.EdgeSet.iter (fun (src, data, dst) -> 
-        GraphEdge.derive_guards data !processed_norms solver ctx;
-        LTS.add_edge_e dcp (src, data, dst);
-      ) !graph_edges;
+      LTS.EdgeSet.iter (fun (src, edge_data, dst) -> 
+        edge_data.graph_type <- GraphEdge.GuardedDCP;
+        GraphEdge.derive_guards edge_data !processed_norms solver ctx;
+        LTS.add_edge_e dcp (src, edge_data, dst);
+      ) post.graph_edges;
       
       let guarded_nodes = LTS.fold_edges_e (fun (_, edge_data, dst) acc -> 
         if Exp.Set.is_empty edge_data.guards then acc else LTS.NodeSet.add dst acc
@@ -565,6 +572,11 @@ module Analyzer = AbstractInterpreter.Make (CFG) (TransferFunctions)
       in
       propagate_guards guarded_nodes;
 
+      (* Output Guarded DCP over integers *)
+      let file = Out_channel.create "DCP_guarded.dot" in
+      let () = Dot.output_graph file dcp in
+      Out_channel.close file;
+
       (* Convert DCP with guards to DCP without guards over natural numbers *)
       let to_natural_numbers : LTS.EdgeSet.t -> unit = fun edges -> (
         LTS.EdgeSet.iter (fun (_, edge_data, _) -> 
@@ -577,13 +589,14 @@ module Analyzer = AbstractInterpreter.Make (CFG) (TransferFunctions)
             )
           ) edge_data.constraints
           in
-          edge_data.constraints <- constraints
+          edge_data.constraints <- constraints;
+          edge_data.graph_type <- GraphEdge.DCP;
         ) edges
       )
       in
-      to_natural_numbers !graph_edges;
+      to_natural_numbers post.graph_edges;
 
-      let file = Out_channel.create "test_dcp.dot" in
+      let file = Out_channel.create "DCP.dot" in
       let () = Dot.output_graph file dcp in
       Out_channel.close file;
 
