@@ -19,12 +19,12 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
   module CFG = ProcCFG
   module Domain = Domain
 
-  type nonrec extras = (Domain.PvarSet.t * Domain.PvarSet.t)
+  type nonrec extras = (Typ.t Domain.PvarMap.t * Typ.t Domain.PvarMap.t)
 
   let pp_session_name node fmt = F.fprintf fmt "loopus %a" CFG.Node.pp_id (CFG.Node.id node)
 
   (* Take an abstract state and instruction, produce a new abstract state *)
-  let exec_instr : Domain.astate -> 'a ProcData.t -> CFG.Node.t -> Sil.instr -> Domain.astate =
+  let exec_instr : Domain.astate -> extras ProcData.t -> CFG.Node.t -> Sil.instr -> Domain.astate =
     fun astate {pdesc; tenv; extras} node instr ->
 
     let open Domain in
@@ -72,7 +72,7 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
     | Exp.UnOp (_, sub_exp, _) -> (
       extract_formals sub_exp acc
     )
-    | Exp.Lvar pvar when PvarSet.mem pvar formals -> PvarSet.add pvar acc
+    | Exp.Lvar pvar when PvarMap.mem pvar formals -> PvarSet.add pvar acc
     | _ -> acc
     in
 
@@ -366,50 +366,21 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
  end
 
 
-
-let basic_tests ( ctx : Z3.context ) =
-  let open Z3 in
-  let open Z3.Symbol in
-  let open Z3.Boolean in
-  let open Z3.Arithmetic in
-  log "BasicTests\n" ;
-  (* let fname = mk_string ctx "f" in *)
-  let int_sort = Integer.mk_sort ctx in
-  let len = Expr.mk_const_s ctx "len" int_sort in
-  let idx = Expr.mk_const_s ctx "idx" int_sort in
-  let bs = Boolean.mk_sort ctx in
-  let domain = [ bs; bs ] in
-  (* let f = (FuncDecl.mk_func_decl ctx fname domain bs) in *)
-  (* let fapp = (mk_app ctx f 
-		[ (Expr.mk_const ctx x bs); (Expr.mk_const ctx y bs) ]) in *)
-  (* let rhs = mk_gt ctx (mk_sub ctx len idx) (Integer.mk_numeral_i ctx 0) in *)
-  let zero_const = Integer.mk_numeral_i ctx 0 in
-  let lhs = Arithmetic.mk_gt ctx len idx in
-  let rhs = Arithmetic.mk_gt ctx (Arithmetic.mk_sub ctx [len; idx]) zero_const in
-  let formula = mk_not ctx (mk_implies ctx lhs rhs) in
-  (* let g = (Goal.mk_goal ctx true false false) in
-  (Goal.add g [ formula ]) ;
-  log "%s\n" ("Goal: " ^ (Goal.to_string g)) ; *)
-  let solver = (Solver.mk_solver ctx None) in
-  (* let formulas = Goal.get_formulas g in *)
-  Solver.add solver [formula];
-  (* (List.iter (fun a -> (Solver.add solver [ a ])) (get_formulas g)) ; *)
-  let solve_status = Solver.check solver [] in
-  if phys_equal solve_status Solver.SATISFIABLE then
-    log "Satisfiable\n"
-  else (
-    let proof = Solver.get_proof solver in
-    log "Not satisfiable\n";
-    (* match proof with
-    | Some expr -> log "PROOF: %s\n" (Expr.to_string expr)
-    | _ -> (); *)
-  )
-
-
 module CFG = ProcCfg.NormalOneInstrPerNode
 (* module CFG = ProcCfg.Normal *)
 
+module SCC = Graph.Components.Make(Domain.LTS)
+
 module Analyzer = AbstractInterpreter.Make (CFG) (TransferFunctions)
+  module Increments = Caml.Set.Make(struct
+    type nonrec t = Domain.GraphEdge.t * IntLit.t
+    [@@deriving compare]
+  end)
+  module Resets = Caml.Set.Make(struct
+    type nonrec t = Domain.GraphEdge.t * Exp.t * IntLit.t
+    [@@deriving compare]
+  end)
+
   let checker {Callbacks.tenv; proc_desc; summary} : Summary.t =
     let open Domain in
 
@@ -434,17 +405,21 @@ module Analyzer = AbstractInterpreter.Make (CFG) (TransferFunctions)
 
     let proc_name = Procdesc.get_proc_name proc_desc in
     let formals_mangled = Procdesc.get_formals proc_desc in
-    let formals = List.fold formals_mangled ~init:PvarSet.empty ~f:(fun acc (name, _) ->
+    let formals = List.fold formals_mangled ~init:PvarMap.empty ~f:(fun acc (name, typ) ->
       let formal_pvar = Pvar.mk name proc_name in
-      PvarSet.add formal_pvar acc
+      PvarMap.add formal_pvar typ acc
     )
     in
     let locals = Procdesc.get_locals proc_desc in
-    let locals = List.fold locals ~init:PvarSet.empty ~f:(fun acc (local : ProcAttributes.var_data) ->
+    let locals = List.fold locals ~init:PvarMap.empty ~f:(fun acc (local : ProcAttributes.var_data) ->
       log "%a\n" Procdesc.pp_local local;
       let pvar = Pvar.mk local.name proc_name in
-      PvarSet.add pvar acc
+      PvarMap.add pvar local.typ acc
     )
+    in
+    let type_map = PvarMap.union (fun key typ1 typ2 -> 
+      L.(die InternalError)"Type map pvar clash!"
+    ) locals formals 
     in
     let extras = (locals, formals) in
     let proc_data = ProcData.make proc_desc tenv extras in
@@ -599,6 +574,188 @@ module Analyzer = AbstractInterpreter.Make (CFG) (TransferFunctions)
       let file = Out_channel.create "DCP.dot" in
       let () = Dot.output_graph file dcp in
       Out_channel.close file;
+
+      let components = SCC.scc_list dcp in
+      List.iter components ~f:(fun component -> 
+        log "[SCC]\n";
+        List.iter component ~f:(fun node -> 
+          List.iter component ~f:(fun node2 -> (
+            let edges = LTS.find_all_edges dcp node node2 in
+            log "  %a --- %a [%d]\n" GraphNode.pp node GraphNode.pp node2 (List.length edges);
+          ))
+        )
+      );
+
+      (* Bound computation for VASS with a hack for now. Proper bound algorithm
+       * needs a algorithm that determines local bounds for each transition
+       * which involves computation of strongly connected components
+       * of a graph... *)
+      let decreased_edges = LTS.EdgeSet.fold (fun (_, edge_data, _) acc ->
+        let is_decreased = DC.Map.exists (fun lhs (rhs, const) -> 
+          let dc = lhs, rhs, const in
+          if DC.is_decreasing dc then (
+            log "EDGE: %a\n" DC.pp dc;
+            edge_data.bound_norm <- Some lhs;
+            true
+          ) else (
+            false
+          )
+        ) edge_data.constraints
+        in
+        if is_decreased then GraphEdge.Set.add edge_data acc else acc
+      ) post.graph_edges GraphEdge.Set.empty
+      in
+
+      let get_update_map norm edges update_map = 
+        if Exp.Map.mem norm update_map then (
+          update_map
+        ) else (
+          (* Create missing increments and resets sets for this variable norm *)
+          let updates = LTS.EdgeSet.fold (fun (_, edge_data, _) (increments, resets) -> 
+            match DC.Map.get_dc norm edge_data.constraints with
+            | Some dc -> (
+              (* Variable norm is used on this edge *)
+              let _, rhs_norm, const = dc in
+              if not (DC.same_norms dc) then (
+                (* Must be a reset *)
+                let resets = Resets.add (edge_data, rhs_norm, const) resets in
+                increments, resets
+              ) else if DC.is_increasing dc then (
+                (* Must be a increment *)
+                let increments = Increments.add (edge_data, const) increments in
+                (increments, resets)
+              ) else (increments, resets)
+            )
+            | None -> (increments, resets)
+          ) edges (Increments.empty, Resets.empty)
+          in
+          Exp.Map.add norm updates update_map
+        )
+      in
+
+      let get_reset_sum resets =
+        (* Calculates reset sum based on resets of variable norm *)
+        Resets.fold (fun (edge, norm, const) sum ->
+          let reset_exp = match norm with
+          | Exp.Lvar pvar -> (
+            match PvarMap.find_opt pvar type_map with
+            | Some typ -> (
+              match typ.desc with
+              | Typ.Tint ikind -> (
+                let exp = if IntLit.iszero const then norm
+                else Exp.BinOp (Binop.PlusA, norm, Exp.Const (Const.Cint const))
+                in
+                if Typ.ikind_is_unsigned ikind && not (IntLit.isnegative const) then (
+                  (* sum [a + c] >= 0, which means max(a + c, 0) -> a + c *)
+                  Some (Bound.Value exp)
+                ) else (
+                  (* sum [a + c] might be negative -> max(a + c, 0) *)
+                  Some (Bound.Max exp)
+                )
+              )
+              | _ -> L.(die InternalError)"[Reset Sum] Unexpected Lvar type!"
+            )
+            | None -> L.(die InternalError)"[Reset Sum] Lvar [%a] is not a local variable!" Pvar.pp_value pvar
+          )
+          | Exp.Const const_norm when Const.iszero_int_float const_norm -> (
+            if IntLit.isnegative const then (
+              Some (Bound.Max (Exp.Const (Const.Cint const)))
+            ) else if not (IntLit.iszero const) then (
+              Some (Bound.Value (Exp.Const (Const.Cint const)))
+            ) else None
+          )
+          | _ -> L.(die InternalError)"[Reset Sum] Unsupported norm expression [%a]!" Exp.pp norm
+          in
+          match sum with
+          | Some sum -> (
+            match reset_exp with
+            | Some exp -> Some (Bound.BinOp (Binop.PlusA, sum, exp))
+            | None -> Some sum
+          )
+          | None -> reset_exp
+        ) resets None
+      in
+
+      let rec calculate_bound bound_norm edges update_map = match bound_norm with
+      | Some norm -> (
+        match norm with
+        | Exp.Lvar pvar when not (PvarMap.mem pvar formals) -> (
+          let update_map = get_update_map norm edges update_map in
+          let increments, resets = Exp.Map.find norm update_map in
+
+          log "Variable norm: %a\n" Pvar.pp_value pvar;
+          Resets.iter (fun (edge, norm, const) -> 
+            log "  [Reset] Norm: %a; Const: %a\n" Exp.pp norm IntLit.pp const;
+          ) resets;
+          Increments.iter (fun (edge, const) -> 
+            log "  [Increment] Const: %a\n" IntLit.pp const;
+          ) increments;
+
+          (* If local bound is a variable then TB(t) = Incr(v) + SUM_resets(max(a + c, 0))
+          * Incr(v) = SUM_increments(TB(t) * c) *)
+          let increment_sum, update_map = Increments.fold (fun (edge, const) (sum, update_map) ->
+            (* const is always positive in this case *)
+            let edge_bound, update_map = match edge.bound_cache with
+            | Some bound -> bound, update_map
+            | None -> calculate_bound edge.bound_norm edges update_map
+            in
+            let increment_exp = if Bound.is_zero edge_bound then (
+              None
+            ) else (
+              if IntLit.isone const then (
+                Some edge_bound
+              ) else (
+                let const_exp = Exp.Const (Const.Cint const) in
+                Some (Bound.BinOp (Binop.Mult, edge_bound, Bound.Value const_exp))
+              )
+            )
+            in
+            let sum = match sum with
+            | Some sum -> (
+              match increment_exp with
+              | Some exp -> Some (Bound.BinOp (Binop.PlusA, sum, exp))
+              | None -> Some sum
+            )
+            | None -> increment_exp
+            in
+            sum, update_map
+          ) increments (None, update_map)
+          in
+          let reset_sum = get_reset_sum resets in
+
+          let edge_bound = match increment_sum, reset_sum with
+          | Some increments, Some resets -> (
+            Bound.BinOp (Binop.PlusA, increments, resets)
+          )
+          | Some bound, None | None, Some bound -> (
+            bound
+          )
+          | None, None -> Bound.Value (Exp.zero)
+          in
+          log "[Edge bound] %a\n" Bound.pp edge_bound;
+          edge_bound, update_map
+        )
+        | _ -> L.(die InternalError)"[Bound] Unsupported norm expression [%a]!" Exp.pp norm
+      )
+      | None -> L.(die InternalError)"[Bound] edge has no bound norm!"
+      in
+      
+      (* Bound on decreased edges *)
+      let update_map = Exp.Map.empty in
+      let final_bound, update_map = GraphEdge.Set.fold (fun edge (final_bound, update_map) ->
+        let bound, update_map = calculate_bound edge.bound_norm post.graph_edges update_map in
+        edge.bound_cache <- Some bound;
+        let final_bound = match final_bound with
+        | Some sum -> Bound.BinOp (Binop.PlusA, sum, bound)
+        | None -> bound
+        in
+        Some final_bound, update_map
+      ) decreased_edges (None, update_map)
+      in
+      log "[Final bound]\n";
+      (match final_bound with
+      | Some bound -> log "  %a\n" Bound.pp bound
+      | None -> ());
 
       Payload.update_summary post summary
     ) 

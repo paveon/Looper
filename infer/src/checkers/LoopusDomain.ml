@@ -21,6 +21,24 @@ module PvarSet = struct
     "[" ^ (String.rstrip tmp) ^ "]"
 end
 
+
+module PvarMap = struct
+  include Caml.Map.Make(Pvar)
+
+  let pp fmt set =
+    iter (fun pvar _ ->
+      F.fprintf fmt " %s " (Pvar.to_string pvar)
+    ) set
+
+  let to_string set =
+    let tmp = fold (fun pvar _ acc ->
+      acc ^ Pvar.to_string pvar ^ " "
+    ) set ""
+    in
+    "[" ^ (String.rstrip tmp) ^ "]"
+end
+
+
 let rec exp_to_str ?(braces = false) exp = match exp with
   | Exp.BinOp (op, lexp, rexp) -> (
     let lexp = exp_to_str ~braces lexp in
@@ -73,8 +91,8 @@ module DC = struct
       dc ^ " + " ^ IntLit.to_string rhs_const
     )
     
-  let pp fmt dc guarded = 
-    F.fprintf fmt "%s" (to_string dc guarded)
+  let pp fmt dc = 
+    F.fprintf fmt "%s" (to_string dc false)
 
   module Map = struct
     include Caml.Map.Make (struct 
@@ -162,6 +180,26 @@ module AssignmentMap = struct
   include Caml.Map.Make(Pvar)
 end
 
+module Bound = struct
+  type t =
+  | BinOp of Binop.t * t * t
+  | Value of Exp.t
+  | Max of Exp.t
+  [@@deriving compare]
+
+  let rec to_string bound = match bound with
+  | BinOp (op, lhs, rhs) -> (
+    F.sprintf "%s %s %s" (to_string lhs) (Binop.(str Pp.text) op) (to_string rhs)
+  )
+  | Value exp -> Exp.to_string exp
+  | Max exp -> F.sprintf "max(%s, 0)" (Exp.to_string exp)
+
+  let pp fmt bound = F.fprintf fmt "%s" (to_string bound)
+
+  let is_zero bound = match bound with
+  | Value exp -> Exp.is_zero exp
+  | _ -> false
+end
 
 module GraphEdge = struct
   type graph_type = LTS | GuardedDCP | DCP
@@ -173,6 +211,8 @@ module GraphEdge = struct
     assignments: Exp.t AssignmentMap.t;
     mutable constraints: DC.rhs DC.Map.t;
     mutable guards: Exp.Set.t;
+    mutable bound_cache: Bound.t option;
+    mutable bound_norm: Exp.t option;
 
     (* Last element of common path prefix *)
     path_prefix_end: prune_info option; 
@@ -181,6 +221,10 @@ module GraphEdge = struct
 
   let equal = [%compare.equal: t]
 
+  module Set = Caml.Set.Make(struct
+    type nonrec t = t
+    let compare = compare
+  end)
 
   let make : Exp.t AssignmentMap.t -> prune_info option -> t = fun assignments prefix_end -> {
     graph_type = LTS;
@@ -188,6 +232,8 @@ module GraphEdge = struct
     assignments = assignments;
     constraints = DC.Map.empty;
     guards = Exp.Set.empty;
+    bound_cache = None;
+    bound_norm = None;
     path_prefix_end = prefix_end; 
   }
 
@@ -310,19 +356,19 @@ module GraphEdge = struct
   )
   
   (* Derive difference constraints "x <= y + c" based on edge assignments *)
-  let derive_constraints : t -> Exp.t -> PvarSet.t -> Exp.Set.t = fun edge norm formals -> (
+  let derive_constraints : t -> Exp.t -> Typ.t PvarMap.t -> Exp.Set.t = fun edge norm formals -> (
     let dc_map = edge.constraints in
     let norm_set = Exp.Set.empty in
     let dc_map, norm_set = match norm with
     | Exp.Lvar x_pvar -> (
       (* Norm [x] *)
-      if PvarSet.mem x_pvar formals then (
+      if PvarMap.mem x_pvar formals then (
         (* Ignore norms that are formal parameters *)
         dc_map, norm_set
       ) else (
         let x_assignment = match AssignmentMap.find_opt x_pvar edge.assignments with
         | Some x_rhs -> Some x_rhs
-        | None -> if PvarSet.mem x_pvar formals then Some (Exp.Lvar x_pvar) else None
+        | None -> if PvarMap.mem x_pvar formals then Some (Exp.Lvar x_pvar) else None
         in
         match x_assignment with
         | Some x_rhs -> (
@@ -354,11 +400,11 @@ module GraphEdge = struct
       (* Most common form of norm, obtained from condition of form [x > y] -> norm [x - y] *)
       let lexp_assignment_rhs = match AssignmentMap.find_opt x_pvar edge.assignments with
       | Some x_rhs -> Some x_rhs
-      | None -> if PvarSet.mem x_pvar formals then Some (Exp.Lvar x_pvar) else None
+      | None -> if PvarMap.mem x_pvar formals then Some (Exp.Lvar x_pvar) else None
       in
       let rexp_assignment_rhs = match AssignmentMap.find_opt y_pvar edge.assignments with
       | Some y_rhs -> Some y_rhs
-      | None -> if PvarSet.mem y_pvar formals then Some (Exp.Lvar y_pvar) else None
+      | None -> if PvarMap.mem y_pvar formals then Some (Exp.Lvar y_pvar) else None
       in
 
       match lexp_assignment_rhs, rexp_assignment_rhs with
