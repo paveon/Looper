@@ -206,13 +206,14 @@ module GraphEdge = struct
   [@@deriving compare]
 
   type t = {
-    mutable graph_type: graph_type;
+    backedge: bool;
     conditions: Exp.Set.t;
     assignments: Exp.t AssignmentMap.t;
     mutable constraints: DC.rhs DC.Map.t;
     mutable guards: Exp.Set.t;
     mutable bound_cache: Bound.t option;
     mutable bound_norm: Exp.t option;
+    mutable graph_type: graph_type;
 
     (* Last element of common path prefix *)
     path_prefix_end: prune_info option; 
@@ -227,13 +228,14 @@ module GraphEdge = struct
   end)
 
   let make : Exp.t AssignmentMap.t -> prune_info option -> t = fun assignments prefix_end -> {
-    graph_type = LTS;
+    backedge = false;
     conditions = Exp.Set.empty;
     assignments = assignments;
     constraints = DC.Map.empty;
     guards = Exp.Set.empty;
     bound_cache = None;
     bound_norm = None;
+    graph_type = LTS;
     path_prefix_end = prefix_end; 
   }
 
@@ -241,6 +243,8 @@ module GraphEdge = struct
 
   (* Required by Graph module interface *)
   let default = empty
+
+  let set_backedge : t -> t = fun edge -> { edge with backedge = true }
 
   let add_condition : t -> Exp.t -> t = fun edge cond ->
     { edge with conditions = Exp.Set.add cond edge.conditions }
@@ -597,6 +601,7 @@ module DotConfig = struct
       ) edge.constraints label
     )
     | GraphEdge.LTS -> (
+      let label = if edge.backedge then label ^ "[backedge]\n" else label in
       let label = Exp.Set.fold (fun condition acc ->
         acc ^ exp_to_str condition ^ "\n"
       ) edge.conditions label
