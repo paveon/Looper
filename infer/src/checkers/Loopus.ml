@@ -29,7 +29,7 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
 
     let open Domain in
 
-    let locals, formals = fst extras, snd extras in
+    let locals, formals = extras in
 
     let is_exit_node = match ProcCFG.Node.kind node with
       | Procdesc.Node.Exit_node -> true
@@ -78,301 +78,268 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
 
 
     let astate = match instr with
-    | Prune (cond, loc, branch, kind) ->
-      (
-        log "[PRUNE] (%a) | %a\n" Location.pp loc Exp.pp cond;
+    | Prune (cond, loc, branch, kind) -> (
+      log "[PRUNE] (%a) | %a\n" Location.pp loc Exp.pp cond;
 
-        let lts_prune_loc = LTSLocation.PruneLoc (kind, loc) in
-        let newLocSet = LocSet.add loc astate.branchLocs in
-        let newEdge = Edge.set_end astate.current_edge lts_prune_loc in
+      let lts_prune_loc = LTSLocation.PruneLoc (kind, loc) in
 
-        let edge_data = GraphEdge.add_invariants astate.edge_data (get_unmodified_pvars astate) in
-        let prune_node = GraphNode.make lts_prune_loc in
-        let lhs = astate.aggregate_join.lhs in
-        let rhs = astate.aggregate_join.rhs in
-        let graph_nodes = LTS.NodeSet.add prune_node astate.graph_nodes in
+      let edge_data = GraphEdge.add_invariants astate.edge_data (get_unmodified_pvars astate) in
+      let prune_node = GraphNode.make lts_prune_loc in
+      let lhs = astate.aggregate_join.lhs in
+      let rhs = astate.aggregate_join.rhs in
+      let graph_nodes = LTS.NodeSet.add prune_node astate.graph_nodes in
 
-        let is_direct_backedge = LTSLocation.equal lts_prune_loc lhs || LTSLocation.equal lts_prune_loc rhs in
-        let astate = if is_direct_backedge then (
-          (* Discard join node and all edges poiting to it and instead make
-           * one direct backedge with variables modified inside the loop *)
-          let join_edges =  astate.aggregate_join.edges in
-          let src, edge_data, _ = List.find_exn (LTS.EdgeSet.elements join_edges) ~f:(fun edge ->
-            let backedge_origin = LTS.E.src edge in
-            GraphNode.equal backedge_origin prune_node
-          )
+      let is_direct_backedge = LTSLocation.equal lts_prune_loc lhs || LTSLocation.equal lts_prune_loc rhs in
+      let astate = if is_direct_backedge then (
+        (* Discard join node and all edges poiting to it and instead make
+          * one direct backedge with variables modified inside the loop *)
+        let join_edges =  astate.aggregate_join.edges in
+        let src, edge_data, _ = List.find_exn (LTS.EdgeSet.elements join_edges) ~f:(fun edge ->
+          let backedge_origin = LTS.E.src edge in
+          GraphNode.equal backedge_origin prune_node
+        )
+        in
+        let edge_data = GraphEdge.set_backedge edge_data in
+        let backedge = LTS.E.create src edge_data prune_node in
+        let graph_edges = LTS.EdgeSet.add backedge astate.graph_edges in
+        let graph_nodes = LTS.NodeSet.remove astate.last_node graph_nodes in
+        { astate with graph_edges = graph_edges; graph_nodes = graph_nodes }
+      ) else (
+        let location_cmp : Location.t -> Location.t -> bool = fun loc_a loc_b ->
+          loc_a.line > loc_b.line
+        in
+        let is_backedge = match lhs, rhs with
+        | LTSLocation.PruneLoc (_, lhs), LTSLocation.PruneLoc (_, rhs) -> (
+          location_cmp lhs loc || location_cmp rhs loc
+        )
+        | LTSLocation.PruneLoc (_, lhs), _ -> location_cmp lhs loc
+        | _, LTSLocation.PruneLoc (_, rhs) -> location_cmp rhs loc
+        | _ -> false
+        in
+        (* Add all accumulated edges pointing to aggregated join node and
+          * new edge pointing from aggregated join node to this prune node *)
+        let edge_count = AggregateJoin.edge_count astate.aggregate_join in
+        let is_empty_edge = GraphEdge.equal astate.edge_data GraphEdge.empty in
+        if not (is_loop_prune kind) && Int.equal edge_count 2 && is_empty_edge then (
+          (* LTS simplification, skip simple JOIN node and redirect edges pointing to it *)
+          let graph_edges = LTS.EdgeSet.map (fun (src, data, dst) ->
+            (src, data, prune_node)
+          ) astate.aggregate_join.edges
           in
-          let edge_data = GraphEdge.set_backedge edge_data in
-          let backedge = LTS.E.create src edge_data prune_node in
-          let graph_edges = LTS.EdgeSet.add backedge astate.graph_edges in
           let graph_nodes = LTS.NodeSet.remove astate.last_node graph_nodes in
+          let graph_edges = (LTS.EdgeSet.union astate.graph_edges graph_edges) in
+          { astate with graph_edges = graph_edges; graph_nodes = graph_nodes }
+        ) else if Int.equal edge_count 1 then (
+          (* JOIN node with single incoming edge (useless node).
+            * Redirect incoming edge to prune node and delete join node *)
+          let graph_edges = LTS.EdgeSet.map (fun (src, edge_data, _) ->
+            let edge_data = if is_backedge then GraphEdge.set_backedge edge_data else edge_data in
+            (src, edge_data, prune_node)
+          ) astate.aggregate_join.edges
+          in
+          let graph_nodes = LTS.NodeSet.remove astate.last_node graph_nodes in
+          let graph_edges = (LTS.EdgeSet.union astate.graph_edges graph_edges) in
           { astate with graph_edges = graph_edges; graph_nodes = graph_nodes }
         ) else (
-          let location_cmp : Location.t -> Location.t -> bool = fun loc_a loc_b ->
-            loc_a.line > loc_b.line
-          in
-          let is_backedge = match lhs, rhs with
-          | LTSLocation.PruneLoc (_, lhs), LTSLocation.PruneLoc (_, rhs) -> (
-            location_cmp lhs loc || location_cmp rhs loc
-          )
-          | LTSLocation.PruneLoc (_, lhs), _ -> location_cmp lhs loc
-          | _, LTSLocation.PruneLoc (_, rhs) -> location_cmp rhs loc
-          | _ -> false
-          in
-          (* Add all accumulated edges pointing to aggregated join node and
-           * new edge pointing from aggregated join node to this prune node *)
-          let edge_count = AggregateJoin.edge_count astate.aggregate_join in
-          let is_empty_edge = GraphEdge.equal astate.edge_data GraphEdge.empty in
-          if not (is_loop_prune kind) && Int.equal edge_count 2 && is_empty_edge then (
-            (* LTS simplification, skip simple JOIN node and redirect edges pointing to it *)
-            let graph_edges = LTS.EdgeSet.map (fun (src, data, dst) ->
-              (src, data, prune_node)
-            ) astate.aggregate_join.edges
-            in
-            let graph_nodes = LTS.NodeSet.remove astate.last_node graph_nodes in
-            let graph_edges = (LTS.EdgeSet.union astate.graph_edges graph_edges) in
-            { astate with graph_edges = graph_edges; graph_nodes = graph_nodes }
-          ) else if Int.equal edge_count 1 then (
-            (* JOIN node with single incoming edge (useless node).
-             * Redirect incoming edge to prune node and delete join node *)
-            let graph_edges = LTS.EdgeSet.map (fun (src, edge_data, _) ->
-              let edge_data = if is_backedge then GraphEdge.set_backedge edge_data else edge_data in
-              (src, edge_data, prune_node)
-            ) astate.aggregate_join.edges
-            in
-            let graph_nodes = LTS.NodeSet.remove astate.last_node graph_nodes in
-            let graph_edges = (LTS.EdgeSet.union astate.graph_edges graph_edges) in
-            { astate with graph_edges = graph_edges; graph_nodes = graph_nodes }
-          ) else (
-            let path_end = List.last astate.branchingPath in
-            let edge_data = GraphEdge.set_path_end edge_data path_end in
-            let edge_data = if is_backedge then GraphEdge.set_backedge edge_data else edge_data in
-            let new_lts_edge = LTS.E.create astate.last_node edge_data prune_node in
-            let graph_edges = LTS.EdgeSet.add new_lts_edge astate.graph_edges in
-            let graph_edges = LTS.EdgeSet.union astate.aggregate_join.edges graph_edges in
-            { astate with graph_edges = graph_edges; graph_nodes = graph_nodes }
-          )
-        )
-        in
-
-        let pvar_condition = substitute_pvars cond in
-        let prune_condition = match pvar_condition with
-        | Exp.BinOp _ -> pvar_condition
-        | Exp.UnOp (LNot, exp, _) -> (
-          (* Currently handles only "!exp" *)
-          match exp with
-          | Exp.BinOp (op, lexp, rexp) -> (
-            (* Handles "!(lexp BINOP rexp)" *)
-            let negate_binop = match op with
-            | Binop.Lt -> Binop.Ge
-            | Binop.Gt -> Binop.Le
-            | Binop.Le -> Binop.Gt
-            | Binop.Ge -> Binop.Lt
-            | Binop.Eq -> Binop.Ne
-            | Binop.Ne -> Binop.Eq
-            | _ -> L.(die InternalError)"Unsupported prune condition type!"
-            in
-            Exp.BinOp (negate_binop, lexp, rexp)
-          )
-          | Exp.Const const -> Exp.BinOp (Binop.Eq, Exp.Const const, Exp.zero)
-          | _ -> L.(die InternalError)"Unsupported prune condition type!"
-        )
-        | Exp.Const const -> Exp.BinOp (Binop.Ne, Exp.Const const, Exp.zero)
-        | _ -> L.(die InternalError)"Unsupported prune condition type!"
-        in
-
-        (* We're tracking formals which are used in
-         * loop header conditions inside the loop body *)
-        let tracked_formals = if is_loop_prune kind then (
-          let cond_formals = extract_formals pvar_condition PvarSet.empty in
-          if branch then (
-            PvarSet.union astate.tracked_formals cond_formals
-          ) else (
-            (* Remove formals from false branch of loop *)
-            PvarSet.diff astate.tracked_formals cond_formals
-          )
-        ) else astate.tracked_formals
-        in
-
-        (* Derive norm from prune condition.
-         * [x > y] -> [x - y] > 0
-         * [x >= y] -> [x - y + 1] > 0 *)
-        let norms = if branch && is_loop_prune kind then (
-          let normalize_condition exp = match exp with
-          | Exp.BinOp (op, lexp, rexp) -> (
-            match op with
-            | Binop.Lt -> Exp.BinOp (Binop.Gt, rexp, lexp)
-            | Binop.Le -> Exp.BinOp (Binop.Ge, rexp, lexp)
-            | _ -> Exp.BinOp (op, lexp, rexp)
-          )
-          | _ -> exp
-          in
-
-          match normalize_condition prune_condition with
-          | Exp.BinOp (op, lexp, rexp) -> (
-            let process_gt lhs rhs =
-              let lhs_is_zero = Exp.is_zero lhs in
-              let rhs_is_zero = Exp.is_zero rhs in
-              if lhs_is_zero && rhs_is_zero then Exp.zero
-              else if lhs_is_zero then Exp.UnOp (Unop.Neg, rhs, None)
-              else if rhs_is_zero then lhs
-              else Exp.BinOp (Binop.MinusA, lhs, rhs)
-            in
-
-            let process_op op = match op with
-              | Binop.Gt -> process_gt lexp rexp
-              | Binop.Ge -> Exp.BinOp (Binop.PlusA, (process_gt lexp rexp), Exp.one)
-              | _ -> L.(die InternalError)"Unsupported PRUNE binary operator!"
-            in
-
-            let new_norm = process_op op in
-            Exp.Set.add new_norm astate.initial_norms
-          )
-          | _ -> L.(die InternalError)"Unsupported PRUNE expression!"
-        ) else (
-          astate.initial_norms
-        )
-        in
-
-        let edge_data = GraphEdge.add_condition GraphEdge.empty prune_condition in
-        (* let formulas = Formula.Set.add (prune_formula) Formula.Set.empty in *)
-        { astate with
-          branchingPath = astate.branchingPath @ [(kind, branch, loc)];
-          branchLocs = newLocSet;
-          edges = Edge.Set.add newEdge astate.edges;
-          current_edge = Edge.initial lts_prune_loc;
-          lastLoc = lts_prune_loc;
-
-          initial_norms = norms;
-          tracked_formals = tracked_formals;
-          modified_pvars = PvarSet.empty;
-          edge_data = edge_data;
-          last_node = prune_node;
-          aggregate_join = AggregateJoin.initial;
-        }
-      )
-
-    | Nullify (_, loc) ->
-      (
-        log "[NULLIFY] %a\n" Location.pp loc;
-        astate
-      )
-
-    | Abstract loc ->
-      (
-        log "[ABSTRACT] %a\n" Location.pp loc;
-        astate
-      )
-
-    | Remove_temps (ident_list, loc) ->
-      (
-        log "[REMOVE_TEMPS] %a\n" Location.pp loc;
-
-        if is_pvar_decl_node then log "  Decl node\n";
-        if is_start_node then (
-          let instrs = CFG.instrs node in
-          log "  Start node\n";
-          let count = Instrs.count instrs in
-          log "  Instr count: %d\n" count;
-          (* log "  %a\n" (Instrs.pp Pp.text) instrs; *)
-        );
-
-        if is_exit_node then (
-          log "  Exit node\n";
-          (* let missing_formulas = generate_missing_formulas astate in
-          let formulas = Formula.Set.union astate.edge_formulas missing_formulas in *)
-
-          let exit_node = GraphNode.make LTSLocation.Exit in
           let path_end = List.last astate.branchingPath in
-          let edge_data = GraphEdge.set_path_end astate.edge_data path_end in
-          let new_lts_edge = LTS.E.create astate.last_node edge_data exit_node in
+          let edge_data = GraphEdge.set_path_end edge_data path_end in
+          let edge_data = if is_backedge then GraphEdge.set_backedge edge_data else edge_data in
+          let new_lts_edge = LTS.E.create astate.last_node edge_data prune_node in
           let graph_edges = LTS.EdgeSet.add new_lts_edge astate.graph_edges in
-          { astate with
-            graph_nodes = LTS.NodeSet.add exit_node astate.graph_nodes;
-            graph_edges = LTS.EdgeSet.union astate.aggregate_join.edges graph_edges;
-          }
-        ) else (
-          astate
+          let graph_edges = LTS.EdgeSet.union astate.aggregate_join.edges graph_edges in
+          { astate with graph_edges = graph_edges; graph_nodes = graph_nodes }
         )
       )
+      in
 
-    | Store (Exp.Lvar assigned, _expType, rexp, loc) ->
-      (
-        log "[STORE] (%a) | %a = %a | %B\n"
-        Location.pp loc Pvar.pp_value assigned Exp.pp rexp is_pvar_decl_node;
-
-
-        (* Substitute rexp based on previous assignments,
-         * eg. [beg = i; end = beg;] becomes [beg = i; end = i] *)
-        let pvar_rexp = substitute_pvars rexp in
-        let pvar_rexp = match pvar_rexp with
-        | Exp.BinOp (Binop.PlusA, Exp.Lvar lexp, Exp.Const (Const.Cint c1)) -> (
-          (* [BINOP] PVAR + CONST *)
-          match (GraphEdge.get_assignment_rhs astate.edge_data lexp) with
-          | Exp.BinOp (Binop.PlusA, lexp, Exp.Const (Const.Cint c2)) -> (
-            (* [BINOP] (PVAR + C1) + C2 -> PVAR + (C1 + C2) *)
-            let const = Exp.Const (Const.Cint (IntLit.add c1 c2)) in
-            Exp.BinOp (Binop.PlusA, lexp, const)
-          )
-          | _ -> pvar_rexp
+      let pvar_condition = substitute_pvars cond in
+      let prune_condition = match pvar_condition with
+      | Exp.BinOp _ -> pvar_condition
+      | Exp.UnOp (LNot, exp, _) -> (
+        (* Currently handles only "!exp" *)
+        match exp with
+        | Exp.BinOp (op, lexp, rexp) -> (
+          (* Handles "!(lexp BINOP rexp)" *)
+          let negate_binop = match op with
+          | Binop.Lt -> Binop.Ge
+          | Binop.Gt -> Binop.Le
+          | Binop.Le -> Binop.Gt
+          | Binop.Ge -> Binop.Lt
+          | Binop.Eq -> Binop.Ne
+          | Binop.Ne -> Binop.Eq
+          | _ -> L.(die InternalError)"Unsupported prune condition type!"
+          in
+          Exp.BinOp (negate_binop, lexp, rexp)
         )
-        | Exp.Lvar rhs_pvar -> (
-          GraphEdge.get_assignment_rhs astate.edge_data rhs_pvar
+        | Exp.Const const -> Exp.BinOp (Binop.Eq, Exp.Const const, Exp.zero)
+        | _ -> L.(die InternalError)"Unsupported prune condition type!"
+      )
+      | Exp.Const const -> Exp.BinOp (Binop.Ne, Exp.Const const, Exp.zero)
+      | _ -> L.(die InternalError)"Unsupported prune condition type!"
+      in
+
+      (* We're tracking formals which are used in
+        * loop header conditions inside the loop body *)
+      let tracked_formals = if is_loop_prune kind then (
+        let cond_formals = extract_formals pvar_condition PvarSet.empty in
+        if branch then (
+          PvarSet.union astate.tracked_formals cond_formals
+        ) else (
+          (* Remove formals from false branch of loop *)
+          PvarSet.diff astate.tracked_formals cond_formals
+        )
+      ) else astate.tracked_formals
+      in
+
+      (* Derive norm from prune condition.
+        * [x > y] -> [x - y] > 0
+        * [x >= y] -> [x - y + 1] > 0 *)
+      let norms = if branch && is_loop_prune kind then (
+        let normalize_condition exp = match exp with
+        | Exp.BinOp (op, lexp, rexp) -> (
+          match op with
+          | Binop.Lt -> Exp.BinOp (Binop.Gt, rexp, lexp)
+          | Binop.Le -> Exp.BinOp (Binop.Ge, rexp, lexp)
+          | _ -> Exp.BinOp (op, lexp, rexp)
+        )
+        | _ -> exp
+        in
+
+        match normalize_condition prune_condition with
+        | Exp.BinOp (op, lexp, rexp) -> (
+          let process_gt lhs rhs =
+            let lhs_is_zero = Exp.is_zero lhs in
+            let rhs_is_zero = Exp.is_zero rhs in
+            if lhs_is_zero && rhs_is_zero then Exp.zero
+            else if lhs_is_zero then Exp.UnOp (Unop.Neg, rhs, None)
+            else if rhs_is_zero then lhs
+            else Exp.BinOp (Binop.MinusA, lhs, rhs)
+          in
+
+          let process_op op = match op with
+            | Binop.Gt -> process_gt lexp rexp
+            | Binop.Ge -> Exp.BinOp (Binop.PlusA, (process_gt lexp rexp), Exp.one)
+            | _ -> L.(die InternalError)"Unsupported PRUNE binary operator!"
+          in
+
+          let new_norm = process_op op in
+          Exp.Set.add new_norm astate.initial_norms
+        )
+        | _ -> L.(die InternalError)"Unsupported PRUNE expression!"
+      ) else (
+        astate.initial_norms
+      )
+      in
+
+      let edge_data = GraphEdge.add_condition GraphEdge.empty prune_condition in
+      { astate with
+        branchingPath = astate.branchingPath @ [(kind, branch, loc)];
+
+        initial_norms = norms;
+        tracked_formals = tracked_formals;
+        modified_pvars = PvarSet.empty;
+        edge_data = edge_data;
+        last_node = prune_node;
+        aggregate_join = AggregateJoin.initial;
+      }
+    )
+    | Nullify (_, loc) -> (
+      log "[NULLIFY] %a\n" Location.pp loc;
+      astate
+    )
+    | Abstract loc -> (
+      log "[ABSTRACT] %a\n" Location.pp loc;
+      astate
+    )
+    | Remove_temps (ident_list, loc) -> (
+      log "[REMOVE_TEMPS] %a\n" Location.pp loc;
+
+      if is_pvar_decl_node then log "  Decl node\n";
+      if is_start_node then (
+        let instrs = CFG.instrs node in
+        log "  Start node\n";
+        let count = Instrs.count instrs in
+        log "  Instr count: %d\n" count;
+      );
+
+      if is_exit_node then (
+        log "  Exit node\n";
+        let exit_node = GraphNode.make LTSLocation.Exit in
+        let path_end = List.last astate.branchingPath in
+        let edge_data = GraphEdge.set_path_end astate.edge_data path_end in
+        let new_lts_edge = LTS.E.create astate.last_node edge_data exit_node in
+        let graph_edges = LTS.EdgeSet.add new_lts_edge astate.graph_edges in
+        { astate with
+          graph_nodes = LTS.NodeSet.add exit_node astate.graph_nodes;
+          graph_edges = LTS.EdgeSet.union astate.aggregate_join.edges graph_edges;
+        }
+      ) else (
+        astate
+      )
+    )
+    | Store (Exp.Lvar assigned, _expType, rexp, loc) -> (
+      log "[STORE] (%a) | %a = %a | %B\n"
+      Location.pp loc Pvar.pp_value assigned Exp.pp rexp is_pvar_decl_node;
+
+      (* Substitute rexp based on previous assignments,
+        * eg. [beg = i; end = beg;] becomes [beg = i; end = i] *)
+      let pvar_rexp = substitute_pvars rexp in
+      let pvar_rexp = match pvar_rexp with
+      | Exp.BinOp (Binop.PlusA, Exp.Lvar lexp, Exp.Const (Const.Cint c1)) -> (
+        (* [BINOP] PVAR + CONST *)
+        match (GraphEdge.get_assignment_rhs astate.edge_data lexp) with
+        | Exp.BinOp (Binop.PlusA, lexp, Exp.Const (Const.Cint c2)) -> (
+          (* [BINOP] (PVAR + C1) + C2 -> PVAR + (C1 + C2) *)
+          let const = Exp.Const (Const.Cint (IntLit.add c1 c2)) in
+          Exp.BinOp (Binop.PlusA, lexp, const)
         )
         | _ -> pvar_rexp
-        in
+      )
+      | Exp.Lvar rhs_pvar -> (
+        GraphEdge.get_assignment_rhs astate.edge_data rhs_pvar
+      )
+      | _ -> pvar_rexp
+      in
 
-        (* Check if set already contains assignment with specified
-         * lhs and replace it with updated formulas if so. Needed
-         * when one edge contains multiple assignments to single variable *)
-        let edge_data = GraphEdge.add_assignment astate.edge_data assigned pvar_rexp in
-        let astate = {astate with edge_data = edge_data} in
-        let locals = if is_pvar_decl_node then (
-          PvarSet.add assigned astate.locals
-        ) else (
-          astate.locals
-        )
-        in
-        let pvars = Sequence.shift_right (Exp.program_vars rexp) assigned in
-        let edge = Edge.add_modified astate.current_edge pvars in
-        { astate with
-          current_edge = edge;
-          locals = locals;
-          edge_data = edge_data;
-          modified_pvars = PvarSet.add assigned astate.modified_pvars;
-        }
+      (* Check if set already contains assignment with specified
+        * lhs and replace it with updated formulas if so. Needed
+        * when one edge contains multiple assignments to same variable *)
+      let edge_data = GraphEdge.add_assignment astate.edge_data assigned pvar_rexp in
+      let astate = {astate with edge_data = edge_data} in
+      let locals = if is_pvar_decl_node then (
+        PvarSet.add assigned astate.locals
+      ) else (
+        astate.locals
       )
-
-    | Load (ident, lexp, _typ, loc) ->
-      (
-        log "[LOAD] (%a) | %a = %a\n" Location.pp loc Ident.pp ident Exp.pp lexp;
-        let ident_map = match lexp with
-        | Exp.Lvar pvar -> Ident.Map.add ident pvar astate.ident_map
-        | Exp.Var id -> (
-          let pvar = Ident.Map.find id astate.ident_map in
-          Ident.Map.add ident pvar astate.ident_map
-        )
-        | _ -> L.(die InternalError)"Unsupported LOAD lhs-expression type!"
-        in
-        (* let pvars = Exp.program_vars lexp in
-        let edge = Domain.Edge.add_modified astate.current_edge pvars in
-        log "  Modified: [%a]\n" Domain.PvarSet.pp edge.modified_vars;
-        {astate with current_edge = edge} *)
-        { astate with ident_map = ident_map }
+      in
+      { astate with
+        (* current_edge = edge; *)
+        locals = locals;
+        edge_data = edge_data;
+        modified_pvars = PvarSet.add assigned astate.modified_pvars;
+      }
+    )
+    | Load (ident, lexp, _typ, loc) -> (
+      log "[LOAD] (%a) | %a = %a\n" Location.pp loc Ident.pp ident Exp.pp lexp;
+      let ident_map = match lexp with
+      | Exp.Lvar pvar -> Ident.Map.add ident pvar astate.ident_map
+      | Exp.Var id -> (
+        let pvar = Ident.Map.find id astate.ident_map in
+        Ident.Map.add ident pvar astate.ident_map
       )
-    | Call (_retValue, Const Cfun callee_pname, _actuals, loc, _) ->
-      (
-        let _fun_name = Typ.Procname.to_simplified_string callee_pname in
-        log "[CALL] (%a)\n" Location.pp loc;
-        astate
-      )
-
-    (* Rest of SIL instruction possibilites *)
-    | _ ->
-      (
-        log "[UNKNOWN INSTRUCTION]\n";
-        astate
-      )
+      | _ -> L.(die InternalError)"Unsupported LOAD lhs-expression type!"
+      in
+      { astate with ident_map = ident_map }
+    )
+    | Call (_retValue, Const Cfun callee_pname, _actuals, loc, _) -> (
+      let _fun_name = Typ.Procname.to_simplified_string callee_pname in
+      log "[CALL] (%a)\n" Location.pp loc;
+      astate
+    )
+    | _ -> (
+      log "[UNKNOWN INSTRUCTION]\n";
+      astate
+    )
     in
     astate
  end
@@ -402,18 +369,6 @@ module Analyzer = AbstractInterpreter.Make (CFG) (TransferFunctions)
     log "\n- ANALYZING %s" (Typ.Procname.to_simplified_string proc_name);
     log "\n---------------------------------\n";
     log " Begin location: %a\n" Location.pp beginLoc;
-    (* Procdesc.pp_local locals; *)
-
-    (* let reportBugs : Domain.astate -> unit = fun post ->
-      LocationMap.iter (fun loopLoc bugSet ->
-      let msg = F.asprintf "Redundant traversal of %a detected in loop" Domain.pp_footprint bugSet in
-      (* let msg = F.asprintf "Redundant traversal bug detected\n" in *)
-      let localised_msg = Localise.verbatim_desc msg in
-      let issue = IssueType.redundant_traversal in
-      let exn = Exceptions.Checkers (issue, localised_msg) in
-      Reporting.log_warning summary ~loc:loopLoc IssueType.redundant_traversal msg
-      ) post.bugLocs;
-    in *)
 
     let proc_name = Procdesc.get_proc_name proc_desc in
     let formals_mangled = Procdesc.get_formals proc_desc in
@@ -702,24 +657,13 @@ module Analyzer = AbstractInterpreter.Make (CFG) (TransferFunctions)
       let () = Dot.output_graph file dcp in
       Out_channel.close file;
 
-      (* Bound computation for VASS with a hack for now. Proper bound algorithm
-       * needs a algorithm that determines local bounds for each transition
-       * which involves computation of strongly connected components
-       * of a graph... *)
-      let decreased_edges = LTS.EdgeSet.fold (fun (_, edge_data, _) acc ->
-        let is_decreased = DC.Map.exists (fun lhs (rhs, const) ->
-          let dc = lhs, rhs, const in
-          if DC.is_decreasing dc then (
-            log "EDGE: %a\n" DC.pp dc;
-            edge_data.bound_norm <- Some lhs;
-            true
-          ) else (
-            false
-          )
-        ) edge_data.constraints
-        in
-        if is_decreased then GraphEdge.Set.add edge_data acc else acc
-      ) post.graph_edges GraphEdge.Set.empty
+      log "[Backedges]\n";
+      let backedges = LTS.EdgeSet.filter (fun (src, edge_data, dst) ->
+        if edge_data.backedge then (
+          log "  %a -- %a\n" GraphNode.pp src GraphNode.pp dst;
+          true
+        ) else false
+      ) post.graph_edges
       in
 
       let get_update_map norm edges update_map =
@@ -800,10 +744,10 @@ module Analyzer = AbstractInterpreter.Make (CFG) (TransferFunctions)
           let increments, resets = Exp.Map.find norm update_map in
 
           log "Variable norm: %a\n" Pvar.pp_value pvar;
-          Resets.iter (fun (edge, norm, const) ->
+          Resets.iter (fun (_, norm, const) ->
             log "  [Reset] Norm: %a; Const: %a\n" Exp.pp norm IntLit.pp const;
           ) resets;
-          Increments.iter (fun (edge, const) ->
+          Increments.iter (fun (_, const) ->
             log "  [Increment] Const: %a\n" IntLit.pp const;
           ) increments;
 
@@ -858,7 +802,7 @@ module Analyzer = AbstractInterpreter.Make (CFG) (TransferFunctions)
 
       (* Bound on decreased edges *)
       let update_map = Exp.Map.empty in
-      let final_bound, update_map = GraphEdge.Set.fold (fun edge (final_bound, update_map) ->
+      let final_bound, _ = LTS.EdgeSet.fold (fun (_, edge, _) (final_bound, update_map) ->
         let bound, update_map = calculate_bound edge.bound_norm post.graph_edges update_map in
         edge.bound_cache <- Some bound;
         let final_bound = match final_bound with
@@ -866,11 +810,14 @@ module Analyzer = AbstractInterpreter.Make (CFG) (TransferFunctions)
         | None -> bound
         in
         Some final_bound, update_map
-      ) decreased_edges (None, update_map)
+      ) backedges (None, update_map)
       in
       log "[Final bound]\n";
       (match final_bound with
-      | Some bound -> log "  %a\n" Bound.pp bound
+      | Some bound -> (
+        let bound_expr = Z3.Expr.simplify (Bound.to_z3_expr bound ctx) None in
+        log "  %s\n" (Z3.Expr.to_string bound_expr)
+      )
       | None -> ());
 
       Payload.update_summary post summary

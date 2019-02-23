@@ -176,6 +176,25 @@ module LTSLocation = struct
 end
 
 
+let rec exp_to_z3_expr smt_ctx exp = 
+  let int_sort = Z3.Arithmetic.Integer.mk_sort smt_ctx in
+  match exp with
+  | Exp.Const (Const.Cint const) -> (
+    let const_value = IntLit.to_int_exn const in
+    Z3.Arithmetic.Integer.mk_numeral_i smt_ctx const_value
+  )
+  | Exp.Lvar pvar -> Z3.Expr.mk_const_s smt_ctx (Pvar.to_string pvar) int_sort
+  | Exp.BinOp (op, lexp, rexp) -> (
+    let lexp = exp_to_z3_expr smt_ctx lexp in
+    let rexp = exp_to_z3_expr smt_ctx rexp in
+    match op with
+    | Binop.MinusA -> Z3.Arithmetic.mk_sub smt_ctx [lexp; rexp]
+    | Binop.PlusA -> Z3.Arithmetic.mk_add smt_ctx [lexp; rexp]
+    | _ -> L.(die InternalError)"[Z3 expr] Expression contains invalid binary operator!"
+  )
+  | _ -> L.(die InternalError)"[Z3 expr] Expression contains invalid element!"
+
+
 module AssignmentMap = struct
   include Caml.Map.Make(Pvar)
 end
@@ -199,6 +218,18 @@ module Bound = struct
   let is_zero bound = match bound with
   | Value exp -> Exp.is_zero exp
   | _ -> false
+
+  let rec to_z3_expr bound smt_ctx = match bound with
+  | BinOp (op, lexp, rexp) -> (
+    let lexp = to_z3_expr lexp smt_ctx in
+    let rexp = to_z3_expr rexp smt_ctx in
+    match op with
+    | Binop.MinusA -> Z3.Arithmetic.mk_sub smt_ctx [lexp; rexp]
+    | Binop.PlusA -> Z3.Arithmetic.mk_add smt_ctx [lexp; rexp]
+    | _ -> L.(die InternalError)"[Z3 expr] Expression contains invalid binary operator!"
+  )
+  | Value exp -> exp_to_z3_expr smt_ctx exp
+  | Max exp -> exp_to_z3_expr smt_ctx exp
 end
 
 module GraphEdge = struct
@@ -221,6 +252,11 @@ module GraphEdge = struct
   [@@deriving compare]
 
   let equal = [%compare.equal: t]
+
+  let modified_pvars edge = AssignmentMap.fold (fun pvar exp pvar_set -> 
+      if Exp.equal (Exp.Lvar pvar) exp then pvar_set
+      else PvarSet.add pvar pvar_set
+    ) edge.assignments PvarSet.empty
 
   module Set = Caml.Set.Make(struct
     type nonrec t = t
@@ -306,24 +342,7 @@ module GraphEdge = struct
     ) else (
       let lhs = Z3.Boolean.mk_and smt_ctx cond_expressions in
       let zero_const = Z3.Arithmetic.Integer.mk_numeral_i smt_ctx 0 in
-      let guards = Exp.Set.fold (fun norm acc -> 
-        let rec exp_to_z3_expr exp = match exp with
-        | Exp.Const (Const.Cint const) -> (
-          let const_value = IntLit.to_int_exn const in
-          Z3.Arithmetic.Integer.mk_numeral_i smt_ctx const_value
-        )
-        | Exp.Lvar pvar -> Z3.Expr.mk_const_s smt_ctx (Pvar.to_string pvar) int_sort
-        | Exp.BinOp (op, lexp, rexp) -> (
-          let lexp = exp_to_z3_expr lexp in
-          let rexp = exp_to_z3_expr rexp in
-          match op with
-          | Binop.MinusA -> Z3.Arithmetic.mk_sub smt_ctx [lexp; rexp]
-          | Binop.PlusA -> Z3.Arithmetic.mk_add smt_ctx [lexp; rexp]
-          | _ -> L.(die InternalError)"[Guards] Norm expression contains invalid binary operator!"
-        )
-        | _ -> L.(die InternalError)"[Guards] Norm expression contains invalid element!"
-        in
-        
+      let guards = Exp.Set.fold (fun norm acc ->         
         let solve_formula rhs =
           let rhs = Z3.Arithmetic.mk_gt smt_ctx rhs zero_const in
           let formula = Z3.Boolean.mk_not smt_ctx (Z3.Boolean.mk_implies smt_ctx lhs rhs) in
@@ -345,7 +364,7 @@ module GraphEdge = struct
         in
         match norm with
         | Exp.BinOp _ | Exp.Lvar _ -> (
-          let rhs = exp_to_z3_expr norm in
+          let rhs = exp_to_z3_expr smt_ctx norm in
           solve_formula rhs
         )
         | Exp.Const Const.Cint _ -> acc
@@ -532,7 +551,7 @@ module GraphNode = struct
 
   module IdMap = Caml.Map.Make(LTSLocation)
 
-  let is_join_node : t -> bool = fun node -> LTSLocation.is_join_loc node.location
+  let is_join : t -> bool = fun node -> LTSLocation.is_join_loc node.location
 
   let idCnt = ref 0
   let idMap : (int IdMap.t) ref = ref IdMap.empty
@@ -546,7 +565,6 @@ module GraphNode = struct
   let make : LTSLocation.t -> t = fun loc ->
     let found = IdMap.mem loc !idMap in
     let node_id = if found then (
-      (* L.stdout "EQUAL: %a - %a" LTSLocation.pp *)
       IdMap.find loc !idMap
     ) else (
       idCnt := !idCnt + 1;
@@ -631,50 +649,6 @@ end
 
 module Dot = Graph.Graphviz.Dot(DotConfig)
 
-module Edge = struct
-  type t = {
-    loc_begin: LTSLocation.t;
-    loc_end: LTSLocation.t;
-    is_backedge: bool;
-    modified_vars: PvarSet.t
-  } [@@deriving compare]
-
-  let empty = {
-    loc_begin = Dummy;
-    loc_end = Dummy;
-    is_backedge = false;
-    modified_vars = PvarSet.empty;
-  }
-
-  let initial : LTSLocation.t -> t = fun loc_begin -> {
-    loc_begin = loc_begin;
-    loc_end = Dummy;
-    is_backedge = false;
-    modified_vars = PvarSet.empty;
-  }
-
-  let add_modified : t -> Pvar.t Sequence.t -> t = fun edge modified -> (
-    let newPvars = PvarSet.of_list (Sequence.to_list modified) in
-    {edge with modified_vars = PvarSet.union newPvars edge.modified_vars}
-  )
-
-  let set_end : t -> LTSLocation.t -> t = fun edge loc -> { edge with loc_end = loc; }
-
-  let set_backedge : t -> t = fun edge -> { edge with is_backedge = true; }
-
-  let pp fmt edge =
-    F.fprintf fmt "(%a) -->  (%a) [%a]" 
-    LTSLocation.pp edge.loc_begin 
-    LTSLocation.pp edge.loc_end 
-    PvarSet.pp edge.modified_vars
-
-  let modified_to_string edge = PvarSet.to_string edge.modified_vars
-
-  module Set = Caml.Set.Make(struct
-    type nonrec t = t
-    let compare = compare
-  end)
-end
 
 module AggregateJoin = struct
   type t = {
@@ -707,14 +681,7 @@ end
 type astate = {
   last_node: GraphNode.t;
   branchingPath: prune_info list;
-  branchLocs: LocSet.t;
-  lastLoc: LTSLocation.t;
-  edges: Edge.Set.t;
-  current_edge: Edge.t;
-  branch: bool;
-  pvars: PvarSet.t;
   joinLocs: int JoinLocations.t;
-  pruneLocs: GraphNode.t LTSLocation.Map.t;
 
   initial_norms: Exp.Set.t;
   tracked_formals: PvarSet.t;
@@ -731,14 +698,7 @@ let initial : GraphNode.t -> astate = fun entry_point -> (
   {
     last_node = entry_point;
     branchingPath = [];
-    branchLocs = LocSet.empty;
-    lastLoc = entry_point.location;
-    edges = Edge.Set.empty;
-    current_edge = Edge.initial entry_point.location;
-    branch = false;
-    pvars = PvarSet.empty;
     joinLocs = JoinLocations.empty;
-    pruneLocs = LTSLocation.Map.empty;
 
     initial_norms = Exp.Set.empty;
     tracked_formals = PvarSet.empty;
@@ -782,8 +742,8 @@ let get_edge_label path = match List.last path with
 let ( <= ) ~lhs ~rhs =
   (* L.stdout "[Partial order <= ]\n"; *)
   (* L.stdout "  [LHS]\n"; *)
-  Edge.Set.equal lhs.edges rhs.edges || (Edge.Set.cardinal lhs.edges < Edge.Set.cardinal rhs.edges)
-
+  LTS.EdgeSet.equal lhs.graph_edges rhs.graph_edges || 
+  LTS.EdgeSet.cardinal lhs.graph_edges < LTS.EdgeSet.cardinal rhs.graph_edges
 
 let join_cnt = ref 0
 
@@ -804,14 +764,7 @@ let join : astate -> astate -> astate = fun lhs rhs ->
 
   let lhs_path = lhs.branchingPath in
   let rhs_path = rhs.branchingPath in
-  let (path_prefix_rev, loop_left) = common_path_prefix ([], false) lhs_path rhs_path in
-
-  (* Last element of common path prefix represents current nesting level *)
-  let prefix_end = List.hd path_prefix_rev in
-  let prefix_end_loc = match prefix_end with 
-  | Some (kind, _, loc) -> LTSLocation.PruneLoc (kind, loc)
-  | _ -> LTSLocation.Dummy
-  in
+  let (path_prefix_rev, scope_left) = common_path_prefix ([], false) lhs_path rhs_path in
   let path_prefix = List.rev path_prefix_rev in
   L.stdout "  [NEW] Path prefix: %a\n" pp_path path_prefix;
 
@@ -821,7 +774,7 @@ let join : astate -> astate -> astate = fun lhs rhs ->
   in
 
   (* Check if join location already exist and create new with higher ID if it doesn't *)
-  let key = (lhs.current_edge.loc_begin, rhs.current_edge.loc_begin) in
+  let key = (lhs.last_node.location, rhs.last_node.location) in
   let join_id, join_locs = if JoinLocations.mem key join_locs then (
     JoinLocations.find key join_locs, join_locs
   ) else (
@@ -829,33 +782,49 @@ let join : astate -> astate -> astate = fun lhs rhs ->
     !join_cnt, JoinLocations.add key !join_cnt join_locs
   )
   in
-
-  let lhs_dead_vars = PvarSet.diff lhs.locals rhs.locals in
-  let rhs_dead_vars = PvarSet.diff rhs.locals lhs.locals in
-  let active_locals = PvarSet.inter lhs.locals rhs.locals in
-  let lhs = { lhs with locals = PvarSet.diff lhs.locals lhs_dead_vars } in
-  let rhs = { rhs with locals = PvarSet.diff rhs.locals rhs_dead_vars } in
-
-  let graph_nodes = LTS.NodeSet.union lhs.graph_nodes rhs.graph_nodes in
-  let graph_edges = LTS.EdgeSet.union lhs.graph_edges rhs.graph_edges in
-
   let join_location = LTSLocation.Join (IntSet.add join_id IntSet.empty) in
-  let is_consecutive_join = GraphNode.is_join_node lhs.last_node || GraphNode.is_join_node rhs.last_node in
 
-  let join_node, aggregate_join = if is_consecutive_join then (
+  let ident_map = Ident.Map.union (fun _key a b ->
+    if not (Pvar.equal a b) then 
+      L.(die InternalError)"One SIL identificator maps to multiple Pvars!" 
+    else 
+      Some a
+  ) lhs.ident_map rhs.ident_map 
+  in
+  
+  let astate = { lhs with
+    branchingPath = path_prefix;
+    joinLocs = join_locs;
+    ident_map = ident_map;
+
+    modified_pvars = PvarSet.empty;
+    edge_data = GraphEdge.empty;
+    initial_norms = Exp.Set.union lhs.initial_norms rhs.initial_norms;
+    tracked_formals = PvarSet.union lhs.tracked_formals rhs.tracked_formals;
+    locals = PvarSet.inter lhs.locals rhs.locals;
+    graph_nodes = LTS.NodeSet.union lhs.graph_nodes rhs.graph_nodes;
+    graph_edges = LTS.EdgeSet.union lhs.graph_edges rhs.graph_edges;
+  }
+  in
+
+  let is_consecutive_join = GraphNode.is_join lhs.last_node || GraphNode.is_join rhs.last_node in
+  let astate = if is_consecutive_join then (
     (* Consecutive join, merge join nodes and possibly add new edge to aggregated join node *)
-    let other_state, join_state = if GraphNode.is_join_node lhs.last_node then rhs, lhs else lhs, rhs in
+    let other_state, join_state = if GraphNode.is_join lhs.last_node then rhs, lhs else lhs, rhs in
     let aggregate_join = match other_state.last_node.location with
     | LTSLocation.Start _ -> (
       (* Don't add new edge if it's from the beginning location *)
       join_state.aggregate_join
     )
     | _ -> (
-      if loop_left then (
+      if scope_left then (
+        L.stdout "IGNORE EDGE\n";
+        L.stdout "MODIFIED: %a\n "PvarSet.pp join_state.modified_pvars;
         (* Heuristic: ignore edge from previous location if this is a "backedge" join which 
          * joins state from inside of the loop with outside state denoted by prune location before loop prune *)
         join_state.aggregate_join
       ) else (
+        L.stdout "ADD EDGE\n";
         (* Add edge from non-join node to current set of edges pointing to aggregated join node *)
         let unmodified = get_unmodified_pvars other_state in
         let edge_data = GraphEdge.add_invariants other_state.edge_data unmodified in
@@ -866,11 +835,14 @@ let join : astate -> astate -> astate = fun lhs rhs ->
       )
     )
     in
-    join_state.last_node, AggregateJoin.add_node_id aggregate_join join_id
+    { astate with 
+      last_node = join_state.last_node; 
+      aggregate_join = AggregateJoin.add_node_id aggregate_join join_id; 
+    }
   ) else (
     (* First join in a row, create new join node and join info *)
     let join_node = GraphNode.make join_location in
-    let aggregate_join =  AggregateJoin.make join_id lhs.lastLoc rhs.lastLoc in
+    let aggregate_join = AggregateJoin.make join_id lhs.last_node.location rhs.last_node.location in
 
     let add_edge aggregate astate = match astate.last_node.location with
     | LTSLocation.Start _ -> aggregate
@@ -883,53 +855,25 @@ let join : astate -> astate -> astate = fun lhs rhs ->
     in
     let aggregate_join = add_edge aggregate_join lhs in
     let aggregate_join = add_edge aggregate_join rhs in
-    join_node, aggregate_join
+    { astate with 
+      last_node = join_node; 
+      aggregate_join = aggregate_join;
+      graph_nodes = LTS.NodeSet.add join_node astate.graph_nodes;
+    }
   )
   in
-
-  let lhsEdge = Edge.set_end lhs.current_edge join_location in
-  let rhsEdge = Edge.set_end rhs.current_edge join_location in
-  let edgeSet = Edge.Set.union lhs.edges rhs.edges in
-  let edgeSet = Edge.Set.add lhsEdge edgeSet in
-  let edgeSet = Edge.Set.add rhsEdge edgeSet in
-
-  let ident_map = Ident.Map.union (fun _key a b ->
-    if not (Pvar.equal a b) then 
-      L.(die InternalError)"One SIL identificator maps to multiple Pvars!" 
-    else 
-      Some a
-  ) lhs.ident_map rhs.ident_map 
-  in
-  { 
-    branchingPath = path_prefix;
-    branchLocs = LocSet.union lhs.branchLocs rhs.branchLocs;
-    lastLoc = prefix_end_loc;
-    edges = edgeSet;
-    current_edge = Edge.initial join_location;
-    branch = lhs.branch || rhs.branch;
-    pvars = PvarSet.union lhs.pvars rhs.pvars;
-    joinLocs = join_locs;
-    pruneLocs = lhs.pruneLocs;
-
-    initial_norms = Exp.Set.union lhs.initial_norms rhs.initial_norms;
-    tracked_formals = PvarSet.union lhs.tracked_formals rhs.tracked_formals;
-    locals = active_locals;
-    modified_pvars = PvarSet.empty;
-    ident_map = ident_map;
-    edge_data = GraphEdge.empty;
-    last_node = join_node;
-    graph_nodes = LTS.NodeSet.add join_node graph_nodes;
-    graph_edges = graph_edges;
-    aggregate_join = aggregate_join;
-  }
+  astate
 
 let widen ~prev ~next ~num_iters:_ = 
-  {next with edges = Edge.Set.union prev.edges next.edges;}
+  { next with graph_edges = LTS.EdgeSet.union prev.graph_edges next.graph_edges }
 
 let pp fmt astate =
-  Edge.Set.iter (fun edge -> 
-    F.fprintf fmt "%a\n" Edge.pp edge
-  ) astate.edges
+  LTS.EdgeSet.iter (fun (src, edge_data, dst) -> 
+    F.fprintf fmt "(%a) -->  (%a) [%a]\n" 
+    LTSLocation.pp src.location
+    LTSLocation.pp dst.location 
+    PvarSet.pp (GraphEdge.modified_pvars edge_data)
+  ) astate.graph_edges
 
 let pp_summary : F.formatter -> astate -> unit =
   fun fmt _astate ->
