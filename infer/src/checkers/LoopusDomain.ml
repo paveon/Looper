@@ -190,6 +190,7 @@ let rec exp_to_z3_expr smt_ctx exp =
     match op with
     | Binop.MinusA -> Z3.Arithmetic.mk_sub smt_ctx [lexp; rexp]
     | Binop.PlusA -> Z3.Arithmetic.mk_add smt_ctx [lexp; rexp]
+    | Binop.Mult -> Z3.Arithmetic.mk_mul smt_ctx [lexp; rexp]
     | _ -> L.(die InternalError)"[Z3 expr] Expression contains invalid binary operator!"
   )
   | _ -> L.(die InternalError)"[Z3 expr] Expression contains invalid element!"
@@ -203,15 +204,33 @@ module Bound = struct
   type t =
   | BinOp of Binop.t * t * t
   | Value of Exp.t
-  | Max of Exp.t
+  | Max of t
   [@@deriving compare]
 
   let rec to_string bound = match bound with
   | BinOp (op, lhs, rhs) -> (
-    F.sprintf "%s %s %s" (to_string lhs) (Binop.(str Pp.text) op) (to_string rhs)
+    match op with
+    | Binop.Mult -> (
+      let aux str exp = match exp with
+      | Max _ -> str
+      | _ -> F.sprintf "(%s)" str
+      in
+      let lhs_str = aux (to_string lhs) lhs in
+      let rhs_str = aux (to_string rhs) rhs in
+      F.sprintf "%s %s %s" lhs_str (Binop.(str Pp.text) op) rhs_str
+    )
+    | _ -> F.sprintf "%s %s %s" (to_string lhs) (Binop.(str Pp.text) op) (to_string rhs)
   )
   | Value exp -> Exp.to_string exp
-  | Max exp -> F.sprintf "max(%s, 0)" (Exp.to_string exp)
+  | Max exp -> (
+    let str = to_string exp in
+    match exp with 
+    | Value exp -> (match exp with
+      | Exp.Lvar pvar -> F.sprintf "[%s]" str
+      | _ -> F.sprintf "max(%s, 0)" str
+    )
+    | _ -> F.sprintf "max(%s, 0)" str
+  )
 
   let pp fmt bound = F.fprintf fmt "%s" (to_string bound)
 
@@ -219,17 +238,28 @@ module Bound = struct
   | Value exp -> Exp.is_zero exp
   | _ -> false
 
-  let rec to_z3_expr bound smt_ctx = match bound with
-  | BinOp (op, lexp, rexp) -> (
-    let lexp = to_z3_expr lexp smt_ctx in
-    let rexp = to_z3_expr rexp smt_ctx in
-    match op with
-    | Binop.MinusA -> Z3.Arithmetic.mk_sub smt_ctx [lexp; rexp]
-    | Binop.PlusA -> Z3.Arithmetic.mk_add smt_ctx [lexp; rexp]
-    | _ -> L.(die InternalError)"[Z3 expr] Expression contains invalid binary operator!"
-  )
-  | Value exp -> exp_to_z3_expr smt_ctx exp
-  | Max exp -> exp_to_z3_expr smt_ctx exp
+  let is_one bound = match bound with
+  | Value (Exp.Const (Const.Cint const)) -> IntLit.isone const
+  | _ -> false
+
+  let to_z3_expr bound smt_ctx = 
+    let int_sort = Z3.Arithmetic.Integer.mk_sort smt_ctx in
+    let zero_const = Z3.Arithmetic.Integer.mk_numeral_i smt_ctx 0 in
+    let max_func = Z3.FuncDecl.mk_func_decl_s smt_ctx "max" [int_sort; int_sort] int_sort in
+    let rec aux bound = match bound with
+    | BinOp (op, lexp, rexp) -> (
+      let lexp = aux lexp in
+      let rexp = aux rexp in
+      match op with
+      | Binop.MinusA -> Z3.Arithmetic.mk_sub smt_ctx [lexp; rexp]
+      | Binop.PlusA -> Z3.Arithmetic.mk_add smt_ctx [lexp; rexp]
+      | Binop.Mult -> Z3.Arithmetic.mk_mul smt_ctx [lexp; rexp]
+      | _ -> L.(die InternalError)"[Z3 expr] Expression contains invalid binary operator!"
+    )
+    | Value exp -> exp_to_z3_expr smt_ctx exp
+    | Max exp -> Z3.Expr.mk_app smt_ctx max_func [aux exp; zero_const]
+    in
+    aux bound
 end
 
 module GraphEdge = struct
@@ -401,14 +431,22 @@ module GraphEdge = struct
           ) else (
             match x_rhs with
             | Exp.BinOp (op, Exp.Lvar rhs_pvar, Exp.Const Const.Cint increment) -> (
-              assert(Pvar.equal x_pvar rhs_pvar);
               let const = match op with
               | Binop.PlusA -> increment
               | Binop.MinusA -> IntLit.neg increment
               | _ -> L.(die InternalError)"[TODO] currently unsupported binop operator!"
               in
-              let dc_rhs = DC.make_rhs ~const norm in
-              DC.Map.add_dc norm dc_rhs dc_map, norm_set
+              if Pvar.equal x_pvar rhs_pvar then (
+                (* [x = x OP const] *)
+                let dc_rhs = DC.make_rhs ~const norm in
+                DC.Map.add_dc norm dc_rhs dc_map, norm_set
+              ) else (
+                (* [x = z OP const] *)
+                let rhs_pvar_exp = Exp.Lvar rhs_pvar in
+                let dc_rhs = DC.make_rhs ~const rhs_pvar_exp in
+                DC.Map.add_dc norm dc_rhs dc_map, Exp.Set.add rhs_pvar_exp norm_set
+              )
+              
             )
             | Exp.Lvar _ | Exp.Const Const.Cint _-> (
               DC.Map.add_dc norm (DC.make_rhs x_rhs) dc_map, Exp.Set.add x_rhs norm_set
@@ -536,7 +574,7 @@ module GraphEdge = struct
       )
     )
     | Exp.Const Const.Cint _ -> dc_map, norm_set
-    | _ -> L.(die InternalError)"[TODO] currently unsupported type of norm!"
+    | _ -> L.(die InternalError)"[TODO] currently unsupported type of norm '%a' !" Exp.pp norm
     in
     edge.constraints <- dc_map; 
     norm_set
@@ -683,6 +721,7 @@ type astate = {
   branchingPath: prune_info list;
   joinLocs: int JoinLocations.t;
 
+  potential_norms: Exp.Set.t;
   initial_norms: Exp.Set.t;
   tracked_formals: PvarSet.t;
   locals: PvarSet.t;
@@ -700,6 +739,7 @@ let initial : GraphNode.t -> astate = fun entry_point -> (
     branchingPath = [];
     joinLocs = JoinLocations.empty;
 
+    potential_norms = Exp.Set.empty;
     initial_norms = Exp.Set.empty;
     tracked_formals = PvarSet.empty;
     locals = PvarSet.empty;
@@ -797,8 +837,6 @@ let join : astate -> astate -> astate = fun lhs rhs ->
     joinLocs = join_locs;
     ident_map = ident_map;
 
-    modified_pvars = PvarSet.empty;
-    edge_data = GraphEdge.empty;
     initial_norms = Exp.Set.union lhs.initial_norms rhs.initial_norms;
     tracked_formals = PvarSet.union lhs.tracked_formals rhs.tracked_formals;
     locals = PvarSet.inter lhs.locals rhs.locals;
@@ -818,13 +856,10 @@ let join : astate -> astate -> astate = fun lhs rhs ->
     )
     | _ -> (
       if scope_left then (
-        L.stdout "IGNORE EDGE\n";
-        L.stdout "MODIFIED: %a\n "PvarSet.pp join_state.modified_pvars;
         (* Heuristic: ignore edge from previous location if this is a "backedge" join which 
          * joins state from inside of the loop with outside state denoted by prune location before loop prune *)
         join_state.aggregate_join
       ) else (
-        L.stdout "ADD EDGE\n";
         (* Add edge from non-join node to current set of edges pointing to aggregated join node *)
         let unmodified = get_unmodified_pvars other_state in
         let edge_data = GraphEdge.add_invariants other_state.edge_data unmodified in
@@ -836,6 +871,8 @@ let join : astate -> astate -> astate = fun lhs rhs ->
     )
     in
     { astate with 
+      edge_data = join_state.edge_data;
+      modified_pvars = join_state.modified_pvars;
       last_node = join_state.last_node; 
       aggregate_join = AggregateJoin.add_node_id aggregate_join join_id; 
     }
@@ -843,13 +880,14 @@ let join : astate -> astate -> astate = fun lhs rhs ->
     (* First join in a row, create new join node and join info *)
     let join_node = GraphNode.make join_location in
     let aggregate_join = AggregateJoin.make join_id lhs.last_node.location rhs.last_node.location in
-
-    let add_edge aggregate astate = match astate.last_node.location with
+    let tracked_pvars = get_tracked_pvars astate in
+    let add_edge aggregate state = match state.last_node.location with
     | LTSLocation.Start _ -> aggregate
     | _ -> (
-      let edge_data = GraphEdge.add_invariants astate.edge_data (get_unmodified_pvars astate) in
-      let edge_data = GraphEdge.set_path_end edge_data (List.last astate.branchingPath) in
-      let lts_edge = LTS.E.create astate.last_node edge_data join_node in
+      let unmodified = PvarSet.diff tracked_pvars state.modified_pvars in
+      let edge_data = GraphEdge.add_invariants state.edge_data unmodified in
+      let edge_data = GraphEdge.set_path_end edge_data (List.last state.branchingPath) in
+      let lts_edge = LTS.E.create state.last_node edge_data join_node in
       AggregateJoin.add_edge aggregate lts_edge
     )
     in
@@ -859,6 +897,9 @@ let join : astate -> astate -> astate = fun lhs rhs ->
       last_node = join_node; 
       aggregate_join = aggregate_join;
       graph_nodes = LTS.NodeSet.add join_node astate.graph_nodes;
+
+      edge_data = GraphEdge.empty;
+      modified_pvars = PvarSet.empty;
     }
   )
   in

@@ -178,65 +178,72 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
       | _ -> L.(die InternalError)"Unsupported prune condition type!"
       in
 
-      (* We're tracking formals which are used in
-        * loop header conditions inside the loop body *)
-      let tracked_formals = if is_loop_prune kind then (
-        let cond_formals = extract_formals pvar_condition PvarSet.empty in
-        if branch then (
-          PvarSet.union astate.tracked_formals cond_formals
-        ) else (
-          (* Remove formals from false branch of loop *)
-          PvarSet.diff astate.tracked_formals cond_formals
-        )
-      ) else astate.tracked_formals
+      let in_loop = List.exists astate.branchingPath ~f:(fun (kind, branch, _) -> 
+        is_loop_prune kind && branch
+      )
       in
 
-      (* Derive norm from prune condition.
-        * [x > y] -> [x - y] > 0
-        * [x >= y] -> [x - y + 1] > 0 *)
-      let norms = if branch && is_loop_prune kind then (
-        let normalize_condition exp = match exp with
-        | Exp.BinOp (op, lexp, rexp) -> (
-          match op with
-          | Binop.Lt -> Exp.BinOp (Binop.Gt, rexp, lexp)
-          | Binop.Le -> Exp.BinOp (Binop.Ge, rexp, lexp)
-          | _ -> Exp.BinOp (op, lexp, rexp)
-        )
-        | _ -> exp
-        in
-
-        match normalize_condition prune_condition with
-        | Exp.BinOp (op, lexp, rexp) -> (
-          let process_gt lhs rhs =
-            let lhs_is_zero = Exp.is_zero lhs in
-            let rhs_is_zero = Exp.is_zero rhs in
-            if lhs_is_zero && rhs_is_zero then Exp.zero
-            else if lhs_is_zero then Exp.UnOp (Unop.Neg, rhs, None)
-            else if rhs_is_zero then lhs
-            else Exp.BinOp (Binop.MinusA, lhs, rhs)
+      let loop_prune = is_loop_prune kind in
+      let astate = if loop_prune || in_loop then (
+        (* We're tracking formals which are used in
+         * conditions of loops headers or on loop paths  *)
+        let cond_formals = extract_formals pvar_condition PvarSet.empty in
+        if branch then (
+          (* Derive norm from prune condition.
+           * [x > y] -> [x - y] > 0
+           * [x >= y] -> [x - y + 1] > 0 *)
+          let normalized_condition = match prune_condition with
+          | Exp.BinOp (op, lexp, rexp) -> (
+            match op with
+            | Binop.Lt -> Exp.BinOp (Binop.Gt, rexp, lexp)
+            | Binop.Le -> Exp.BinOp (Binop.Ge, rexp, lexp)
+            | _ -> Exp.BinOp (op, lexp, rexp)
+          )
+          | _ -> prune_condition
           in
 
-          let process_op op = match op with
-            | Binop.Gt -> process_gt lexp rexp
-            | Binop.Ge -> Exp.BinOp (Binop.PlusA, (process_gt lexp rexp), Exp.one)
-            | _ -> L.(die InternalError)"Unsupported PRUNE binary operator!"
-          in
+          match normalized_condition with
+          | Exp.BinOp (op, lexp, rexp) -> (
+            let process_gt lhs rhs =
+              let lhs_is_zero = Exp.is_zero lhs in
+              let rhs_is_zero = Exp.is_zero rhs in
+              if lhs_is_zero && rhs_is_zero then Exp.zero
+              else if lhs_is_zero then Exp.UnOp (Unop.Neg, rhs, None)
+              else if rhs_is_zero then lhs
+              else Exp.BinOp (Binop.MinusA, lhs, rhs)
+            in
 
-          let new_norm = process_op op in
-          Exp.Set.add new_norm astate.initial_norms
+            let process_op op = match op with
+              | Binop.Gt -> process_gt lexp rexp
+              | Binop.Ge -> Exp.BinOp (Binop.PlusA, (process_gt lexp rexp), Exp.one)
+              | _ -> L.(die InternalError)"Unsupported PRUNE binary operator!"
+            in
+            let new_norm = process_op op in
+            let astate = if not loop_prune then (
+              (* Prune on loop path but not loop head. Norm is only potential,
+               * must be confirmed by increment/decrement on this loop path *)
+               { astate with potential_norms = Exp.Set.add new_norm astate.potential_norms; }
+            ) else (
+              { astate with initial_norms = Exp.Set.add new_norm astate.initial_norms; }
+            )
+            in
+            { astate with tracked_formals = PvarSet.union astate.tracked_formals cond_formals }
+          )
+          | _ -> L.(die InternalError)"Unsupported PRUNE expression!"
+        ) else (
+          (* Remove formals of condition from false branch *)
+          { astate with
+            tracked_formals = PvarSet.diff astate.tracked_formals cond_formals;
+          }
         )
-        | _ -> L.(die InternalError)"Unsupported PRUNE expression!"
       ) else (
-        astate.initial_norms
+        astate
       )
       in
 
       let edge_data = GraphEdge.add_condition GraphEdge.empty prune_condition in
       { astate with
         branchingPath = astate.branchingPath @ [(kind, branch, loc)];
-
-        initial_norms = norms;
-        tracked_formals = tracked_formals;
         modified_pvars = PvarSet.empty;
         edge_data = edge_data;
         last_node = prune_node;
@@ -300,6 +307,24 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
       )
       | _ -> pvar_rexp
       in
+      let is_plus_minus_op op = match op with
+      | Binop.PlusA | Binop.MinusA -> true | _ -> false
+      in
+
+      let astate = match pvar_rexp with 
+      | Exp.BinOp (op, Exp.Lvar pvar, Exp.Const (Const.Cint _)) when Pvar.equal assigned pvar -> (
+        let assigned_exp = Exp.Lvar assigned in
+        if is_plus_minus_op op && Exp.Set.mem assigned_exp astate.potential_norms then (
+          { astate with
+            potential_norms = Exp.Set.remove assigned_exp astate.potential_norms;
+            initial_norms = Exp.Set.add assigned_exp astate.potential_norms;
+          }
+        ) else (
+          astate
+        )
+      )
+      | _ -> astate
+      in
 
       (* Check if set already contains assignment with specified
         * lhs and replace it with updated formulas if so. Needed
@@ -313,7 +338,6 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
       )
       in
       { astate with
-        (* current_edge = edge; *)
         locals = locals;
         edge_data = edge_data;
         modified_pvars = PvarSet.add assigned astate.modified_pvars;
@@ -522,14 +546,21 @@ module Analyzer = AbstractInterpreter.Make (CFG) (TransferFunctions)
       (* Convert DCP with guards to DCP without guards over natural numbers *)
       let to_natural_numbers : LTS.EdgeSet.t -> unit = fun edges -> (
         LTS.EdgeSet.iter (fun (_, edge_data, _) ->
-          let constraints = DC.Map.map (fun (rhs, const) ->
-            if IntLit.isnegative const then (
-              let const = if Exp.Set.mem rhs edge_data.guards then IntLit.minus_one else IntLit.zero in
+          let constraints = DC.Map.fold (fun lhs (rhs, const) acc ->
+            let dc_rhs = if IntLit.isnegative const then (
+              (* lhs != rhs hack for now, abstraction algorithm presented in the thesis
+               * doesn't add up in the example 'SingleLinkSimple' where they have [i]' <= [n]-1
+               * which is indeed right if we want to get valid bound but their abstraction algorithm
+               * leads to [i]' <= [n] because there's no guard for n on the transition *)
+              let const = if Exp.Set.mem rhs edge_data.guards || not (Exp.equal lhs rhs) then IntLit.minus_one 
+              else IntLit.zero in
               rhs, const
             ) else (
               rhs, const
             )
-          ) edge_data.constraints
+            in
+            DC.Map.add lhs dc_rhs acc
+          ) edge_data.constraints DC.Map.empty
           in
           edge_data.constraints <- constraints;
           edge_data.graph_type <- GraphEdge.DCP;
@@ -693,133 +724,188 @@ module Analyzer = AbstractInterpreter.Make (CFG) (TransferFunctions)
         )
       in
 
-      let get_reset_sum resets =
-        (* Calculates reset sum based on resets of variable norm *)
-        Resets.fold (fun (edge, norm, const) sum ->
-          let reset_exp = match norm with
-          | Exp.Lvar pvar -> (
-            match PvarMap.find_opt pvar type_map with
-            | Some typ -> (
-              match typ.desc with
-              | Typ.Tint ikind -> (
-                let exp = if IntLit.iszero const then norm
-                else Exp.BinOp (Binop.PlusA, norm, Exp.Const (Const.Cint const))
-                in
-                if Typ.ikind_is_unsigned ikind && not (IntLit.isnegative const) then (
-                  (* sum [a + c] >= 0, which means max(a + c, 0) -> a + c *)
-                  Some (Bound.Value exp)
-                ) else (
-                  (* sum [a + c] might be negative -> max(a + c, 0) *)
-                  Some (Bound.Max exp)
-                )
-              )
-              | _ -> L.(die InternalError)"[Reset Sum] Unexpected Lvar type!"
-            )
-            | None -> L.(die InternalError)"[Reset Sum] Lvar [%a] is not a local variable!" Pvar.pp_value pvar
+      let rec transition_bound bound_norm update_map = 
+        let calculate_reset_sum resets updates = Resets.fold (fun (edge, norm, const) (sum, updates) ->
+          (* Calculates reset sum based on resets of variable norm:
+           * SUM(TB(t) * max(a + c, 0)) for all edges where norm is reset to [a + c] *)
+          let edge_bound, updates = match edge.bound_cache with
+          | Some bound -> bound, updates
+          | None -> (
+            let bound, updates = transition_bound edge.bound_norm updates in
+            edge.bound_cache <- Some bound;
+            bound, updates
           )
-          | Exp.Const const_norm when Const.iszero_int_float const_norm -> (
-            if IntLit.isnegative const then (
-              Some (Bound.Max (Exp.Const (Const.Cint const)))
-            ) else if not (IntLit.iszero const) then (
-              Some (Bound.Value (Exp.Const (Const.Cint const)))
-            ) else None
-          )
-          | _ -> L.(die InternalError)"[Reset Sum] Unsupported norm expression [%a]!" Exp.pp norm
           in
-          match sum with
+
+          let reset_exp = if Bound.is_zero edge_bound then None else (
+            let norm_bound = Bound.Value norm in
+            let guarded_norm = match norm with
+            | Exp.Lvar pvar -> (
+              match PvarMap.find_opt pvar type_map with
+              | Some typ -> (match typ.desc with
+                | Typ.Tint ikind -> if Typ.ikind_is_unsigned ikind then (
+                    (* for unsigned x: max(x, 0) => x *)
+                    Some norm_bound
+                  ) else (
+                    (* for signed x: max(x, 0) *)
+                    Some (Bound.Max norm_bound)
+                  )
+                | _ -> L.(die InternalError)"[Reset Sum] Unexpected Lvar type!"
+              )
+              | None -> L.(die InternalError)"[Reset Sum] Lvar [%a] is not a local variable!" Pvar.pp_value pvar
+            )
+            | Exp.Const Const.Cint const_norm -> (
+              if IntLit.isnegative const_norm then Some (Bound.Max norm_bound)
+              else if not (IntLit.iszero const_norm) then Some norm_bound
+              else None
+            )
+            | _ -> L.(die InternalError)"[Reset Sum] Unsupported norm expression [%a]!" Exp.pp norm
+            in
+
+            match guarded_norm with
+            | Some guarded_norm -> (
+              (* norm is now guaranteed to be >= 0 by using max function *)
+              let bound = if IntLit.isnegative const then (
+                (* result can be negative, wrap bound expression in the max function *)
+                let const_bound = Bound.Value (Exp.Const (Const.Cint (IntLit.neg const))) in
+                let binop_bound = Bound.BinOp (Binop.MinusA, guarded_norm, const_bound) in
+                Bound.Max binop_bound
+              ) else if IntLit.iszero const then (
+                guarded_norm
+              ) else (
+                (* const > 0 => result must be positive, max function is useless *)
+                let const_bound = Bound.Value (Exp.Const (Const.Cint const)) in
+                let binop_bound = Bound.BinOp (Binop.PlusA, guarded_norm, const_bound) in
+                binop_bound
+              )
+              in
+              if Bound.is_one edge_bound then Some bound
+              else Some (Bound.BinOp (Binop.Mult, edge_bound, bound))
+            )
+            | None -> None
+          )
+          in
+          let sum = match sum with
           | Some sum -> (
             match reset_exp with
             | Some exp -> Some (Bound.BinOp (Binop.PlusA, sum, exp))
             | None -> Some sum
           )
           | None -> reset_exp
-        ) resets None
-      in
+          in
+          sum, updates
+        ) resets (None, updates)
+        in
 
-      let rec calculate_bound bound_norm edges update_map = match bound_norm with
-      | Some norm -> (
-        match norm with
-        | Exp.Lvar pvar when not (PvarMap.mem pvar formals) -> (
-          let update_map = get_update_map norm edges update_map in
-          let increments, resets = Exp.Map.find norm update_map in
+        let calculate_increment_sum increments updates = Increments.fold (fun (edge, const) (sum, updates) ->
+          (* Calculates increment sum based on increments of variable norm:
+           * SUM(TB(t) * const) for all edges where norm is incremented, 0 if nowhere *)
+          let edge_bound, updates = match edge.bound_cache with
+          | Some bound -> bound, updates
+          | None -> (
+            let bound, updates = transition_bound edge.bound_norm updates in
+            edge.bound_cache <- Some bound;
+            bound, updates
+          )
+          in
 
-          log "Variable norm: %a\n" Pvar.pp_value pvar;
-          Resets.iter (fun (_, norm, const) ->
-            log "  [Reset] Norm: %a; Const: %a\n" Exp.pp norm IntLit.pp const;
-          ) resets;
-          Increments.iter (fun (_, const) ->
-            log "  [Increment] Const: %a\n" IntLit.pp const;
-          ) increments;
-
-          (* If local bound is a variable then TB(t) = Incr(v) + SUM_resets(max(a + c, 0))
-          * Incr(v) = SUM_increments(TB(t) * c) *)
-          let increment_sum, update_map = Increments.fold (fun (edge, const) (sum, update_map) ->
-            (* const is always positive in this case *)
-            let edge_bound, update_map = match edge.bound_cache with
-            | Some bound -> bound, update_map
-            | None -> calculate_bound edge.bound_norm edges update_map
-            in
-            let increment_exp = if Bound.is_zero edge_bound then (
-              None
+          let increment_exp = if Bound.is_zero edge_bound then (
+            None
+          ) else (
+            if IntLit.isone const then (
+              Some edge_bound
             ) else (
-              if IntLit.isone const then (
-                Some edge_bound
-              ) else (
-                let const_exp = Exp.Const (Const.Cint const) in
-                Some (Bound.BinOp (Binop.Mult, edge_bound, Bound.Value const_exp))
-              )
+              let const_exp = Exp.Const (Const.Cint const) in
+              if Bound.is_one edge_bound then Some (Bound.Value const_exp)
+              else Some (Bound.BinOp (Binop.Mult, edge_bound, Bound.Value const_exp))
             )
-            in
-            let sum = match sum with
-            | Some sum -> (
-              match increment_exp with
-              | Some exp -> Some (Bound.BinOp (Binop.PlusA, sum, exp))
-              | None -> Some sum
-            )
-            | None -> increment_exp
-            in
-            sum, update_map
-          ) increments (None, update_map)
+          )
           in
-          let reset_sum = get_reset_sum resets in
+          let sum = match sum with
+          | Some sum -> (
+            match increment_exp with
+            | Some exp -> Some (Bound.BinOp (Binop.PlusA, sum, exp))
+            | None -> Some sum
+          )
+          | None -> increment_exp
+          in
+          sum, updates
+        ) increments (None, updates)
+        in
 
-          let edge_bound = match increment_sum, reset_sum with
-          | Some increments, Some resets -> (
-            Bound.BinOp (Binop.PlusA, increments, resets)
+        let edge_bound, update_map = match bound_norm with
+        | Some norm -> (
+          match norm with
+          | Exp.Lvar pvar when not (PvarMap.mem pvar formals) -> (
+            let update_map = get_update_map norm post.graph_edges update_map in
+            let increments, resets = Exp.Map.find norm update_map in
+
+            log "Variable norm: %a\n" Pvar.pp_value pvar;
+            Resets.iter (fun (_, norm, const) ->
+              log "  [Reset] Norm: %a; Const: %a\n" Exp.pp norm IntLit.pp const;
+            ) resets;
+            Increments.iter (fun (_, const) ->
+              log "  [Increment] Const: %a\n" IntLit.pp const;
+            ) increments;
+
+            (* If local bound is a variable then TB(t) = Incr(v) + SUM_resets(max(a + c, 0))
+             * Incr(v) = SUM_increments(TB(t) * c) *)
+            let increment_sum, update_map = calculate_increment_sum increments update_map in
+            let reset_sum, update_map = calculate_reset_sum resets update_map in
+
+            let edge_bound = match increment_sum, reset_sum with
+            | Some increments, Some resets -> (
+              Bound.BinOp (Binop.PlusA, increments, resets)
+            )
+            | Some bound, None | None, Some bound -> (
+              bound
+            )
+            | None, None -> Bound.Value (Exp.zero)
+            in
+            edge_bound, update_map
           )
-          | Some bound, None | None, Some bound -> (
-            bound
+          | Exp.Const (Const.Cint _) -> (
+            (* Non-loop edge, can be executed only once, const is always 1 *)
+            Bound.Value norm, update_map
           )
-          | None, None -> Bound.Value (Exp.zero)
-          in
-          log "[Edge bound] %a\n" Bound.pp edge_bound;
-          edge_bound, update_map
+          | _ -> L.(die InternalError)"[Bound] Unsupported norm expression [%a]!" Exp.pp norm
         )
-        | _ -> L.(die InternalError)"[Bound] Unsupported norm expression [%a]!" Exp.pp norm
-      )
-      | None -> L.(die InternalError)"[Bound] edge has no bound norm!"
+        | None -> L.(die InternalError)"[Bound] edge has no bound norm!"
+        in
+        log "[Edge bound] %a\n" Bound.pp edge_bound;
+        edge_bound, update_map
       in
 
-      (* Bound on decreased edges *)
+      (* Calculate bound for all backedeges and sum them to get the total bound *)
       let update_map = Exp.Map.empty in
-      let final_bound, _ = LTS.EdgeSet.fold (fun (_, edge, _) (final_bound, update_map) ->
-        let bound, update_map = calculate_bound edge.bound_norm post.graph_edges update_map in
-        edge.bound_cache <- Some bound;
+      let final_bound, _ = LTS.EdgeSet.fold (fun (src, edge, dst) (final_bound, update_map) ->
+        log "Calculating TB for: %a -- %a\n" GraphNode.pp src GraphNode.pp dst;
+        let edge_bound, update_map = match edge.bound_cache with
+        | Some bound_cache -> (
+          bound_cache, update_map
+        ) 
+        | None -> (
+          let bound, update_map = transition_bound edge.bound_norm update_map in
+          edge.bound_cache <- Some bound;
+          bound, update_map
+        )
+        in
         let final_bound = match final_bound with
-        | Some sum -> Bound.BinOp (Binop.PlusA, sum, bound)
-        | None -> bound
+        | Some sum -> Bound.BinOp (Binop.PlusA, sum, edge_bound)
+        | None -> edge_bound
         in
         Some final_bound, update_map
       ) backedges (None, update_map)
       in
-      log "[Final bound]\n";
+      log "\n[Final bound]\n";
       (match final_bound with
       | Some bound -> (
         let bound_expr = Z3.Expr.simplify (Bound.to_z3_expr bound ctx) None in
-        log "  %s\n" (Z3.Expr.to_string bound_expr)
+        let bound_ast = Z3.Expr.ast_of_expr bound_expr in
+        log "  %a\n" Bound.pp bound;
       )
       | None -> ());
-
+      log "Description:\n  signed x: max(x, 0) == [x]\n";
       Payload.update_summary post summary
     )
     | None ->
