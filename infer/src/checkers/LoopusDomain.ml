@@ -127,6 +127,11 @@ end
 type prune_info = (Sil.if_kind * bool * Location.t)
 [@@deriving compare]
 
+let prune_info_equal = [%compare.equal: prune_info]
+
+let equal_paths path_a path_b = List.equal path_a path_b ~equal:prune_info_equal
+
+
 let pp_prune_info fmt (kind, branch, _) = 
   let kind = Sil.if_kind_to_string kind in
   F.fprintf fmt "%s(%B)" kind branch
@@ -204,7 +209,7 @@ module Bound = struct
   type t =
   | BinOp of Binop.t * t * t
   | Value of Exp.t
-  | Max of t
+  | Max of t list
   [@@deriving compare]
 
   let rec to_string bound = match bound with
@@ -222,14 +227,18 @@ module Bound = struct
     | _ -> F.sprintf "%s %s %s" (to_string lhs) (Binop.(str Pp.text) op) (to_string rhs)
   )
   | Value exp -> Exp.to_string exp
-  | Max exp -> (
-    let str = to_string exp in
-    match exp with 
-    | Value exp -> (match exp with
-      | Exp.Lvar pvar -> F.sprintf "[%s]" str
+  | Max args -> if Int.equal (List.length args) 1 then (
+    let arg = List.hd_exn args in
+    let str = to_string arg in
+    match arg with 
+    | Value arg -> (match arg with
+      | Exp.Lvar _ -> F.sprintf "[%s]" str
       | _ -> F.sprintf "max(%s, 0)" str
     )
     | _ -> F.sprintf "max(%s, 0)" str
+  ) else (
+    let str = List.fold args ~init:"max(" ~f:(fun str arg -> str ^ to_string arg ^ ", ") in
+    (String.slice str 0 ((String.length str) - 2)) ^ ")"
   )
 
   let pp fmt bound = F.fprintf fmt "%s" (to_string bound)
@@ -242,10 +251,9 @@ module Bound = struct
   | Value (Exp.Const (Const.Cint const)) -> IntLit.isone const
   | _ -> false
 
-  let to_z3_expr bound smt_ctx = 
+  (* let to_z3_expr bound smt_ctx = 
     let int_sort = Z3.Arithmetic.Integer.mk_sort smt_ctx in
     let zero_const = Z3.Arithmetic.Integer.mk_numeral_i smt_ctx 0 in
-    let max_func = Z3.FuncDecl.mk_func_decl_s smt_ctx "max" [int_sort; int_sort] int_sort in
     let rec aux bound = match bound with
     | BinOp (op, lexp, rexp) -> (
       let lexp = aux lexp in
@@ -257,9 +265,20 @@ module Bound = struct
       | _ -> L.(die InternalError)"[Z3 expr] Expression contains invalid binary operator!"
     )
     | Value exp -> exp_to_z3_expr smt_ctx exp
-    | Max exp -> Z3.Expr.mk_app smt_ctx max_func [aux exp; zero_const]
+    | Max args -> (
+      let types, z3_args = List.fold args ~init:([], []) ~f:(fun (types, z3_args) arg -> 
+        types @ [int_sort], z3_args @ [aux arg]
+      ) 
+      in
+      let max_func = Z3.FuncDecl.mk_func_decl_s smt_ctx "max" types int_sort in
+      if List.length args < 2 then (
+        Z3.Expr.mk_app smt_ctx max_func (z3_args @ [zero_const])
+      ) else (
+        Z3.Expr.mk_app smt_ctx max_func z3_args
+      )
+    )
     in
-    aux bound
+    aux bound *)
 end
 
 module GraphEdge = struct
@@ -717,6 +736,8 @@ end
 
 
 type astate = {
+  test: bool;
+
   last_node: GraphNode.t;
   branchingPath: prune_info list;
   joinLocs: int JoinLocations.t;
@@ -735,6 +756,8 @@ type astate = {
 
 let initial : GraphNode.t -> astate = fun entry_point -> (
   {
+    test = false;
+
     last_node = entry_point;
     branchingPath = [];
     joinLocs = JoinLocations.empty;
@@ -833,6 +856,7 @@ let join : astate -> astate -> astate = fun lhs rhs ->
   in
   
   let astate = { lhs with
+    test = false;
     branchingPath = path_prefix;
     joinLocs = join_locs;
     ident_map = ident_map;
@@ -845,8 +869,24 @@ let join : astate -> astate -> astate = fun lhs rhs ->
   }
   in
 
-  let is_consecutive_join = GraphNode.is_join lhs.last_node || GraphNode.is_join rhs.last_node in
+  (* let is_consecutive_join = GraphNode.is_join lhs.last_node || GraphNode.is_join rhs.last_node in *)
+  
+  (* let is_consecutive_join = (GraphNode.is_join lhs.last_node && not (rhs.test))
+   || (GraphNode.is_join rhs.last_node && not (lhs.test)) in *)
+
+  
+  let is_consecutive_join = (GraphNode.is_join lhs.last_node && not (equal_paths path_prefix lhs_path))
+   || (GraphNode.is_join rhs.last_node && not (equal_paths path_prefix rhs_path)) in
+
+  (* let is_consecutive_join = (GraphNode.is_join lhs.last_node || GraphNode.is_join rhs.last_node) &&
+  not (LTS.EdgeSet.exists (fun (src, _, dst) -> 
+    (GraphNode.equal src lhs.last_node && GraphNode.equal dst rhs.last_node) ||
+    (GraphNode.equal src rhs.last_node && GraphNode.equal dst lhs.last_node)
+  ) astate.graph_edges)
+  in *)
+
   let astate = if is_consecutive_join then (
+    L.stdout "-----------------------FAIL\n";
     (* Consecutive join, merge join nodes and possibly add new edge to aggregated join node *)
     let other_state, join_state = if GraphNode.is_join lhs.last_node then rhs, lhs else lhs, rhs in
     let aggregate_join = match other_state.last_node.location with
@@ -858,9 +898,11 @@ let join : astate -> astate -> astate = fun lhs rhs ->
       if scope_left then (
         (* Heuristic: ignore edge from previous location if this is a "backedge" join which 
          * joins state from inside of the loop with outside state denoted by prune location before loop prune *)
+        L.stdout "-----------------------BACKEDGE\n";
         join_state.aggregate_join
       ) else (
         (* Add edge from non-join node to current set of edges pointing to aggregated join node *)
+        L.stdout "-----------------------ADD EDGE\n";
         let unmodified = get_unmodified_pvars other_state in
         let edge_data = GraphEdge.add_invariants other_state.edge_data unmodified in
         let edge_data = GraphEdge.set_path_end edge_data (List.last other_state.branchingPath) in
@@ -878,29 +920,40 @@ let join : astate -> astate -> astate = fun lhs rhs ->
     }
   ) else (
     (* First join in a row, create new join node and join info *)
-    let join_node = GraphNode.make join_location in
-    let aggregate_join = AggregateJoin.make join_id lhs.last_node.location rhs.last_node.location in
-    let tracked_pvars = get_tracked_pvars astate in
-    let add_edge aggregate state = match state.last_node.location with
-    | LTSLocation.Start _ -> aggregate
-    | _ -> (
-      let unmodified = PvarSet.diff tracked_pvars state.modified_pvars in
-      let edge_data = GraphEdge.add_invariants state.edge_data unmodified in
-      let edge_data = GraphEdge.set_path_end edge_data (List.last state.branchingPath) in
-      let lts_edge = LTS.E.create state.last_node edge_data join_node in
-      AggregateJoin.add_edge aggregate lts_edge
-    )
-    in
-    let aggregate_join = add_edge aggregate_join lhs in
-    let aggregate_join = add_edge aggregate_join rhs in
-    { astate with 
-      last_node = join_node; 
-      aggregate_join = aggregate_join;
-      graph_nodes = LTS.NodeSet.add join_node astate.graph_nodes;
-
+    let astate = { astate with
       edge_data = GraphEdge.empty;
-      modified_pvars = PvarSet.empty;
+      modified_pvars = PvarSet.empty
     }
+    in
+    match lhs.last_node.location, rhs.last_node.location with
+    | LTSLocation.PruneLoc (kind, _), LTSLocation.Start _ when not (is_loop_prune kind) -> (
+      { astate with last_node = lhs.last_node }
+    )
+    | LTSLocation.Start _, LTSLocation.PruneLoc (kind, _) when not (is_loop_prune kind) -> (
+      { astate with last_node = rhs.last_node }
+    )
+    | _, _ -> (
+      let join_node = GraphNode.make join_location in
+      let aggregate_join = AggregateJoin.make join_id lhs.last_node.location rhs.last_node.location in
+      let tracked_pvars = get_tracked_pvars astate in
+      let add_edge aggregate state = match state.last_node.location with
+      | LTSLocation.Start _ -> aggregate
+      | _ -> (
+        let unmodified = PvarSet.diff tracked_pvars state.modified_pvars in
+        let edge_data = GraphEdge.add_invariants state.edge_data unmodified in
+        let edge_data = GraphEdge.set_path_end edge_data (List.last state.branchingPath) in
+        let lts_edge = LTS.E.create state.last_node edge_data join_node in
+        AggregateJoin.add_edge aggregate lts_edge
+      )
+      in
+      let aggregate_join = add_edge aggregate_join lhs in
+      let aggregate_join = add_edge aggregate_join rhs in
+      { astate with 
+        last_node = join_node; 
+        aggregate_join = aggregate_join;
+        graph_nodes = LTS.NodeSet.add join_node astate.graph_nodes;
+      }
+    )
   )
   in
   astate
