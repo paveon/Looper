@@ -302,6 +302,14 @@ module GraphEdge = struct
 
   let equal = [%compare.equal: t]
 
+  let active_guards edge = Exp.Set.fold (fun guard acc ->
+    match DC.Map.get_dc guard edge.constraints with
+    | Some dc ->
+      if DC.is_decreasing dc && DC.same_norms dc then acc
+      else Exp.Set.add guard acc
+    | _ -> Exp.Set.add guard acc
+  ) edge.guards Exp.Set.empty
+
   let modified_pvars edge = AssignmentMap.fold (fun pvar exp pvar_set -> 
       if Exp.equal (Exp.Lvar pvar) exp then pvar_set
       else PvarSet.add pvar pvar_set

@@ -513,44 +513,68 @@ module Analyzer = AbstractInterpreter.Make (CFG) (TransferFunctions)
         * on any of those incoming edges (guard is a norm) *)
       let rec propagate_guards : LTS.NodeSet.t -> unit = fun nodes -> (
         if not (LTS.NodeSet.is_empty nodes) then (
-          let node = LTS.NodeSet.min_elt nodes in
-          let nodes = LTS.NodeSet.remove node nodes in
-          let incoming_edges = LTS.pred_e dcp node in
-          let rec aux : Exp.Set.t -> LTS.edge list -> Exp.Set.t =
-          fun acc edges -> match edges with
+          let rec get_shared_guards : Exp.Set.t -> LTS.edge list -> Exp.Set.t =
+          fun guards edges -> match edges with
           | (_, edge_data, _) :: edges -> (
-            (* Get edge guards that are not decreased on this edge *)
-            let acc = Exp.Set.fold (fun guard acc ->
-              match DC.Map.get_dc guard edge_data.constraints with
-              | Some dc ->
-                if DC.is_decreasing dc && DC.same_norms dc then acc
-                else Exp.Set.add guard acc
-              | _ -> Exp.Set.add guard acc
-            ) edge_data.guards Exp.Set.empty
-            in
-            Exp.Set.inter acc (aux acc edges)
-          )
-          | [] -> acc
-          in
-
-          (* Get guards that are used on all incoming
-            * edges and which are not decreased *)
-          let guards = aux Exp.Set.empty incoming_edges in
-          let nodes = if Exp.Set.is_empty guards then (
-            nodes
-          ) else (
-            (* Propagate guards to all outgoing edges and add
-              * destination nodes of those edges to the processing queue *)
-            let out_edges = LTS.succ_e dcp node in
-            List.fold out_edges ~init:nodes ~f:(fun acc (_, (edge_data : GraphEdge.t), dst) ->
-              Exp.Set.iter (fun guard ->
-                edge_data.guards <- Exp.Set.add guard edge_data.guards;
-              ) guards;
-              LTS.NodeSet.add dst acc
+            if edge_data.backedge then (
+              get_shared_guards guards edges
+            ) else (
+              (* Get edge guards that are not decreased on this edge *)
+              let guards = GraphEdge.active_guards edge_data in
+              Exp.Set.inter guards (get_shared_guards guards edges)
             )
           )
+          | [] -> guards
           in
-          propagate_guards nodes
+
+          let node = LTS.NodeSet.min_elt nodes in
+          let nodes = LTS.NodeSet.remove node nodes in
+          match node.location with
+          | LTSLocation.PruneLoc (kind, loc) when is_loop_prune kind -> (
+            let incoming_edges = LTS.pred_e dcp node in
+            let guards = get_shared_guards Exp.Set.empty incoming_edges in
+            let out_edges = LTS.succ_e dcp node in
+            let true_branch, out_edges = List.partition_tf out_edges ~f:(fun (_, edge_data, _) -> 
+              match edge_data.path_prefix_end with
+              | Some (_, branch, _) when branch -> true
+              | _ -> false
+            )
+            in
+            let (src, true_branch, dst) = List.hd_exn true_branch in
+            true_branch.guards <- Exp.Set.union guards true_branch.guards;
+            if not (GraphNode.equal src dst) then propagate_guards (LTS.NodeSet.add dst nodes);
+            let (_, backedge, _) = List.find_exn incoming_edges ~f:(fun (_, edge_data, _) -> edge_data.backedge) in
+            let backedge_guards = GraphEdge.active_guards backedge in
+            let guards = Exp.Set.inter guards backedge_guards in
+            if Exp.Set.is_empty guards then () else (
+              let nodes = List.fold out_edges ~init:LTS.NodeSet.empty ~f:(fun acc (_, (edge_data : GraphEdge.t), dst) ->
+                edge_data.guards <- Exp.Set.union guards edge_data.guards;
+                if edge_data.backedge then acc else LTS.NodeSet.add dst acc
+              )
+              in
+              propagate_guards nodes
+            )
+          )
+          | _ -> (
+            let incoming_edges = LTS.pred_e dcp node in
+
+            (* Get guards that are used on all incoming
+              * edges and which are not decreased *)
+            let guards = get_shared_guards Exp.Set.empty incoming_edges in
+            let nodes = if Exp.Set.is_empty guards then (
+              nodes
+            ) else (
+              (* Propagate guards to all outgoing edges and add
+                * destination nodes of those edges to the processing queue *)
+              let out_edges = LTS.succ_e dcp node in
+              List.fold out_edges ~init:nodes ~f:(fun acc (_, (edge_data : GraphEdge.t), dst) ->
+                edge_data.guards <- Exp.Set.union guards edge_data.guards;
+                if edge_data.backedge then acc else LTS.NodeSet.add dst acc
+              )
+            )
+            in
+            propagate_guards nodes
+          )
         ) else (
           ()
         )
@@ -588,6 +612,10 @@ module Analyzer = AbstractInterpreter.Make (CFG) (TransferFunctions)
       )
       in
       to_natural_numbers post.graph_edges;
+
+      let file = Out_channel.create "DCP.dot" in
+      let () = Dot.output_graph file dcp in
+      Out_channel.close file;
 
       (* Suboptimal way to find all SCC edges, the ocamlgraph library for some
        * reason does not have a function that returns edges of SCCs.  *)
@@ -703,10 +731,6 @@ module Analyzer = AbstractInterpreter.Make (CFG) (TransferFunctions)
         in
         log "  %a -- %a -- %a\n" GraphNode.pp src Exp.pp local_bound GraphNode.pp dst
       ) post.graph_edges;
-
-      let file = Out_channel.create "DCP.dot" in
-      let () = Dot.output_graph file dcp in
-      Out_channel.close file;
 
       log "[Backedges]\n";
       let backedges = LTS.EdgeSet.filter (fun (src, edge_data, dst) ->
