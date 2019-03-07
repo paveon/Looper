@@ -210,6 +210,7 @@ module Bound = struct
   | BinOp of Binop.t * t * t
   | Value of Exp.t
   | Max of t list
+  | Min of t list
   [@@deriving compare]
 
   let rec to_string bound = match bound with
@@ -217,7 +218,7 @@ module Bound = struct
     match op with
     | Binop.Mult -> (
       let aux str exp = match exp with
-      | Max _ -> str
+      | Max _ | Value _ -> str
       | _ -> F.sprintf "(%s)" str
       in
       let lhs_str = aux (to_string lhs) lhs in
@@ -238,6 +239,12 @@ module Bound = struct
     | _ -> F.sprintf "max(%s, 0)" str
   ) else (
     let str = List.fold args ~init:"max(" ~f:(fun str arg -> str ^ to_string arg ^ ", ") in
+    (String.slice str 0 ((String.length str) - 2)) ^ ")"
+  )
+  | Min args -> if Int.equal (List.length args) 1 then (
+    to_string (List.hd_exn args)
+  ) else (
+    let str = List.fold args ~init:"min(" ~f:(fun str arg -> str ^ to_string arg ^ ", ") in
     (String.slice str 0 ((String.length str) - 2)) ^ ")"
   )
 
@@ -619,7 +626,7 @@ module GraphNode = struct
   let is_join : t -> bool = fun node -> LTSLocation.is_join_loc node.location
 
   let idCnt = ref 0
-  let idMap : (int IdMap.t) ref = ref IdMap.empty
+  let idMap = ref IdMap.empty
 
   let hash = Hashtbl.hash
   let equal = [%compare.equal: t]
@@ -657,12 +664,8 @@ module LTS = struct
   include Graph.Imperative.Digraph.ConcreteBidirectionalLabeled(GraphNode)(GraphEdge)
   module NodeSet = Caml.Set.Make(V)
   module EdgeSet = Caml.Set.Make(E)
-end
 
-module DotConfig = struct
-  include LTS
-
-  let edge_attributes : LTS.E.t -> 'a list = fun (_src, edge, _dst) -> (
+  let edge_attributes : E.t -> 'a list = fun (_src, edge, _dst) -> (
     let label = match edge.path_prefix_end with
     | Some prune_info -> F.asprintf "%a\n" pp_prune_info prune_info
     | None -> ""
@@ -712,7 +715,192 @@ module DotConfig = struct
   let graph_attributes _ = []
 end
 
-module Dot = Graph.Graphviz.Dot(DotConfig)
+module Dot = Graph.Graphviz.Dot(LTS)
+
+
+(* Reset graph *)
+module RG = struct 
+  module Node = struct
+    type t = {
+      norm : Exp.t
+    } [@@deriving compare]
+
+    let hash = Hashtbl.hash
+    let equal = [%compare.equal: t]
+
+    let make : Exp.t -> t = fun norm -> { norm }
+  end
+
+  module Edge = struct
+    type t = {
+      dcp_edge : LTS.E.t option;
+      const : IntLit.t;
+    } [@@deriving compare]
+
+    let hash = Hashtbl.hash
+    let equal = [%compare.equal: t]
+    let default = {
+      dcp_edge = None;
+      const = IntLit.zero;
+    }
+
+    let edge_data edge = match edge.dcp_edge with
+    | Some (_, dcp_edge, _) -> dcp_edge
+    | None -> assert(false)
+
+    let make dcp_edge const = {
+      dcp_edge = Some dcp_edge;
+      const = const;
+    }
+  end
+  include Graph.Imperative.Digraph.ConcreteBidirectionalLabeled(Node)(Edge)
+
+  let edge_attributes : E.t -> 'a list = fun (_, edge, _) -> (
+    let label = match edge.dcp_edge with
+    | Some (src, _, dst) -> F.asprintf "%a -- %a\n%a" GraphNode.pp src GraphNode.pp dst IntLit.pp edge.const
+    | None -> ""
+    in
+    [`Label label; `Color 4711]
+  )
+  
+  let default_edge_attributes _ = []
+  let get_subgraph _ = None
+  let vertex_attributes : V.t -> 'a list = fun node -> (
+    [ `Shape `Box; `Label (Exp.to_string node.norm) ]
+  )
+
+  let vertex_name : V.t -> string = fun vertex -> (
+    string_of_int (Hashtbl.hash vertex.norm)
+  )
+    
+  let default_vertex_attributes _ = []
+  let graph_attributes _ = []
+
+  module Chain = struct
+    type t = E.t list
+    [@@deriving compare]
+
+    let origin : t -> Exp.t = fun chain ->
+      (E.src (List.hd_exn chain)).norm
+
+    let value : t -> IntLit.t = fun chain ->
+      List.fold chain ~init:IntLit.zero ~f:(fun acc (_, (data : Edge.t), _) -> 
+        IntLit.add acc data.const
+      )
+
+    let transitions : t -> GraphEdge.Set.t = fun chain ->
+      List.fold chain ~init:GraphEdge.Set.empty ~f:(fun acc (_, edge, _) ->
+        let data = Edge.edge_data edge in
+        GraphEdge.Set.add data acc
+      )
+
+    let pp fmt chain = List.iter chain ~f:(fun ((src : Node.t), data, dst) ->
+        L.stdout "%a --> " Exp.pp src.norm
+      );
+      let _, _, (dst : Node.t) = List.last_exn chain in
+      L.stdout "%a" Exp.pp dst.norm
+
+    module Set = Caml.Set.Make(struct
+      type nonrec t = t
+      let compare = compare
+    end)
+  end
+
+
+  (* Finds all reset chains leading to the norm through reset graph *)
+  let get_reset_chains origin reset_graph dcp =
+    let rec traverse_reset_graph node chain =
+      let preds = pred_e reset_graph node in
+      if List.is_empty preds then (
+        Chain.Set.singleton (List.rev chain)
+      ) else (
+        List.fold preds ~init:Chain.Set.empty ~f:(fun chains (src, edge_data, dst) ->
+          let current_chain = chain @ [(src, edge_data, dst)] in
+          let new_chains = traverse_reset_graph src current_chain in
+          Chain.Set.union chains new_chains
+        )
+      )
+    in
+    let reset_chains = traverse_reset_graph origin [] in
+
+    (* Shorten the chain until it's optimal, i.e., maximal while remaining sound *)
+    Chain.Set.map (fun chain -> 
+      let _, edge_data, dst = List.last_exn chain in
+      let path_origin = match edge_data.dcp_edge with
+      | Some (_, _, dcp_dst) -> dcp_dst
+      | None -> assert(false)
+      in
+      (* log "  [Reset Chain]\n  Path origin: %a\n" GraphNode.pp path_origin; *)
+
+      let optimize_chain : Chain.t -> edge -> Chain.t = 
+      fun optimal_chain (src, edge_data, dst) ->
+        match edge_data.dcp_edge with
+        | Some (path_end, _, _) -> (
+          (* Find all paths from origin to end and check if they reset the end norm *)
+          let current_norm = src.norm in
+          (* log "  Path end: %a | Norm: %a\n" GraphNode.pp path_end Exp.pp current_norm; *)
+          let rec checkPaths origin visited_nodes norm_reset acc =
+            if GraphNode.equal origin path_end then (
+              (* Found path, return info if norm was reset along the path *)
+              (* log "PATH FOUND | Norm reset: %B\n" norm_reset; *)
+              norm_reset
+            ) else (
+              let next = LTS.succ_e dcp origin in
+              if List.is_empty next then (
+                (* Not a path, don't care if norm wasn't reset *)
+                (* log "PATH NOT FOUND\n"; *)
+                true
+              ) else (
+                let visited_nodes = LTS.NodeSet.add origin visited_nodes in
+                List.fold next ~init:acc ~f:(fun acc (dcp_edge : LTS.E.t) ->
+                  if not acc then acc else (
+                    let _, dcp_data, dcp_dst = dcp_edge in
+                    if LTS.NodeSet.mem dcp_dst visited_nodes then (
+                      acc
+                    ) else (
+                      let norm_reset = if not norm_reset then (
+                        let dc = DC.Map.get_dc current_norm dcp_data.constraints in
+                        match dc with
+                        | Some dc -> not (DC.same_norms dc)
+                        | None -> norm_reset
+                      ) else true
+                      in
+                      (* log "NORM RESET: %B\n" norm_reset; *)
+                      acc && checkPaths dcp_dst visited_nodes norm_reset acc
+                    )
+                  )
+                )
+              )
+            )
+          in
+          let next = (LTS.succ_e dcp path_origin) in
+          let all_paths_reset = List.fold next ~init:true ~f:(fun acc (dcp_edge : LTS.E.t) ->
+            let _, data, dst = dcp_edge in
+            if not acc then false else (
+              let dc = DC.Map.get_dc current_norm data.constraints in
+              let norm_reset = match dc with
+              | Some dc -> not (DC.same_norms dc)
+              | None -> false
+              in
+              (* log "START NORM RESET: %B\n" norm_reset; *)
+              acc && (checkPaths dst LTS.NodeSet.empty norm_reset true)
+            )
+          )
+          in
+          if all_paths_reset then (
+            optimal_chain @ [(src, edge_data, dst)]
+          ) else (
+            [(src, edge_data, dst)]
+          )
+        )
+        | None -> assert(false)
+        (* Exp.Set.add dst.norm atoms *)
+      in
+      List.fold (List.tl_exn chain) ~init:[List.hd_exn chain] ~f:optimize_chain
+    ) reset_chains
+end
+
+module RG_Dot = Graph.Graphviz.Dot(RG)
 
 
 module AggregateJoin = struct
