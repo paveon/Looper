@@ -85,7 +85,7 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
       in
 
       let lts_prune_loc = LTSLocation.PruneLoc (kind, loc) in
-      let prune_node = GraphNode.make lts_prune_loc in
+      let prune_node = DCP.Node.make lts_prune_loc in
 
       let astate = match astate.last_node.location with
       | LTSLocation.PruneLoc (kind, prune_loc) 
@@ -95,25 +95,25 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
         astate
       )
       | _ -> (
-        let edge_data = GraphEdge.add_invariants astate.edge_data (get_unmodified_pvars astate) in
+        let edge_data = DCP.EdgeData.add_invariants astate.edge_data (get_unmodified_pvars astate) in
         let lhs = astate.aggregate_join.lhs in
         let rhs = astate.aggregate_join.rhs in
-        let graph_nodes = LTS.NodeSet.add prune_node astate.graph_nodes in
+        let graph_nodes = DCP.NodeSet.add prune_node astate.graph_nodes in
 
         let is_direct_backedge = LTSLocation.equal lts_prune_loc lhs || LTSLocation.equal lts_prune_loc rhs in
         if is_direct_backedge then (
           (* Discard join node and all edges poiting to it and instead make
             * one direct backedge with variables modified inside the loop *)
           let join_edges =  astate.aggregate_join.edges in
-          let src, edge_data, _ = List.find_exn (LTS.EdgeSet.elements join_edges) ~f:(fun edge ->
-            let backedge_origin = LTS.E.src edge in
-            GraphNode.equal backedge_origin prune_node
+          let src, edge_data, _ = List.find_exn (DCP.EdgeSet.elements join_edges) ~f:(fun edge ->
+            let backedge_origin = DCP.E.src edge in
+            DCP.Node.equal backedge_origin prune_node
           )
           in
-          let edge_data = GraphEdge.set_backedge edge_data in
-          let backedge = LTS.E.create src edge_data prune_node in
-          let graph_edges = LTS.EdgeSet.add backedge astate.graph_edges in
-          let graph_nodes = LTS.NodeSet.remove astate.last_node graph_nodes in
+          let edge_data = DCP.EdgeData.set_backedge edge_data in
+          let backedge = DCP.E.create src edge_data prune_node in
+          let graph_edges = DCP.EdgeSet.add backedge astate.graph_edges in
+          let graph_nodes = DCP.NodeSet.remove astate.last_node graph_nodes in
           { astate with graph_edges = graph_edges; graph_nodes = graph_nodes }
         ) else (
           let is_backedge = match lhs, rhs with
@@ -127,34 +127,34 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
           (* Add all accumulated edges pointing to aggregated join node and
             * new edge pointing from aggregated join node to this prune node *)
           let edge_count = AggregateJoin.edge_count astate.aggregate_join in
-          let is_empty_edge = GraphEdge.equal astate.edge_data GraphEdge.empty in
+          let is_empty_edge = DCP.EdgeData.equal astate.edge_data DCP.EdgeData.empty in
           if not (is_loop_prune kind) && Int.equal edge_count 2 && is_empty_edge then (
             (* LTS simplification, skip simple JOIN node and redirect edges pointing to it *)
-            let graph_edges = LTS.EdgeSet.map (fun (src, data, _) ->
+            let graph_edges = DCP.EdgeSet.map (fun (src, data, _) ->
               (src, data, prune_node)
             ) astate.aggregate_join.edges
             in
-            let graph_nodes = LTS.NodeSet.remove astate.last_node graph_nodes in
-            let graph_edges = (LTS.EdgeSet.union astate.graph_edges graph_edges) in
+            let graph_nodes = DCP.NodeSet.remove astate.last_node graph_nodes in
+            let graph_edges = (DCP.EdgeSet.union astate.graph_edges graph_edges) in
             { astate with graph_edges = graph_edges; graph_nodes = graph_nodes }
           ) else if Int.equal edge_count 1 then (
             (* JOIN node with single incoming edge (useless node).
               * Redirect incoming edge to prune node and delete join node *)
-            let graph_edges = LTS.EdgeSet.map (fun (src, edge_data, _) ->
-              let edge_data = if is_backedge then GraphEdge.set_backedge edge_data else edge_data in
+            let graph_edges = DCP.EdgeSet.map (fun (src, edge_data, _) ->
+              let edge_data = if is_backedge then DCP.EdgeData.set_backedge edge_data else edge_data in
               (src, edge_data, prune_node)
             ) astate.aggregate_join.edges
             in
-            let graph_nodes = LTS.NodeSet.remove astate.last_node graph_nodes in
-            let graph_edges = (LTS.EdgeSet.union astate.graph_edges graph_edges) in
+            let graph_nodes = DCP.NodeSet.remove astate.last_node graph_nodes in
+            let graph_edges = (DCP.EdgeSet.union astate.graph_edges graph_edges) in
             { astate with graph_edges = graph_edges; graph_nodes = graph_nodes }
           ) else (
             let path_end = List.last astate.branchingPath in
-            let edge_data = GraphEdge.set_path_end edge_data path_end in
-            let edge_data = if is_backedge then GraphEdge.set_backedge edge_data else edge_data in
-            let new_lts_edge = LTS.E.create astate.last_node edge_data prune_node in
-            let graph_edges = LTS.EdgeSet.add new_lts_edge astate.graph_edges in
-            let graph_edges = LTS.EdgeSet.union astate.aggregate_join.edges graph_edges in
+            let edge_data = DCP.EdgeData.set_path_end edge_data path_end in
+            let edge_data = if is_backedge then DCP.EdgeData.set_backedge edge_data else edge_data in
+            let new_lts_edge = DCP.E.create astate.last_node edge_data prune_node in
+            let graph_edges = DCP.EdgeSet.add new_lts_edge astate.graph_edges in
+            let graph_edges = DCP.EdgeSet.union astate.aggregate_join.edges graph_edges in
             { astate with graph_edges = graph_edges; graph_nodes = graph_nodes }
           )
         )
@@ -252,8 +252,8 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
         astate
       )
       in
-      let not_consecutive = GraphNode.is_join astate.last_node in
-      let edge_data = GraphEdge.add_condition GraphEdge.empty prune_condition in
+      let not_consecutive = DCP.Node.is_join astate.last_node in
+      let edge_data = DCP.EdgeData.add_condition DCP.EdgeData.empty prune_condition in
       { astate with
         test = not_consecutive;
         branchingPath = astate.branchingPath @ [(kind, branch, loc)];
@@ -284,14 +284,14 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
 
       if is_exit_node then (
         log "  Exit node\n";
-        let exit_node = GraphNode.make LTSLocation.Exit in
+        let exit_node = DCP.Node.make LTSLocation.Exit in
         let path_end = List.last astate.branchingPath in
-        let edge_data = GraphEdge.set_path_end astate.edge_data path_end in
-        let new_lts_edge = LTS.E.create astate.last_node edge_data exit_node in
-        let graph_edges = LTS.EdgeSet.add new_lts_edge astate.graph_edges in
+        let edge_data = DCP.EdgeData.set_path_end astate.edge_data path_end in
+        let new_lts_edge = DCP.E.create astate.last_node edge_data exit_node in
+        let graph_edges = DCP.EdgeSet.add new_lts_edge astate.graph_edges in
         { astate with
-          graph_nodes = LTS.NodeSet.add exit_node astate.graph_nodes;
-          graph_edges = LTS.EdgeSet.union astate.aggregate_join.edges graph_edges;
+          graph_nodes = DCP.NodeSet.add exit_node astate.graph_nodes;
+          graph_edges = DCP.EdgeSet.union astate.aggregate_join.edges graph_edges;
         }
       ) else (
         astate
@@ -307,7 +307,7 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
       let pvar_rexp = match pvar_rexp with
       | Exp.BinOp (Binop.PlusA, Exp.Lvar lexp, Exp.Const (Const.Cint c1)) -> (
         (* [BINOP] PVAR + CONST *)
-        match (GraphEdge.get_assignment_rhs astate.edge_data lexp) with
+        match (DCP.EdgeData.get_assignment_rhs astate.edge_data lexp) with
         | Exp.BinOp (Binop.PlusA, lexp, Exp.Const (Const.Cint c2)) -> (
           (* [BINOP] (PVAR + C1) + C2 -> PVAR + (C1 + C2) *)
           let const = Exp.Const (Const.Cint (IntLit.add c1 c2)) in
@@ -316,7 +316,7 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
         | _ -> pvar_rexp
       )
       | Exp.Lvar rhs_pvar -> (
-        GraphEdge.get_assignment_rhs astate.edge_data rhs_pvar
+        DCP.EdgeData.get_assignment_rhs astate.edge_data rhs_pvar
       )
       | _ -> pvar_rexp
       in
@@ -342,7 +342,7 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
       (* Check if set already contains assignment with specified
         * lhs and replace it with updated formulas if so. Needed
         * when one edge contains multiple assignments to same variable *)
-      let edge_data = GraphEdge.add_assignment astate.edge_data assigned pvar_rexp in
+      let edge_data = DCP.EdgeData.add_assignment astate.edge_data assigned pvar_rexp in
       let astate = {astate with edge_data = edge_data} in
       let locals = if is_pvar_decl_node then (
         PvarSet.add assigned astate.locals
@@ -385,25 +385,30 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
 module CFG = ProcCfg.NormalOneInstrPerNode
 (* module CFG = ProcCfg.Normal *)
 
-module SCC = Graph.Components.Make(Domain.LTS)
+module SCC = Graph.Components.Make(Domain.DCP)
 
 module Analyzer = AbstractInterpreter.Make (CFG) (TransferFunctions)
   module Increments = Caml.Set.Make(struct
-    type nonrec t = Domain.GraphEdge.t * IntLit.t
+    type nonrec t = Domain.DCP.E.t * IntLit.t
     [@@deriving compare]
   end)
   
   module Resets = Caml.Set.Make(struct
-    type nonrec t = Domain.GraphEdge.t * Exp.t * IntLit.t
+    type nonrec t = Domain.DCP.E.t * Exp.t * IntLit.t
     [@@deriving compare]
   end)
 
   type cache = {
     updates: (Increments.t * Resets.t) Exp.Map.t;
     variable_bounds: Domain.Bound.t Exp.Map.t;
+    reset_chains: Domain.RG.Chain.Set.t Exp.Map.t;
   }
 
-  let empty_cache = { updates = Exp.Map.empty; variable_bounds = Exp.Map.empty; }
+  let empty_cache = { 
+    updates = Exp.Map.empty; 
+    variable_bounds = Exp.Map.empty;
+    reset_chains = Exp.Map.empty;
+  }
 
   let checker {Callbacks.tenv; proc_desc; summary} : Summary.t =
     let open Domain in
@@ -436,7 +441,7 @@ module Analyzer = AbstractInterpreter.Make (CFG) (TransferFunctions)
     let extras = (locals, formals) in
     let proc_data = ProcData.make proc_desc tenv extras in
     let begin_loc = LTSLocation.Start beginLoc in
-    let entry_point = GraphNode.make begin_loc in
+    let entry_point = DCP.Node.make begin_loc in
     let initial_state = initial entry_point in
     match Analyzer.compute_post proc_data ~initial:initial_state with
     | Some post -> (
@@ -446,24 +451,24 @@ module Analyzer = AbstractInterpreter.Make (CFG) (TransferFunctions)
       log "%a" pp post;
 
       (* Draw dot graph, use nodes and edges stored in post state *)
-      let lts = LTS.create () in
-      LTS.NodeSet.iter (fun node ->
+      let lts = DCP.create () in
+      DCP.NodeSet.iter (fun node ->
         log "%a = %d\n" LTSLocation.pp node.location node.id;
-        LTS.add_vertex lts node;
+        DCP.add_vertex lts node;
       ) post.graph_nodes;
-      LTS.EdgeSet.iter (fun edge ->
-        LTS.add_edge_e lts edge;
+      DCP.EdgeSet.iter (fun edge ->
+        DCP.add_edge_e lts edge;
       ) post.graph_edges;
 
       let file = Out_channel.create "LTS.dot" in
-      let () = Dot.output_graph file lts in
+      LTSDot.output_graph file lts;
       Out_channel.close file;
 
       log "[INITIAL NORMS]\n";
       Exp.Set.iter (fun norm -> log "  %a\n" Exp.pp norm) post.initial_norms;
-      let dcp = LTS.create () in
-      LTS.NodeSet.iter (fun node ->
-        LTS.add_vertex dcp node;
+      let dcp = DCP.create () in
+      DCP.NodeSet.iter (fun node ->
+        DCP.add_vertex dcp node;
       ) post.graph_nodes;
 
 
@@ -476,8 +481,8 @@ module Analyzer = AbstractInterpreter.Make (CFG) (TransferFunctions)
         let norm = Exp.Set.min_elt !unprocessed_norms in
         unprocessed_norms := Exp.Set.remove norm !unprocessed_norms;
         processed_norms := Exp.Set.add norm !processed_norms;
-        LTS.EdgeSet.iter (fun (_, edge_data, _) ->
-          let new_norms = GraphEdge.derive_constraints edge_data norm formals in
+        DCP.EdgeSet.iter (fun (_, edge_data, _) ->
+          let new_norms = DCP.EdgeData.derive_constraints edge_data norm formals in
 
           (* Remove already processed norms and add new norms to unprocessed set *)
           let new_norms = Exp.Set.diff new_norms (Exp.Set.inter new_norms !processed_norms) in
@@ -498,43 +503,42 @@ module Analyzer = AbstractInterpreter.Make (CFG) (TransferFunctions)
       let cfg = [("model", "true"); ("proof", "true")] in
       let ctx = (Z3.mk_context cfg) in
       let solver = (Z3.Solver.mk_solver ctx None) in
-      LTS.EdgeSet.iter (fun (src, edge_data, dst) ->
-        edge_data.graph_type <- GraphEdge.GuardedDCP;
-        GraphEdge.derive_guards edge_data !processed_norms solver ctx;
-        LTS.add_edge_e dcp (src, edge_data, dst);
+      DCP.EdgeSet.iter (fun (src, edge_data, dst) ->
+        DCP.EdgeData.derive_guards edge_data !processed_norms solver ctx;
+        DCP.add_edge_e dcp (src, edge_data, dst);
       ) post.graph_edges;
 
-      let guarded_nodes = LTS.fold_edges_e (fun (_, edge_data, dst) acc ->
-        if Exp.Set.is_empty edge_data.guards then acc else LTS.NodeSet.add dst acc
-      ) dcp LTS.NodeSet.empty
+      let guarded_nodes = DCP.fold_edges_e (fun (_, edge_data, dst) acc ->
+        if Exp.Set.is_empty edge_data.guards then acc else DCP.NodeSet.add dst acc
+      ) dcp DCP.NodeSet.empty
       in
 
       (* Propagate guard to all outgoing edges if all incoming edges
         * are guarded by this guard and the guard itself is not decreased
         * on any of those incoming edges (guard is a norm) *)
-      let rec propagate_guards : LTS.NodeSet.t -> unit = fun nodes -> (
-        if not (LTS.NodeSet.is_empty nodes) then (
-          let rec get_shared_guards : Exp.Set.t -> LTS.edge list -> Exp.Set.t =
+      let rec propagate_guards : DCP.NodeSet.t -> unit = fun nodes -> (
+        if not (DCP.NodeSet.is_empty nodes) then (
+          let rec get_shared_guards : Exp.Set.t -> DCP.edge list -> Exp.Set.t =
           fun guards edges -> match edges with
           | (_, edge_data, _) :: edges -> (
             if edge_data.backedge then (
               get_shared_guards guards edges
             ) else (
               (* Get edge guards that are not decreased on this edge *)
-              let guards = GraphEdge.active_guards edge_data in
+              let guards = DCP.EdgeData.active_guards edge_data in
               Exp.Set.inter guards (get_shared_guards guards edges)
             )
           )
           | [] -> guards
           in
 
-          let node = LTS.NodeSet.min_elt nodes in
-          let nodes = LTS.NodeSet.remove node nodes in
+          let node = DCP.NodeSet.min_elt nodes in
+          let nodes = DCP.NodeSet.remove node nodes in
           match node.location with
           | LTSLocation.PruneLoc (kind, loc) when is_loop_prune kind -> (
-            let incoming_edges = LTS.pred_e dcp node in
+            let incoming_edges = DCP.pred_e dcp node in
             let guards = get_shared_guards Exp.Set.empty incoming_edges in
-            let out_edges = LTS.succ_e dcp node in
+            let out_edges = DCP.succ_e dcp node in
             let true_branch, out_edges = List.partition_tf out_edges ~f:(fun (_, edge_data, _) -> 
               match edge_data.path_prefix_end with
               | Some (_, branch, _) when branch -> true
@@ -543,21 +547,21 @@ module Analyzer = AbstractInterpreter.Make (CFG) (TransferFunctions)
             in
             let (src, true_branch, dst) = List.hd_exn true_branch in
             true_branch.guards <- Exp.Set.union guards true_branch.guards;
-            if not (GraphNode.equal src dst) then propagate_guards (LTS.NodeSet.add dst nodes);
+            if not (DCP.Node.equal src dst) then propagate_guards (DCP.NodeSet.add dst nodes);
             let (_, backedge, _) = List.find_exn incoming_edges ~f:(fun (_, edge_data, _) -> edge_data.backedge) in
-            let backedge_guards = GraphEdge.active_guards backedge in
+            let backedge_guards = DCP.EdgeData.active_guards backedge in
             let guards = Exp.Set.inter guards backedge_guards in
             if Exp.Set.is_empty guards then () else (
-              let nodes = List.fold out_edges ~init:LTS.NodeSet.empty ~f:(fun acc (_, (edge_data : GraphEdge.t), dst) ->
+              let nodes = List.fold out_edges ~init:DCP.NodeSet.empty ~f:(fun acc (_, (edge_data : DCP.EdgeData.t), dst) ->
                 edge_data.guards <- Exp.Set.union guards edge_data.guards;
-                if edge_data.backedge then acc else LTS.NodeSet.add dst acc
+                if edge_data.backedge then acc else DCP.NodeSet.add dst acc
               )
               in
               propagate_guards nodes
             )
           )
           | _ -> (
-            let incoming_edges = LTS.pred_e dcp node in
+            let incoming_edges = DCP.pred_e dcp node in
 
             (* Get guards that are used on all incoming
               * edges and which are not decreased *)
@@ -567,10 +571,10 @@ module Analyzer = AbstractInterpreter.Make (CFG) (TransferFunctions)
             ) else (
               (* Propagate guards to all outgoing edges and add
                 * destination nodes of those edges to the processing queue *)
-              let out_edges = LTS.succ_e dcp node in
-              List.fold out_edges ~init:nodes ~f:(fun acc (_, (edge_data : GraphEdge.t), dst) ->
+              let out_edges = DCP.succ_e dcp node in
+              List.fold out_edges ~init:nodes ~f:(fun acc (_, (edge_data : DCP.EdgeData.t), dst) ->
                 edge_data.guards <- Exp.Set.union guards edge_data.guards;
-                if edge_data.backedge then acc else LTS.NodeSet.add dst acc
+                if edge_data.backedge then acc else DCP.NodeSet.add dst acc
               )
             )
             in
@@ -585,12 +589,12 @@ module Analyzer = AbstractInterpreter.Make (CFG) (TransferFunctions)
 
       (* Output Guarded DCP over integers *)
       let file = Out_channel.create "DCP_guarded.dot" in
-      let () = Dot.output_graph file dcp in
+      GuardedDCPDot.output_graph file dcp;
       Out_channel.close file;
 
       (* Convert DCP with guards to DCP without guards over natural numbers *)
-      let to_natural_numbers : LTS.EdgeSet.t -> unit = fun edges -> (
-        LTS.EdgeSet.iter (fun (_, edge_data, _) ->
+      let to_natural_numbers : DCP.EdgeSet.t -> unit = fun edges -> (
+        DCP.EdgeSet.iter (fun (_, edge_data, _) ->
           let constraints = DC.Map.fold (fun lhs (rhs, const) acc ->
             let dc_rhs = if IntLit.isnegative const then (
               (* lhs != rhs hack for now, abstraction algorithm presented in the thesis
@@ -608,18 +612,17 @@ module Analyzer = AbstractInterpreter.Make (CFG) (TransferFunctions)
           ) edge_data.constraints DC.Map.empty
           in
           edge_data.constraints <- constraints;
-          edge_data.graph_type <- GraphEdge.DCP;
         ) edges
       )
       in
       to_natural_numbers post.graph_edges;
 
       let file = Out_channel.create "DCP.dot" in
-      let () = Dot.output_graph file dcp in
+      DCPDot.output_graph file dcp;
       Out_channel.close file;
 
       let reset_graph = RG.create () in
-      LTS.EdgeSet.iter (fun (src, edge_data, dst) -> 
+      DCP.EdgeSet.iter (fun (src, edge_data, dst) -> 
         (* Search for resets *)
         DC.Map.iter (fun lhs_norm (rhs_norm, const) -> 
           if not (Exp.equal lhs_norm rhs_norm) then (
@@ -647,19 +650,19 @@ module Analyzer = AbstractInterpreter.Make (CFG) (TransferFunctions)
        * reason does not have a function that returns edges of SCCs.  *)
       let get_scc_edges dcp =
         let components = SCC.scc_list dcp in
-        let scc_edges = List.fold components ~init:LTS.EdgeSet.empty ~f:(fun acc component ->
+        let scc_edges = List.fold components ~init:DCP.EdgeSet.empty ~f:(fun acc component ->
           (* Iterate over all combinations of SCC nodes and check if there
           * are edges between them in both directions *)
           List.fold component ~init:acc ~f:(fun acc node ->
             List.fold component ~init:acc ~f:(fun acc node2 ->
-              let edges = LTS.EdgeSet.of_list (LTS.find_all_edges dcp node node2) in
-              LTS.EdgeSet.union acc edges
+              let edges = DCP.EdgeSet.of_list (DCP.find_all_edges dcp node node2) in
+              DCP.EdgeSet.union acc edges
             )
           )
         )
         in
         (* log "[SCC]\n"; *)
-        LTS.EdgeSet.iter (fun (src, _, dst) -> 
+        DCP.EdgeSet.iter (fun (src, _, dst) -> 
           (* log "  %a --- %a\n" GraphNode.pp src GraphNode.pp dst; *) ()
         ) scc_edges;
         scc_edges
@@ -669,15 +672,15 @@ module Analyzer = AbstractInterpreter.Make (CFG) (TransferFunctions)
        * thus their local bound mapping is 1 and consequently their
        * transition bound TB(t) is 1 *)
       let scc_edges = get_scc_edges dcp in
-      let non_scc_edges = LTS.EdgeSet.diff post.graph_edges scc_edges in
-      LTS.EdgeSet.iter (fun (_, edge_data, _) ->
+      let non_scc_edges = DCP.EdgeSet.diff post.graph_edges scc_edges in
+      DCP.EdgeSet.iter (fun (_, edge_data, _) ->
         edge_data.bound_norm <- Some Exp.one;
       ) non_scc_edges;
 
       (* For each variable norm construct a E(v) set of edges where it is decreased
        * and assign each edge from this set local bound of v *)
       let norm_edge_sets, processed_edges = Exp.Set.fold (fun norm (sets, processed_edges) ->
-        let get_edge_set norm = LTS.EdgeSet.filter (fun (_, edge_data, _) ->
+        let get_edge_set norm = DCP.EdgeSet.filter (fun (_, edge_data, _) ->
           match DC.Map.get_dc norm edge_data.constraints with
           | Some dc when DC.same_norms dc && DC.is_decreasing dc-> (
             edge_data.bound_norm <- Some norm;
@@ -692,22 +695,22 @@ module Analyzer = AbstractInterpreter.Make (CFG) (TransferFunctions)
           else (
             let bounded_edges = get_edge_set norm in
             let sets = Exp.Map.add norm bounded_edges sets in
-            sets, LTS.EdgeSet.union processed_edges bounded_edges
+            sets, DCP.EdgeSet.union processed_edges bounded_edges
           )
         )
         | Exp.BinOp _ -> (
           (* [TODO] Validate that norm is not purely built over symbolic constants *)
           let bounded_edges = get_edge_set norm in
           let sets = Exp.Map.add norm bounded_edges sets in
-          sets, LTS.EdgeSet.union processed_edges bounded_edges
+          sets, DCP.EdgeSet.union processed_edges bounded_edges
         )
         | Exp.Const _ -> sets, processed_edges
         | _ -> L.(die InternalError)"[Norm edge sets] Invalid norm expression!"
-        ) !processed_norms (Exp.Map.empty, LTS.EdgeSet.empty)
+        ) !processed_norms (Exp.Map.empty, DCP.EdgeSet.empty)
       in
       Exp.Map.iter (fun norm edge_set ->
         (* log "E(%a):\n" Exp.pp norm; *)
-        LTS.EdgeSet.iter (fun (src, edge_data, dst) ->
+        DCP.EdgeSet.iter (fun (src, edge_data, dst) ->
           let local_bound = match edge_data.bound_norm with
           | Some bound -> bound
           | None -> L.(die InternalError)""
@@ -723,46 +726,46 @@ module Analyzer = AbstractInterpreter.Make (CFG) (TransferFunctions)
        * unprocessed edges cease to be part of any SCC after the removal,
        * assign variable v as local bound of those edges *)
       let remaining_edges = Exp.Map.fold (fun norm edges remaining_edges ->
-        if LTS.EdgeSet.is_empty remaining_edges then (
+        if DCP.EdgeSet.is_empty remaining_edges then (
           remaining_edges
         ) else (
-          if not (LTS.EdgeSet.is_empty edges) then (
+          if not (DCP.EdgeSet.is_empty edges) then (
             (* Remove edges of E(v) set from DCP *)
-            LTS.EdgeSet.iter (fun edge -> LTS.remove_edge_e dcp edge) edges;
+            DCP.EdgeSet.iter (fun edge -> DCP.remove_edge_e dcp edge) edges;
 
             (* Calculate SCCs for modified graph *)
             let scc_edges = get_scc_edges dcp in
-            let non_scc_edges = LTS.EdgeSet.diff remaining_edges scc_edges in
-            LTS.EdgeSet.iter (fun (_, edge_data, _) -> 
+            let non_scc_edges = DCP.EdgeSet.diff remaining_edges scc_edges in
+            DCP.EdgeSet.iter (fun (_, edge_data, _) -> 
               edge_data.bound_norm <- Some norm
             ) non_scc_edges;
 
             (* Restore DCP *)
-            LTS.EdgeSet.iter (fun edge -> LTS.add_edge_e dcp edge) edges;
-            LTS.EdgeSet.diff remaining_edges non_scc_edges
+            DCP.EdgeSet.iter (fun edge -> DCP.add_edge_e dcp edge) edges;
+            DCP.EdgeSet.diff remaining_edges non_scc_edges
           ) else (
             remaining_edges
           )
         )
-      ) norm_edge_sets (LTS.EdgeSet.diff scc_edges processed_edges)
+      ) norm_edge_sets (DCP.EdgeSet.diff scc_edges processed_edges)
       in
-      if not (LTS.EdgeSet.is_empty remaining_edges) then (
+      if not (DCP.EdgeSet.is_empty remaining_edges) then (
         L.(die InternalError)"[Local bound mapping] Local bounds could not be determined for all edges"
       );
 
       log "[Local bounds]\n";
-      LTS.EdgeSet.iter (fun (src, edge_data, dst) ->
+      DCP.EdgeSet.iter (fun (src, edge_data, dst) ->
         let local_bound = match edge_data.bound_norm with
         | Some bound -> bound
         | None -> L.(die InternalError)""
         in
-        log "  %a -- %a -- %a\n" GraphNode.pp src Exp.pp local_bound GraphNode.pp dst
+        log "  %a -- %a -- %a\n" DCP.Node.pp src Exp.pp local_bound DCP.Node.pp dst
       ) post.graph_edges;
 
       log "[Backedges]\n";
-      let backedges = LTS.EdgeSet.filter (fun (src, edge_data, dst) ->
+      let backedges = DCP.EdgeSet.filter (fun (src, edge_data, dst) ->
         if edge_data.backedge then (
-          log "  %a -- %a\n" GraphNode.pp src GraphNode.pp dst;
+          log "  %a -- %a\n" DCP.Node.pp src DCP.Node.pp dst;
           true
         ) else false
       ) post.graph_edges
@@ -773,18 +776,19 @@ module Analyzer = AbstractInterpreter.Make (CFG) (TransferFunctions)
           cache
         ) else (
           (* Create missing increments and resets sets for this variable norm *)
-          let updates = LTS.EdgeSet.fold (fun (_, edge_data, _) (increments, resets) ->
+          let updates = DCP.EdgeSet.fold (fun edge (increments, resets) ->
+            let _, edge_data, _ = edge in
             match DC.Map.get_dc norm edge_data.constraints with
             | Some dc -> (
               (* Variable norm is used on this edge *)
               let _, rhs_norm, const = dc in
               if not (DC.same_norms dc) then (
                 (* Must be a reset *)
-                let resets = Resets.add (edge_data, rhs_norm, const) resets in
+                let resets = Resets.add (edge, rhs_norm, const) resets in
                 increments, resets
               ) else if DC.is_increasing dc then (
                 (* Must be a increment *)
-                let increments = Increments.add (edge_data, const) increments in
+                let increments = Increments.add (edge, const) increments in
                 (increments, resets)
               ) else (increments, resets)
             )
@@ -795,85 +799,92 @@ module Analyzer = AbstractInterpreter.Make (CFG) (TransferFunctions)
         )
       in
 
-      let rec calculate_increment_sum increments cache = Increments.fold (fun (edge, const) (sum, cache) ->
+      let rec calculate_increment_sum norm cache = 
         (* Calculates increment sum based on increments of variable norm:
-          * SUM(TB(t) * const) for all edges where norm is incremented, 0 if nowhere *)
-        let edge_bound, cache = match edge.bound_cache with
-        | Some bound -> bound, cache
-        | None -> (
-          let bound, cache = transition_bound edge.bound_norm cache in
-          edge.bound_cache <- Some bound;
-          bound, cache
-        )
-        in
-
-        let increment_exp = if Bound.is_zero edge_bound then (
-          None
-        ) else (
-          if IntLit.isone const then (
-            Some edge_bound
+         * SUM(TB(t) * const) for all edges where norm is incremented, 0 if nowhere *)
+        let cache = get_update_map norm post.graph_edges cache in
+        let increments, _ = Exp.Map.find norm cache.updates in
+        Increments.fold (fun (dcp_edge, const) (sum, cache) ->
+          let edge_bound, cache = transition_bound dcp_edge cache in
+          let increment_exp = if Bound.is_zero edge_bound then (
+            None
           ) else (
-            let const_exp = Exp.Const (Const.Cint const) in
-            if Bound.is_one edge_bound then Some (Bound.Value const_exp)
-            else Some (Bound.BinOp (Binop.Mult, edge_bound, Bound.Value const_exp))
-          )
-        )
-        in
-        let sum = match sum with
-        | Some sum -> (
-          match increment_exp with
-          | Some exp -> Some (Bound.BinOp (Binop.PlusA, sum, exp))
-          | None -> Some sum
-        )
-        | None -> increment_exp
-        in
-        sum, cache
-      ) increments (None, cache)
-
-      and calculate_reset_sum chains cache = Resets.fold (fun (edge, norm, const) (sum, cache) ->
-        (* Calculates reset sum based on resets of variable norm:
-          * SUM(TB(t) * max(VB(a) + c, 0)) for all edges where norm is reset to [a + c] *)
-        let edge_bound, cache = match edge.bound_cache with
-        | Some bound -> bound, cache
-        | None -> (
-          let bound, cache = transition_bound edge.bound_norm cache in
-          edge.bound_cache <- Some bound;
-          bound, cache
-        )
-        in
-        let reset_exp, cache = if Bound.is_zero edge_bound then None, cache else (
-          let var_bound, cache = match Exp.Map.find_opt norm cache.variable_bounds with
-          | Some bound -> bound, cache
-          | None -> variable_bound norm cache
-          in
-
-          let bound = if IntLit.isnegative const then (
-            (* result can be negative, wrap bound expression in the max function *)
-            let const_bound = Bound.Value (Exp.Const (Const.Cint (IntLit.neg const))) in
-            let binop_bound = match var_bound with
-            | Bound.Max args -> (
-              (* max(max(x, 0) - 1, 0) == max(x - 1, 0) *)
-              Bound.BinOp (Binop.MinusA, (List.hd_exn args), const_bound)
+            if IntLit.isone const then (
+              Some edge_bound
+            ) else (
+              let const_exp = Exp.Const (Const.Cint const) in
+              if Bound.is_one edge_bound then Some (Bound.Value const_exp)
+              else Some (Bound.BinOp (Binop.Mult, edge_bound, Bound.Value const_exp))
             )
-            | _ -> Bound.BinOp (Binop.MinusA, var_bound, const_bound)
-            in
-            Bound.Max [binop_bound]
-          ) else if IntLit.iszero const then (
-            var_bound
-          ) else (
-            (* const > 0 => result must be positive, max function is useless *)
-            let const_bound = Bound.Value (Exp.Const (Const.Cint const)) in
-            let binop_bound = Bound.BinOp (Binop.PlusA, var_bound, const_bound) in
-            binop_bound
           )
           in
-          if Bound.is_zero bound then (
+          let sum = match sum with
+          | Some sum -> (
+            match increment_exp with
+            | Some exp -> Some (Bound.BinOp (Binop.PlusA, sum, exp))
+            | None -> Some sum
+          )
+          | None -> increment_exp
+          in
+          sum, cache
+        ) increments (None, cache)
+
+      and calculate_reset_sum chains cache = RG.Chain.Set.fold (fun chain (sum, cache) ->
+        (* Calculates reset sum based on possible reset chains of reseted norm:
+          * SUM( TB(trans(chain)) * max( VB(in(chain)) + value(chain), 0)) for all reset chains,
+          * where: trans(chain) = all transitions of a reset chain
+          * in(chain) = norm of initial transition of a chain
+          * value(chain) = sum of constants on edges along a chain *)
+
+        let norm = RG.Chain.origin chain in
+        let chain_value = RG.Chain.value chain in
+        let var_bound, cache = variable_bound norm cache in
+        let max_exp, cache = if IntLit.isnegative chain_value then (
+          (* result can be negative, wrap bound expression in the max function *)
+          let const_bound = Bound.Value (Exp.Const (Const.Cint (IntLit.neg chain_value))) in
+          let binop_bound = match var_bound with
+          | Bound.Max args -> (
+            (* max(max(x, 0) - 1, 0) == max(x - 1, 0) *)
+            Bound.BinOp (Binop.MinusA, (List.hd_exn args), const_bound)
+          )
+          | _ -> Bound.BinOp (Binop.MinusA, var_bound, const_bound)
+          in
+          Bound.Max [binop_bound], cache
+        ) else if IntLit.iszero chain_value then (
+          var_bound, cache
+        ) else (
+          (* const > 0 => result must be positive, max function is useless *)
+          let const_bound = Bound.Value (Exp.Const (Const.Cint chain_value)) in
+          let binop_bound = Bound.BinOp (Binop.PlusA, var_bound, const_bound) in
+          binop_bound, cache
+        )
+        in
+
+        (* Creates a list of arguments for min(args) function. Arguments are
+         * transition bounds of each transition of a reset chain. Zero TB stops
+         * the fold as we cannot get smaller value. *)
+        let fold_aux (args, cache) (dcp_edge : DCP.E.t) =
+          let open Base.Continue_or_stop in
+          let edge_bound, cache = transition_bound dcp_edge cache in
+          if Bound.is_zero edge_bound then Stop ([Bound.Value (Exp.zero)], cache) 
+          else (
+            match List.hd args with
+            | Some arg when Bound.is_one arg -> Continue (args, cache)
+            | _ -> (
+              if Bound.is_one edge_bound then Continue ([edge_bound], cache) 
+              else Continue (args @ [edge_bound], cache)
+            )
+          )
+        in
+        let reset_exp, cache = if Bound.is_zero max_exp then (
             None, cache
           ) else (
-            if Bound.is_one edge_bound then Some bound, cache
-            else Some (Bound.BinOp (Binop.Mult, edge_bound, bound)), cache
+            let chain_transitions = DCP.EdgeSet.elements (RG.Chain.transitions chain) in
+            let args, cache = List.fold_until chain_transitions ~init:([], cache) ~f:fold_aux ~finish:(fun acc -> acc) in
+            let edge_bound = if Int.equal (List.length args) 1 then List.hd_exn args else Bound.Min (args) in
+            if Bound.is_one edge_bound then Some max_exp, cache
+            else Some (Bound.BinOp (Binop.Mult, edge_bound, max_exp)), cache
           )
-        )
         in
         let sum = match sum with
         | Some sum -> (
@@ -887,128 +898,137 @@ module Analyzer = AbstractInterpreter.Make (CFG) (TransferFunctions)
       ) chains (None, cache)
 
       and variable_bound norm cache =
-        let norm_bound = Bound.Value norm in
-        let var_bound, cache = match norm with
-        | Exp.Lvar pvar -> (
-          if PvarMap.mem pvar formals then (
-            match PvarMap.find_opt pvar type_map with
-            | Some typ -> (match typ.desc with
-              | Typ.Tint ikind -> if Typ.ikind_is_unsigned ikind then (
-                  (* for unsigned x: max(x, 0) => x *)
-                  norm_bound, cache
+        match Exp.Map.find_opt norm cache.variable_bounds with
+        | Some bound -> bound, cache
+        | None -> (
+          let norm_bound = Bound.Value norm in
+          let var_bound, cache = match norm with
+          | Exp.Lvar pvar -> (
+            if PvarMap.mem pvar formals then (
+              match PvarMap.find_opt pvar type_map with
+              | Some typ -> (match typ.desc with
+                | Typ.Tint ikind -> if Typ.ikind_is_unsigned ikind then (
+                    (* for unsigned x: max(x, 0) => x *)
+                    norm_bound, cache
+                  ) else (
+                    (* for signed x: max(x, 0) *)
+                    Bound.Max [norm_bound], cache
+                  )
+                | _ -> L.(die InternalError)"[VB] Unexpected Lvar type!"
+              )
+              | None -> L.(die InternalError)"[VB] Lvar [%a] is not a local variable!" Pvar.pp_value pvar
+            ) else (
+              let cache = get_update_map norm post.graph_edges cache in
+              let _, resets = Exp.Map.find norm cache.updates in
+              let increment_sum, cache = calculate_increment_sum norm cache in
+              let max_args, cache = Resets.fold (fun (_, norm, const) (args, cache) -> 
+                let var_bound, cache = variable_bound norm cache in
+                let max_arg = if IntLit.isnegative const then (
+                  let const = Bound.Value (Exp.Const (Const.Cint (IntLit.neg const))) in
+                  [Bound.BinOp (Binop.MinusA, var_bound, const)]
+                ) else if IntLit.iszero const then (
+                  if Bound.is_zero var_bound then [] else [var_bound]
                 ) else (
-                  (* for signed x: max(x, 0) *)
-                  Bound.Max [norm_bound], cache
+                  let const = Bound.Value (Exp.Const (Const.Cint const)) in
+                  [Bound.BinOp (Binop.PlusA, var_bound, const)]
                 )
-              | _ -> L.(die InternalError)"[VB] Unexpected Lvar type!"
-            )
-            | None -> L.(die InternalError)"[VB] Lvar [%a] is not a local variable!" Pvar.pp_value pvar
-          ) else (
-            let cache = get_update_map norm post.graph_edges cache in
-            let increments, resets = Exp.Map.find norm cache.updates in
-            let increment_sum, cache = calculate_increment_sum increments cache in
-            let max_args, cache = Resets.fold (fun (_, norm, const) (args, cache) -> 
-              let var_bound, cache = variable_bound norm cache in
-              let max_arg = if IntLit.isnegative const then (
-                let const = Bound.Value (Exp.Const (Const.Cint (IntLit.neg const))) in
-                [Bound.BinOp (Binop.MinusA, var_bound, const)]
-              ) else if IntLit.iszero const then (
-                if Bound.is_zero var_bound then [] else [var_bound]
+                in
+                args @ max_arg, cache
+              ) resets ([], cache)
+              in
+              let max = if Int.equal (List.length max_args) 1 then (
+                let arg = List.hd_exn max_args in
+                match arg with
+                | Bound.Value _ -> arg
+                | _ -> arg
               ) else (
-                let const = Bound.Value (Exp.Const (Const.Cint const)) in
-                [Bound.BinOp (Binop.PlusA, var_bound, const)]
+                Bound.Max max_args
               )
               in
-              args @ max_arg, cache
-            ) resets ([], cache)
-            in
-            let max = if Int.equal (List.length max_args) 1 then (
-              let arg = List.hd_exn max_args in
-              match arg with
-              | Bound.Value _ -> arg
-              | _ -> arg
-            ) else (
-              Bound.Max max_args
+              let var_bound = match increment_sum with
+              | Some increments -> Bound.BinOp (Binop.PlusA, increments, max)
+              | None -> max
+              in
+              var_bound, cache
             )
-            in
-            let var_bound = match increment_sum with
-            | Some increments -> Bound.BinOp (Binop.PlusA, increments, max)
-            | None -> max
-            in
-            var_bound, cache
           )
+          | Exp.Const Const.Cint const_norm -> (
+            if IntLit.isnegative const_norm then Bound.Max [norm_bound], cache
+            else norm_bound, cache
+          )
+          | _ -> L.(die InternalError)"[VB] Unsupported norm expression [%a]!" Exp.pp norm
+          in
+          let vb_cache = Exp.Map.add norm var_bound cache.variable_bounds in
+          let cache = { cache with variable_bounds = vb_cache } in
+          var_bound, cache
         )
-        | Exp.Const Const.Cint const_norm -> (
-          if IntLit.isnegative const_norm then Bound.Max [norm_bound], cache
-          else norm_bound, cache
-        )
-        | _ -> L.(die InternalError)"[VB] Unsupported norm expression [%a]!" Exp.pp norm
-        in
-        let vb_cache = Exp.Map.add norm var_bound cache.variable_bounds in
-        let cache = { cache with variable_bounds = vb_cache } in
-        var_bound, cache
 
-      and transition_bound bound_norm cache = 
-        let edge_bound, cache = match bound_norm with
-        | Some norm -> (
-          match norm with
-          | Exp.Lvar pvar when not (PvarMap.mem pvar formals) -> (
-            let cache = get_update_map norm post.graph_edges cache in
-            let increments, resets = Exp.Map.find norm cache.updates in
+      and transition_bound (src, (edge_data : DCP.EdgeData.t), dst) cache =
+        (* For variable norms: TB(t) = IncrementSum + ResetSum 
+         * For constant norms: TB(t) = constant *)
+        log "[TB] %a -- %a\n" DCP.Node.pp src DCP.Node.pp dst;
+        match edge_data.bound_cache with
+        | Some bound_cache -> bound_cache, cache 
+        | None -> (
+          match edge_data.bound_norm with
+          | Some norm -> (
+            log "   [Local bound] %a\n" Exp.pp norm;
+            let bound, cache = match norm with
+            | Exp.Lvar pvar when not (PvarMap.mem pvar formals) -> (
 
-            let reset_chains = RG.get_reset_chains {norm} reset_graph dcp in
-            
+              (* Get reset chains for local bound *)
+              let reset_chains, cache = match Exp.Map.find_opt norm cache.reset_chains with
+              | Some chains -> chains, cache
+              | None -> (
+                let chains = RG.get_reset_chains {norm} reset_graph dcp in
+                let cache = { cache with reset_chains = Exp.Map.add norm chains cache.reset_chains } in
+                chains, cache
+              )
+              in
+              RG.Chain.Set.iter (fun chain ->
+                log "   [Reset Chain] %a\n" RG.Chain.pp chain;
+              ) reset_chains;
 
-            log "Variable norm: %a\n" Pvar.pp_value pvar;
-            RG.Chain.Set.iter (fun chain ->
-              log "  [Reset Chain] %a\n" RG.Chain.pp chain;
-            ) reset_chains;
-
-            Increments.iter (fun (_, const) ->
-              log "  [Increment] Const: %a\n" IntLit.pp const;
-            ) increments;
-
-            (* If local bound is a variable then TB(t) = Incr(v) + SUM_resets(max(a + c, 0))
-             * Incr(v) = SUM_increments(TB(t) * c) *)
-            let increment_sum, cache = calculate_increment_sum increments cache in
-            let reset_sum, cache = calculate_reset_sum resets cache in
-
-            let edge_bound = match increment_sum, reset_sum with
-            | Some increments, Some resets -> (
-              Bound.BinOp (Binop.PlusA, increments, resets)
+              let chain_norms = RG.Chain.Set.fold (fun chain norms ->
+                Exp.Set.union norms (RG.Chain.norms chain)
+              ) reset_chains Exp.Set.empty
+              in
+              let increment_sum, cache = Exp.Set.fold (fun chain_norm (total_sum, cache) -> 
+                let sum, cache = calculate_increment_sum chain_norm cache in
+                let total_sum = match total_sum, sum with
+                | Some total_sum, Some sum -> Some (Bound.BinOp (Binop.PlusA, total_sum, sum))
+                | Some sum, None | None, Some sum -> Some sum
+                | None, None -> None
+                in
+                total_sum, cache
+              ) chain_norms (None, cache)
+              in
+              let reset_sum, cache = calculate_reset_sum reset_chains cache in
+              
+              let edge_bound = match increment_sum, reset_sum with
+              | Some increments, Some resets -> Bound.BinOp (Binop.PlusA, increments, resets)
+              | Some bound, None | None, Some bound -> bound
+              | None, None -> Bound.Value (Exp.zero)
+              in
+              edge_bound, cache
             )
-            | Some bound, None | None, Some bound -> (
-              bound
+            | Exp.Const (Const.Cint _) -> (
+              (* Non-loop edge, can be executed only once, const is always 1 *)
+              Bound.Value norm, cache
             )
-            | None, None -> Bound.Value (Exp.zero)
+            | _ -> L.(die InternalError)"[Bound] Unsupported norm expression [%a]!" Exp.pp norm
             in
-            edge_bound, cache
+            log "[Edge bound (%a)] %a\n" Exp.pp norm Bound.pp bound;
+            edge_data.bound_cache <- Some bound;
+            bound, cache
           )
-          | Exp.Const (Const.Cint _) -> (
-            (* Non-loop edge, can be executed only once, const is always 1 *)
-            Bound.Value norm, cache
-          )
-          | _ -> L.(die InternalError)"[Bound] Unsupported norm expression [%a]!" Exp.pp norm
+          | None -> L.(die InternalError)"[Bound] edge has no bound norm!"
         )
-        | None -> L.(die InternalError)"[Bound] edge has no bound norm!"
-        in
-        log "[Edge bound] %a\n" Bound.pp edge_bound;
-        edge_bound, cache
       in
 
       (* Calculate bound for all backedeges and sum them to get the total bound *)
-      let final_bound, _ = LTS.EdgeSet.fold (fun (src, edge, dst) (final_bound, cache) ->
-        log "Calculating TB for: %a -- %a\n" GraphNode.pp src GraphNode.pp dst;
-        let edge_bound, cache = match edge.bound_cache with
-        | Some bound_cache -> (
-          bound_cache, cache
-        ) 
-        | None -> (
-          let bound, cache = transition_bound edge.bound_norm cache in
-          edge.bound_cache <- Some bound;
-          bound, cache
-        )
-        in
+      let final_bound, _ = DCP.EdgeSet.fold (fun edge (final_bound, cache) ->
+        let edge_bound, cache = transition_bound edge cache in
         let final_bound = match final_bound with
         | Some sum -> Bound.BinOp (Binop.PlusA, sum, edge_bound)
         | None -> edge_bound
