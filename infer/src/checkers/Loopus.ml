@@ -799,12 +799,12 @@ module Analyzer = AbstractInterpreter.Make (CFG) (TransferFunctions)
         )
       in
 
-      let rec calculate_increment_sum norm cache = 
+      let rec calculate_increment_sum norms cache = Exp.Set.fold (fun norm (total_sum, cache) -> 
         (* Calculates increment sum based on increments of variable norm:
          * SUM(TB(t) * const) for all edges where norm is incremented, 0 if nowhere *)
         let cache = get_update_map norm post.graph_edges cache in
         let increments, _ = Exp.Map.find norm cache.updates in
-        Increments.fold (fun (dcp_edge, const) (sum, cache) ->
+        let sum, cache = Increments.fold (fun (dcp_edge, const) (sum, cache) ->
           let edge_bound, cache = transition_bound dcp_edge cache in
           let increment_exp = if Bound.is_zero edge_bound then (
             None
@@ -828,6 +828,14 @@ module Analyzer = AbstractInterpreter.Make (CFG) (TransferFunctions)
           in
           sum, cache
         ) increments (None, cache)
+        in
+        let total_sum = match total_sum, sum with
+        | Some total_sum, Some sum -> Some (Bound.BinOp (Binop.PlusA, total_sum, sum))
+        | Some sum, None | None, Some sum -> Some sum
+        | None, None -> None
+        in
+        total_sum, cache
+      ) norms (None, cache)
 
       and calculate_reset_sum chains cache = RG.Chain.Set.fold (fun chain (sum, cache) ->
         (* Calculates reset sum based on possible reset chains of reseted norm:
@@ -835,7 +843,6 @@ module Analyzer = AbstractInterpreter.Make (CFG) (TransferFunctions)
           * where: trans(chain) = all transitions of a reset chain
           * in(chain) = norm of initial transition of a chain
           * value(chain) = sum of constants on edges along a chain *)
-
         let norm = RG.Chain.origin chain in
         let chain_value = RG.Chain.value chain in
         let var_bound, cache = variable_bound norm cache in
@@ -886,15 +893,15 @@ module Analyzer = AbstractInterpreter.Make (CFG) (TransferFunctions)
             else Some (Bound.BinOp (Binop.Mult, edge_bound, max_exp)), cache
           )
         in
-        let sum = match sum with
-        | Some sum -> (
-          match reset_exp with
-          | Some exp -> Some (Bound.BinOp (Binop.PlusA, sum, exp))
-          | None -> Some sum
-        )
-        | None -> reset_exp
+        let calculate_sum e1 e2 = match e1, e2 with
+        | Some e1, Some e2 -> Some (Bound.BinOp (Binop.PlusA, e1, e2))
+        | Some e, None | None, Some e -> Some e
+        | None, None -> None
         in
-        sum, cache
+        let sum = calculate_sum sum reset_exp in
+        let _, chain_norms = RG.Chain.norms chain reset_graph in
+        let increment_sum, cache = calculate_increment_sum chain_norms cache in
+        (calculate_sum sum increment_sum), cache
       ) chains (None, cache)
 
       and variable_bound norm cache =
@@ -920,7 +927,7 @@ module Analyzer = AbstractInterpreter.Make (CFG) (TransferFunctions)
             ) else (
               let cache = get_update_map norm post.graph_edges cache in
               let _, resets = Exp.Map.find norm cache.updates in
-              let increment_sum, cache = calculate_increment_sum norm cache in
+              let increment_sum, cache = calculate_increment_sum (Exp.Set.singleton norm) cache in
               let max_args, cache = Resets.fold (fun (_, norm, const) (args, cache) -> 
                 let var_bound, cache = variable_bound norm cache in
                 let max_arg = if IntLit.isnegative const then (
@@ -989,22 +996,14 @@ module Analyzer = AbstractInterpreter.Make (CFG) (TransferFunctions)
                 log "   [Reset Chain] %a\n" RG.Chain.pp chain;
               ) reset_chains;
 
-              let chain_norms = RG.Chain.Set.fold (fun chain norms ->
-                Exp.Set.union norms (RG.Chain.norms chain)
+              let norms = RG.Chain.Set.fold (fun chain acc ->
+                let norms, _ = RG.Chain.norms chain reset_graph in
+                Exp.Set.union acc norms
               ) reset_chains Exp.Set.empty
               in
-              let increment_sum, cache = Exp.Set.fold (fun chain_norm (total_sum, cache) -> 
-                let sum, cache = calculate_increment_sum chain_norm cache in
-                let total_sum = match total_sum, sum with
-                | Some total_sum, Some sum -> Some (Bound.BinOp (Binop.PlusA, total_sum, sum))
-                | Some sum, None | None, Some sum -> Some sum
-                | None, None -> None
-                in
-                total_sum, cache
-              ) chain_norms (None, cache)
-              in
+              let increment_sum, cache = calculate_increment_sum norms cache in
               let reset_sum, cache = calculate_reset_sum reset_chains cache in
-              
+
               let edge_bound = match increment_sum, reset_sum with
               | Some increments, Some resets -> Bound.BinOp (Binop.PlusA, increments, resets)
               | Some bound, None | None, Some bound -> bound
