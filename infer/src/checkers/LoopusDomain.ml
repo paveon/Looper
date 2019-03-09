@@ -852,54 +852,61 @@ module RG = struct
           (* Find all paths from origin to end and check if they reset the end norm *)
           let current_norm = src.norm in
           let rec checkPaths origin visited_nodes norm_reset acc =
+            let open Base.Continue_or_stop in
             if DCP.Node.equal origin path_end then (
               (* Found path, return info if norm was reset along the path *)
-              norm_reset
+              Some norm_reset
             ) else (
               let next = DCP.succ_e dcp origin in
               if List.is_empty next then (
-                (* Not a path, don't care if norm wasn't reset *)
-                true
+                (* Not a path *)
+                None
               ) else (
                 let visited_nodes = DCP.NodeSet.add origin visited_nodes in
-                List.fold next ~init:acc ~f:(fun acc (dcp_edge : DCP.E.t) ->
-                  if not acc then acc else (
-                    let _, dcp_data, dcp_dst = dcp_edge in
-                    if DCP.NodeSet.mem dcp_dst visited_nodes then (
-                      acc
-                    ) else (
-                      let norm_reset = if not norm_reset then (
-                        let dc = DC.Map.get_dc current_norm dcp_data.constraints in
-                        match dc with
-                        | Some dc -> not (DC.same_norms dc)
-                        | None -> norm_reset
-                      ) else true
-                      in
-                      acc && checkPaths dcp_dst visited_nodes norm_reset acc
+                List.fold_until next ~init:acc ~f:(fun acc (dcp_edge : DCP.E.t) ->
+                  let _, dcp_data, dcp_dst = dcp_edge in
+                  if DCP.NodeSet.mem dcp_dst visited_nodes then (
+                    Continue acc
+                  ) else (
+                    let norm_reset = if norm_reset then norm_reset else (
+                      let dc = DC.Map.get_dc current_norm dcp_data.constraints in
+                      match dc with
+                      | Some dc -> not (DC.same_norms dc)
+                      | None -> norm_reset
                     )
+                    in
+                    let norm_reset = checkPaths dcp_dst visited_nodes norm_reset acc in
+                    match norm_reset with
+                    | Some norm_reset -> if norm_reset then (
+                      Continue (Some true)
+                    ) else Stop (Some false)
+                    | None -> Continue acc
                   )
-                )
+                ) ~finish:(fun acc -> acc)
               )
             )
           in
           let next = (DCP.succ_e dcp path_origin) in
-          let all_paths_reset = List.fold next ~init:true ~f:(fun acc (dcp_edge : DCP.E.t) ->
+          let all_paths_reset = List.fold_until next ~init:None ~f:(fun acc (dcp_edge : DCP.E.t) ->
             let _, data, dst = dcp_edge in
-            if not acc then false else (
-              let dc = DC.Map.get_dc current_norm data.constraints in
-              let norm_reset = match dc with
-              | Some dc -> not (DC.same_norms dc)
-              | None -> false
-              in
-              acc && (checkPaths dst DCP.NodeSet.empty norm_reset true)
-            )
-          )
+            let dc = DC.Map.get_dc current_norm data.constraints in
+            let norm_reset = match dc with
+            | Some dc -> not (DC.same_norms dc)
+            | None -> false
+            in
+            let norm_reset = checkPaths dst DCP.NodeSet.empty norm_reset None in
+            match norm_reset with
+            | Some norm_reset -> if norm_reset then (
+              Continue (Some true)
+            ) else Stop None
+            | None -> Continue acc
+          ) ~finish:(fun acc -> acc)
           in
-          if all_paths_reset then (
+          match all_paths_reset with
+          | Some _ -> (
             optimal_chain @ [(src, edge_data, dst)]
-          ) else (
-            [(src, edge_data, dst)]
           )
+          | _ -> [(src, edge_data, dst)]
         )
         | None -> assert(false)
       in
