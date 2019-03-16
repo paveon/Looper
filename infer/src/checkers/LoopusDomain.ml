@@ -69,6 +69,8 @@ module DC = struct
 
   let make_rhs ?(const = IntLit.zero) (rhs_norm: Exp.t) = (rhs_norm, const)
 
+  let is_constant : t -> bool = fun (lhs, rhs, const) -> Exp.equal lhs rhs && IntLit.iszero const
+
   let same_norms : t -> bool = fun (lhs, rhs, _) -> Exp.equal lhs rhs
 
   let is_decreasing : t -> bool = fun (_, _, const) -> IntLit.isnegative const
@@ -238,8 +240,12 @@ module Bound = struct
     )
     | _ -> F.sprintf "max(%s, 0)" str
   ) else (
-    let str = List.fold args ~init:"max(" ~f:(fun str arg -> str ^ to_string arg ^ ", ") in
-    (String.slice str 0 ((String.length str) - 2)) ^ ")"
+    if List.is_empty args then (
+      "max()"
+    ) else (
+      let str = List.fold args ~init:"max(" ~f:(fun str arg -> str ^ to_string arg ^ ", ") in
+      (String.slice str 0 ((String.length str) - 2)) ^ ")"
+    )
   )
   | Min args -> if Int.equal (List.length args) 1 then (
     to_string (List.hd_exn args)
@@ -660,21 +666,25 @@ module DCP = struct
   module EdgeSet = Caml.Set.Make(E)
 end
 
+module DefaultDot = struct
+  let default_edge_attributes _ = []
+  let get_subgraph _ = None
+  let default_vertex_attributes _ = []
+  let graph_attributes _ = []
+end
+
 module DotConfig = struct
   include DCP
+  include DefaultDot
   let edge_label : EdgeData.t -> string = fun edge_data ->
     match edge_data.path_prefix_end with
     | Some prune_info -> F.asprintf "%a\n" pp_prune_info prune_info
     | None -> ""
 
-  let default_edge_attributes _ = []
-  let get_subgraph _ = None
   let vertex_attributes : DCP.Node.t -> 'a list = fun node -> (
     [ `Shape `Box; `Label (LTSLocation.to_string node.location) ]
   )
   let vertex_name : DCP.Node.t -> string = fun vertex -> string_of_int vertex.id
-  let default_vertex_attributes _ = []
-  let graph_attributes _ = []
 end
 
 module LTSConfig = struct
@@ -728,16 +738,48 @@ module GuardedDCPDot = Graph.Graphviz.Dot(GuardedDCPConfig)
 module DCPDot = Graph.Graphviz.Dot(DCPConfig)
 
 
+(* Variable flow graph *)
+module VFG = struct
+  module Node = struct
+    type t = {
+      norm: Exp.t;
+      dcp_node: DCP.Node.t;
+    } [@@deriving compare]
+    let hash = Hashtbl.hash
+    let equal = [%compare.equal: t]
+    let make : Exp.t -> DCP.Node.t -> t = fun norm dcp_node -> { norm; dcp_node }
+  end
+  
+  module Edge = struct
+    type t = {
+      dcp_edge : DCP.E.t option;
+    } [@@deriving compare]
+    let hash = Hashtbl.hash
+    let equal = [%compare.equal : t]
+    let default = { dcp_edge = None }
+    end
+  include Graph.Imperative.Digraph.ConcreteBidirectionalLabeled(Node)(Edge)
+  include DefaultDot
+
+  let edge_attributes : E.t -> 'a list = fun (_, edge, _) -> [`Label ""; `Color 4711]
+  let vertex_attributes : V.t -> 'a list = fun node -> (
+    let label = F.asprintf "%a, %a" Exp.pp node.norm DCP.Node.pp node.dcp_node in
+    [ `Shape `Box; `Label label ]
+  )
+  let vertex_name : V.t -> string = fun vertex -> string_of_int (Node.hash vertex)
+end
+
+module VFG_Dot = Graph.Graphviz.Dot(VFG)
+
+
 (* Reset graph *)
 module RG = struct 
   module Node = struct
     type t = {
       norm : Exp.t
     } [@@deriving compare]
-
     let hash = Hashtbl.hash
     let equal = [%compare.equal: t]
-
     let make : Exp.t -> t = fun norm -> { norm }
 
     module Set = Caml.Set.Make(struct
@@ -873,7 +915,6 @@ module RG = struct
       )
     in
     let reset_chains = traverse_reset_graph origin Chain.empty in
-
     (* Shorten the chain until it's optimal, i.e., maximal while remaining sound *)
     Chain.Set.map (fun chain -> 
       let _, edge_data, _ = List.last_exn chain.data in
@@ -881,17 +922,19 @@ module RG = struct
       | Some (_, _, dcp_dst) -> dcp_dst
       | None -> assert(false)
       in
-
+      (* L.stdout "[UNOPTIMIZED CHAIN] %a\n" Chain.pp chain; *)
       let optimize_chain : edge list -> edge -> edge list = 
       fun optimal_chain (src, edge_data, dst) ->
         match edge_data.dcp_edge with
         | Some (path_end, _, _) -> (
+          (* L.stdout "[PATH END] %a\n" DCP.Node.pp path_end; *)
           (* Find all paths from origin to end and check if they reset the end norm *)
           let current_norm = src.norm in
           let rec checkPaths origin visited_nodes norm_reset acc =
             let open Base.Continue_or_stop in
             if DCP.Node.equal origin path_end then (
               (* Found path, return info if norm was reset along the path *)
+              (* L.stdout "[PATH FOUND] Reset: %B\n" norm_reset; *)
               Some norm_reset
             ) else (
               let next = DCP.succ_e dcp origin in
@@ -925,30 +968,40 @@ module RG = struct
           in
           let next = (DCP.succ_e dcp path_origin) in
           let all_paths_reset = List.fold_until next ~init:None ~f:(fun acc (dcp_edge : DCP.E.t) ->
-            let _, data, dst = dcp_edge in
-            let dc = DC.Map.get_dc current_norm data.constraints in
-            let norm_reset = match dc with
-            | Some dc -> not (DC.same_norms dc)
-            | None -> false
-            in
-            let norm_reset = checkPaths dst DCP.NodeSet.empty norm_reset None in
-            match norm_reset with
-            | Some norm_reset -> if norm_reset then (
-              Continue (Some true)
-            ) else Stop None
-            | None -> Continue acc
+            let src, data, dst = dcp_edge in
+            if DCP.Node.equal src dst then (
+              (* Ignore direct backedge, hotfix for now, have to confirm this *)
+              Continue acc
+            ) else (
+              let dc = DC.Map.get_dc current_norm data.constraints in
+              let norm_reset = match dc with
+              | Some dc -> not (DC.same_norms dc)
+              | None -> false
+              in
+              let norm_reset = checkPaths dst DCP.NodeSet.empty norm_reset None in
+              match norm_reset with
+              | Some norm_reset -> if norm_reset then (
+                Continue (Some true)
+              ) else Stop None
+              | None -> Continue acc
+            )
           ) ~finish:(fun acc -> acc)
           in
           match all_paths_reset with
           | Some _ -> (
             optimal_chain @ [(src, edge_data, dst)]
           )
-          | _ -> [(src, edge_data, dst)]
+          | _ -> (
+            L.stdout "[NORM NOT RESET] %a\n" Exp.pp current_norm;
+            [(src, edge_data, dst)]
+          )
         )
         | None -> assert(false)
       in
       let chain_data = List.fold (List.tl_exn chain.data) ~init:[List.hd_exn chain.data] ~f:optimize_chain in
-      { chain with data = chain_data}
+      let chain = { chain with data = chain_data} in
+      (* L.stdout "[OPTIMIZED CHAIN]   %a\n" Chain.pp chain; *)
+      chain
     ) reset_chains
 end
 
@@ -1022,6 +1075,16 @@ let initial : DCP.Node.t -> astate = fun entry_point -> (
     aggregate_join = AggregateJoin.initial;
   }
 )
+
+let norm_is_variable : Exp.t -> Typ.t PvarMap.t -> bool = fun norm formals ->
+  let rec traverse_exp = function
+  | Exp.Lvar pvar when not (PvarMap.mem pvar formals) -> true
+  | Exp.Const _ -> false
+  | Exp.BinOp (_, lexp, rexp) -> (traverse_exp lexp) || (traverse_exp rexp)
+  | Exp.UnOp (_, exp, _) -> (traverse_exp exp)
+  | _ -> false
+  in
+  traverse_exp norm
 
 let get_tracked_pvars : astate -> PvarSet.t = fun astate ->
   PvarSet.union astate.locals astate.tracked_formals

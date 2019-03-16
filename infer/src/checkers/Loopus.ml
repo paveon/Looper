@@ -385,9 +385,15 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
 module CFG = ProcCfg.NormalOneInstrPerNode
 (* module CFG = ProcCfg.Normal *)
 
-module SCC = Graph.Components.Make(Domain.DCP)
+module DCP_SCC = Graph.Components.Make(Domain.DCP)
+module VFG_SCC = Graph.Components.Make(Domain.VFG)
 
 module Analyzer = AbstractInterpreter.Make (CFG) (TransferFunctions)
+  module VFG_Map = Caml.Map.Make(struct
+    type nonrec t = Domain.DCP.Node.t * Exp.t
+    [@@deriving compare]
+  end)
+
   module Increments = Caml.Set.Make(struct
     type nonrec t = Domain.DCP.E.t * IntLit.t
     [@@deriving compare]
@@ -617,6 +623,74 @@ module Analyzer = AbstractInterpreter.Make (CFG) (TransferFunctions)
       in
       to_natural_numbers post.graph_edges;
 
+      (* let file = Out_channel.create "DCP.dot" in
+      DCPDot.output_graph file dcp;
+      Out_channel.close file; *)
+
+      (* Create variable flow graph which is necessary for
+       * DCP preprocessing which renames variables and consequently
+       * ensures that we get an acyclic reset DAG *)
+      let vf_graph = VFG.create () in
+      DCP.EdgeSet.iter (fun (src, edge_data, dst) -> 
+        (* Search for resets *)
+        DC.Map.iter (fun lhs_norm (rhs_norm, const) ->
+          let dc_is_constant = DC.is_constant (lhs_norm, rhs_norm, const) in
+          if 
+          (norm_is_variable lhs_norm formals) && 
+          (norm_is_variable rhs_norm formals) then (
+            let vfg_add_node node = if not (VFG.mem_vertex vf_graph node) then (
+              VFG.add_vertex vf_graph node
+            )
+            in
+            let dst_node = VFG.Node.make lhs_norm dst in
+            let src_node = VFG.Node.make rhs_norm src in
+            vfg_add_node dst_node; vfg_add_node src_node;
+            VFG.add_edge_e vf_graph (VFG.E.create src_node (VFG.Edge.default) dst_node);
+          );
+        ) edge_data.constraints;
+      ) post.graph_edges;
+
+      let file = Out_channel.create "VariableFlowGraph.dot" in
+      VFG_Dot.output_graph file vf_graph;
+      Out_channel.close file;
+
+      (* Create VFG mapping, create fresh variable 'v' for each SCC
+       * and map each VFG node to this fresh variable. *)
+      let vfg_components = VFG_SCC.scc_list vf_graph in
+      let vfg_map = List.foldi vfg_components ~init:VFG_Map.empty ~f:(fun idx map component ->
+        let pvar_name = Mangled.from_string ("var_" ^ string_of_int idx) in
+        let aux_norm = Exp.Lvar (Pvar.mk pvar_name proc_name) in
+        List.fold component ~init:map ~f:(fun map (node : VFG.Node.t) ->
+          let key = node.dcp_node, node.norm in
+          processed_norms := Exp.Set.add aux_norm !processed_norms;
+          VFG_Map.add key aux_norm map
+        )
+      )
+      in
+      log "[VFG Mapping]\n";
+      VFG_Map.iter (fun (dcp_node, norm) aux_norm -> 
+        log "  (%a, %a) --> %a\n" DCP.Node.pp dcp_node Exp.pp norm Exp.pp aux_norm;
+      ) vfg_map;
+
+      (* Apply VFG mapping and rename DCP variables to ensure acyclic reset DAG *)
+      DCP.EdgeSet.iter (fun (src, edge_data, dst) -> 
+        let constraints = DC.Map.fold (fun lhs_norm (rhs_norm, const) map -> 
+          match VFG_Map.find_opt (dst, lhs_norm) vfg_map with
+          | Some lhs_norm -> (
+            let rhs_norm = if norm_is_variable rhs_norm formals then (
+              match VFG_Map.find_opt (src, rhs_norm) vfg_map with
+              | Some aux_norm -> aux_norm
+              | None -> rhs_norm
+            ) else rhs_norm
+            in
+            DC.Map.add lhs_norm (rhs_norm, const) map
+          )
+          | None -> DC.Map.add lhs_norm (rhs_norm, const) map
+        ) edge_data.constraints DC.Map.empty
+        in
+        edge_data.constraints <- constraints;
+      ) post.graph_edges;
+
       let file = Out_channel.create "DCP.dot" in
       DCPDot.output_graph file dcp;
       Out_channel.close file;
@@ -624,32 +698,29 @@ module Analyzer = AbstractInterpreter.Make (CFG) (TransferFunctions)
       let reset_graph = RG.create () in
       DCP.EdgeSet.iter (fun (src, edge_data, dst) -> 
         (* Search for resets *)
-        DC.Map.iter (fun lhs_norm (rhs_norm, const) -> 
+        DC.Map.iter (fun lhs_norm (rhs_norm, const) ->
           if not (Exp.equal lhs_norm rhs_norm) then (
-            let add_node node = if not (RG.mem_vertex reset_graph node) then (
+            let rg_add_node node = if not (RG.mem_vertex reset_graph node) then (
               RG.add_vertex reset_graph node;
             )
             in
-            let lhs_node = RG.Node.make lhs_norm in
-            let rhs_node = RG.Node.make rhs_norm in
-            add_node lhs_node;
-            add_node rhs_node;
-            let edge = RG.Edge.make (src, edge_data, dst) const in
-            let edge = RG.E.create rhs_node edge lhs_node in
+            let dst_node = RG.Node.make lhs_norm in
+            let src_node = RG.Node.make rhs_norm in
+            rg_add_node src_node; rg_add_node dst_node;
+            let edge = RG.E.create src_node (RG.Edge.make (src, edge_data, dst) const) dst_node in
             RG.add_edge_e reset_graph edge;
-            ()
           )
         ) edge_data.constraints;
       ) post.graph_edges;
 
       let file = Out_channel.create "ResetGraph.dot" in
-      let () = RG_Dot.output_graph file reset_graph in
+      RG_Dot.output_graph file reset_graph;
       Out_channel.close file;
 
       (* Suboptimal way to find all SCC edges, the ocamlgraph library for some
        * reason does not have a function that returns edges of SCCs.  *)
       let get_scc_edges dcp =
-        let components = SCC.scc_list dcp in
+        let components = DCP_SCC.scc_list dcp in
         let scc_edges = List.fold components ~init:DCP.EdgeSet.empty ~f:(fun acc component ->
           (* Iterate over all combinations of SCC nodes and check if there
           * are edges between them in both directions *)
@@ -709,14 +780,13 @@ module Analyzer = AbstractInterpreter.Make (CFG) (TransferFunctions)
         ) !processed_norms (Exp.Map.empty, DCP.EdgeSet.empty)
       in
       Exp.Map.iter (fun norm edge_set ->
-        (* log "E(%a):\n" Exp.pp norm; *)
+        log "E(%a):\n" Exp.pp norm;
         DCP.EdgeSet.iter (fun (src, edge_data, dst) ->
           let local_bound = match edge_data.bound_norm with
           | Some bound -> bound
           | None -> L.(die InternalError)""
           in
-          ()
-          (* log "  %a -- %a -- %a\n" GraphNode.pp src Exp.pp local_bound GraphNode.pp dst *)
+          log "  %a -- %a -- %a\n" DCP.Node.pp src Exp.pp local_bound DCP.Node.pp dst;
         ) edge_set
       ) norm_edge_sets;
 
@@ -846,6 +916,7 @@ module Analyzer = AbstractInterpreter.Make (CFG) (TransferFunctions)
         let norm = RG.Chain.origin chain in
         let chain_value = RG.Chain.value chain in
         let var_bound, cache = variable_bound norm cache in
+        (* log "   [ResetSum MAX VB(%a)] %a\n" Exp.pp norm Bound.pp var_bound; *)
         let max_exp, cache = if IntLit.isnegative chain_value then (
           (* result can be negative, wrap bound expression in the max function *)
           let const_bound = Bound.Value (Exp.Const (Const.Cint (IntLit.neg chain_value))) in
@@ -866,6 +937,7 @@ module Analyzer = AbstractInterpreter.Make (CFG) (TransferFunctions)
           binop_bound, cache
         )
         in
+        (* log "   [ResetSum MAX] %a\n" Bound.pp max_exp; *)
 
         (* Creates a list of arguments for min(args) function. Arguments are
          * transition bounds of each transition of a reset chain. Zero TB stops
@@ -888,6 +960,7 @@ module Analyzer = AbstractInterpreter.Make (CFG) (TransferFunctions)
           ) else (
             let chain_transitions = DCP.EdgeSet.elements (RG.Chain.transitions chain) in
             let args, cache = List.fold_until chain_transitions ~init:([], cache) ~f:fold_aux ~finish:(fun acc -> acc) in
+            let args = List.dedup_and_sort ~compare:Bound.compare args in
             let edge_bound = if Int.equal (List.length args) 1 then List.hd_exn args else Bound.Min (args) in
             if Bound.is_one edge_bound then Some max_exp, cache
             else Some (Bound.BinOp (Binop.Mult, edge_bound, max_exp)), cache
@@ -905,7 +978,7 @@ module Analyzer = AbstractInterpreter.Make (CFG) (TransferFunctions)
       ) chains (None, cache)
 
       and variable_bound norm cache =
-        match Exp.Map.find_opt norm cache.variable_bounds with
+        let bound, cache = match Exp.Map.find_opt norm cache.variable_bounds with
         | Some bound -> bound, cache
         | None -> (
           let norm_bound = Bound.Value norm in
@@ -934,7 +1007,7 @@ module Analyzer = AbstractInterpreter.Make (CFG) (TransferFunctions)
                   let const = Bound.Value (Exp.Const (Const.Cint (IntLit.neg const))) in
                   [Bound.BinOp (Binop.MinusA, var_bound, const)]
                 ) else if IntLit.iszero const then (
-                  if Bound.is_zero var_bound then [] else [var_bound]
+                  [var_bound]
                 ) else (
                   let const = Bound.Value (Exp.Const (Const.Cint const)) in
                   [Bound.BinOp (Binop.PlusA, var_bound, const)]
@@ -943,6 +1016,7 @@ module Analyzer = AbstractInterpreter.Make (CFG) (TransferFunctions)
                 args @ max_arg, cache
               ) resets ([], cache)
               in
+              let max_args = List.dedup_and_sort ~compare:Bound.compare max_args in
               let max = if Int.equal (List.length max_args) 1 then (
                 let arg = List.hd_exn max_args in
                 match arg with
@@ -953,7 +1027,9 @@ module Analyzer = AbstractInterpreter.Make (CFG) (TransferFunctions)
               )
               in
               let var_bound = match increment_sum with
-              | Some increments -> Bound.BinOp (Binop.PlusA, increments, max)
+              | Some increments -> if Bound.is_zero max then (
+                increments
+              ) else Bound.BinOp (Binop.PlusA, increments, max)
               | None -> max
               in
               var_bound, cache
@@ -969,6 +1045,9 @@ module Analyzer = AbstractInterpreter.Make (CFG) (TransferFunctions)
           let cache = { cache with variable_bounds = vb_cache } in
           var_bound, cache
         )
+        in
+        log "   [VB(%a)] %a\n" Exp.pp norm Bound.pp bound;
+        bound, cache
 
       and transition_bound (src, (edge_data : DCP.EdgeData.t), dst) cache =
         (* For variable norms: TB(t) = IncrementSum + ResetSum 
