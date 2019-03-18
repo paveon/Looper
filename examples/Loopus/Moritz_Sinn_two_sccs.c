@@ -1,3 +1,6 @@
+#include <stdlib.h>
+#include <stdio.h>
+
 //Complexity: 3n + max(m1,m2)
 void twoSCCs(uint n, uint m1, uint m2) {
 	int y = n;

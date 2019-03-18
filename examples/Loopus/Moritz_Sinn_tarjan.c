@@ -1,3 +1,6 @@
+#include <stdlib.h>
+#include <stdio.h>
+
 //Complexity: 2n
 void tarjan(uint n) {
 	uint i = n;

@@ -1,3 +1,6 @@
+#include <stdlib.h>
+#include <stdio.h>
+
 //Complexity: n
 void foo(uint n) {
 	int x = n;

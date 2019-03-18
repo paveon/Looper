@@ -1,9 +1,12 @@
+#include <stdlib.h>
+#include <stdio.h>
+
 //Complexity: 2n
 void foo(uint n) {
 	int x = n;
 	int r = n;
 	while(x > 0) {
-        x---;
+        x--;
 		if(0) {
 			int p = r;
 			while(p > 0) {
