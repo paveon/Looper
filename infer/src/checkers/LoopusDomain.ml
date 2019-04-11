@@ -134,41 +134,29 @@ let prune_info_equal = [%compare.equal: prune_info]
 let equal_paths path_a path_b = List.equal path_a path_b ~equal:prune_info_equal
 
 
-let pp_prune_info fmt (kind, branch, _) = 
+let pp_prune_info fmt (kind, branch, loc) = 
   let kind = Sil.if_kind_to_string kind in
-  F.fprintf fmt "%s(%B)" kind branch
+  F.fprintf fmt "%s[%s](%B)" kind (Location.to_string loc) branch
 
 
 module LTSLocation = struct
   type t = 
-    | PruneLoc of (Sil.if_kind * Location.t)
+    | Prune of (Sil.if_kind * Location.t)
     | Start of Location.t
-    | Join of IntSet.t
+    | Join of (t * t)
     | Exit
     | Dummy
   [@@deriving compare]
-
-  let add_join_id : t -> int -> t = fun loc id -> (
-    match loc with
-    | Join id_set -> Join (IntSet.add id id_set)
-    | _ -> loc
-  )
 
   let is_join_loc : t -> bool = fun loc -> 
     match loc with
     | Join _ -> true
     | _ -> false
 
-  let to_string loc = match loc with
-    | PruneLoc (kind, loc) -> F.sprintf "%s [%s]" (Sil.if_kind_to_string kind) (Location.to_string loc)
+  let rec to_string loc = match loc with
+    | Prune (kind, loc) -> F.sprintf "%s [%s]" (Sil.if_kind_to_string kind) (Location.to_string loc)
     | Start loc -> F.sprintf "Begin [%s]" (Location.to_string loc)
-    | Join id_set -> (
-      let str = IntSet.fold (fun id acc ->
-        acc ^ Int.to_string id ^ " + "
-      ) id_set "Join ("
-      in
-      (String.slice str 0 (String.length str - 3)) ^ ")"
-    )
+    | Join (lhs, rhs) -> F.sprintf "Join(%s, %s)" (to_string lhs) (to_string rhs)
     | Exit -> F.sprintf "Exit"
     | Dummy -> F.sprintf "Dummy"
 
@@ -195,17 +183,13 @@ let rec exp_to_z3_expr smt_ctx exp =
     let lexp = exp_to_z3_expr smt_ctx lexp in
     let rexp = exp_to_z3_expr smt_ctx rexp in
     match op with
-    | Binop.MinusA -> Z3.Arithmetic.mk_sub smt_ctx [lexp; rexp]
-    | Binop.PlusA -> Z3.Arithmetic.mk_add smt_ctx [lexp; rexp]
-    | Binop.Mult -> Z3.Arithmetic.mk_mul smt_ctx [lexp; rexp]
+    | Binop.MinusA _ -> Z3.Arithmetic.mk_sub smt_ctx [lexp; rexp]
+    | Binop.PlusA _ -> Z3.Arithmetic.mk_add smt_ctx [lexp; rexp]
+    | Binop.Mult _ -> Z3.Arithmetic.mk_mul smt_ctx [lexp; rexp]
     | _ -> L.(die InternalError)"[Z3 expr] Expression contains invalid binary operator!"
   )
   | _ -> L.(die InternalError)"[Z3 expr] Expression contains invalid element!"
 
-
-module AssignmentMap = struct
-  include Caml.Map.Make(Pvar)
-end
 
 module Bound = struct
   type t =
@@ -218,7 +202,7 @@ module Bound = struct
   let rec to_string bound = match bound with
   | BinOp (op, lhs, rhs) -> (
     match op with
-    | Binop.Mult -> (
+    | Binop.Mult _ -> (
       let aux str exp = match exp with
       | Max _ | Value _ -> str
       | _ -> F.sprintf "(%s)" str
@@ -294,56 +278,24 @@ module Bound = struct
     aux bound *)
 end
 
-module JoinLocations = Caml.Map.Make(struct
-  type t = (LTSLocation.t * LTSLocation.t)
-  [@@deriving compare]
-end)
-
 
 (* Difference Constraint Program *)
 module DCP = struct
   module Node = struct
-    type t = {
-      id: int;
-      location: LTSLocation.t;
-    } [@@deriving compare]
-
-    module IdMap = Caml.Map.Make(LTSLocation)
-
-    let is_join : t -> bool = fun node -> LTSLocation.is_join_loc node.location
-
-    let idCnt = ref 0
-    let idMap = ref IdMap.empty
-
-    let hash = Hashtbl.hash
+    type t = LTSLocation.t [@@deriving compare]
     let equal = [%compare.equal: t]
+    let hash = Hashtbl.hash
 
-    let add_join_id : t -> int -> t = fun node id ->
-      { node with location = LTSLocation.add_join_id node.location id }
-
-    let make : LTSLocation.t -> t = fun loc ->
-      let found = IdMap.mem loc !idMap in
-      let node_id = if found then (
-        IdMap.find loc !idMap
-      ) else (
-        idCnt := !idCnt + 1;
-        idMap := IdMap.add loc !idCnt !idMap;
-        !idCnt
-      ) 
-      in
-      {
-        id = node_id;
-        location = loc;
-      }
-
-      let pp fmt node = F.fprintf fmt "%a" LTSLocation.pp node.location
+    let is_join : t -> bool = fun node -> LTSLocation.is_join_loc node
+    let make : LTSLocation.t -> t = fun loc -> loc
+    let pp fmt node = F.fprintf fmt "%a" LTSLocation.pp node
   end
 
   module EdgeData = struct
     type t = {
       backedge: bool;
       conditions: Exp.Set.t;
-      assignments: Exp.t AssignmentMap.t;
+      assignments: Exp.t PvarMap.t;
       mutable constraints: DC.rhs DC.Map.t;
       mutable guards: Exp.Set.t;
       mutable bound_cache: Bound.t option;
@@ -364,7 +316,7 @@ module DCP = struct
       | _ -> Exp.Set.add guard acc
     ) edge.guards Exp.Set.empty
 
-    let modified_pvars edge = AssignmentMap.fold (fun pvar exp pvar_set -> 
+    let modified_pvars edge = PvarMap.fold (fun pvar exp pvar_set -> 
         if Exp.equal (Exp.Lvar pvar) exp then pvar_set
         else PvarSet.add pvar pvar_set
       ) edge.assignments PvarSet.empty
@@ -374,7 +326,7 @@ module DCP = struct
       let compare = compare
     end)
 
-    let make : Exp.t AssignmentMap.t -> prune_info option -> t = fun assignments prefix_end -> {
+    let make : Exp.t PvarMap.t -> prune_info option -> t = fun assignments prefix_end -> {
       backedge = false;
       conditions = Exp.Set.empty;
       assignments = assignments;
@@ -385,7 +337,7 @@ module DCP = struct
       path_prefix_end = prefix_end; 
     }
 
-    let empty = make AssignmentMap.empty None
+    let empty = make PvarMap.empty None
 
     (* Required by Graph module interface *)
     let default = empty
@@ -396,15 +348,15 @@ module DCP = struct
       { edge with conditions = Exp.Set.add cond edge.conditions }
 
     let add_assignment : t -> Pvar.t -> Exp.t -> t = fun edge lhs rhs ->
-      { edge with assignments = AssignmentMap.add lhs rhs edge.assignments }
+      { edge with assignments = PvarMap.add lhs rhs edge.assignments }
 
     let add_invariants : t -> PvarSet.t -> t = fun edge unmodified ->
       let with_invariants = PvarSet.fold (fun lhs acc ->
-        if AssignmentMap.mem lhs acc then (
-          L.stdout "[Warning] Assignment map already contains key";
+        if PvarMap.mem lhs acc then (
+          F.printf "[Warning] Assignment map already contains key";
           acc
         ) else (
-          AssignmentMap.add lhs (Exp.Lvar lhs) acc
+          PvarMap.add lhs (Exp.Lvar lhs) acc
         )
       ) unmodified edge.assignments
       in
@@ -414,7 +366,7 @@ module DCP = struct
       { edge with path_prefix_end = path_end }
 
     let get_assignment_rhs : t -> Pvar.t -> Exp.t = fun edge lhs ->
-      match AssignmentMap.find_opt lhs edge.assignments with
+      match PvarMap.find_opt lhs edge.assignments with
       | Some rhs -> rhs
       | None -> Exp.Lvar lhs
 
@@ -460,15 +412,15 @@ module DCP = struct
             Z3.Goal.add goal [formula];
             Z3.Solver.reset solver;
             Z3.Solver.add solver (Z3.Goal.get_formulas goal);
-            (* L.stdout "%s\n" ("Goal: " ^ (Z3.Goal.to_string goal)); *)
+            (* F.printf "%s\n" ("Goal: " ^ (Z3.Goal.to_string goal)); *)
             let solve_status = Z3.Solver.check solver [] in
             if phys_equal solve_status Z3.Solver.UNSATISFIABLE then (
-              (* L.stdout "[STATUS] Not satisfiable\n"; *)
+              (* F.printf "[STATUS] Not satisfiable\n"; *)
               (* Implication [conditions] => [norm > 0] always holds *)
               Exp.Set.add norm acc
             )
             else (
-              (* L.stdout "[STATUS] Satisfiable\n"; *)
+              (* F.printf "[STATUS] Satisfiable\n"; *)
               acc
             )
           in
@@ -499,7 +451,7 @@ module DCP = struct
           (* Ignore norms that are formal parameters *)
           dc_map, norm_set
         ) else (
-          let x_assignment = match AssignmentMap.find_opt x_pvar edge.assignments with
+          let x_assignment = match PvarMap.find_opt x_pvar edge.assignments with
           | Some x_rhs -> Some x_rhs
           | None -> if PvarMap.mem x_pvar formals then Some (Exp.Lvar x_pvar) else None
           in
@@ -512,8 +464,8 @@ module DCP = struct
               match x_rhs with
               | Exp.BinOp (op, Exp.Lvar rhs_pvar, Exp.Const Const.Cint increment) -> (
                 let const = match op with
-                | Binop.PlusA -> increment
-                | Binop.MinusA -> IntLit.neg increment
+                | Binop.PlusA _ -> increment
+                | Binop.MinusA _ -> IntLit.neg increment
                 | _ -> L.(die InternalError)"[TODO] currently unsupported binop operator!"
                 in
                 if Pvar.equal x_pvar rhs_pvar then (
@@ -537,13 +489,13 @@ module DCP = struct
           | None -> dc_map, norm_set
         )
       )
-      | Exp.BinOp (Binop.MinusA, Exp.Lvar x_pvar, Exp.Lvar y_pvar) -> (
+      | Exp.BinOp (Binop.MinusA _, Exp.Lvar x_pvar, Exp.Lvar y_pvar) -> (
         (* Most common form of norm, obtained from condition of form [x > y] -> norm [x - y] *)
-        let lexp_assignment_rhs = match AssignmentMap.find_opt x_pvar edge.assignments with
+        let lexp_assignment_rhs = match PvarMap.find_opt x_pvar edge.assignments with
         | Some x_rhs -> Some x_rhs
         | None -> if PvarMap.mem x_pvar formals then Some (Exp.Lvar x_pvar) else None
         in
-        let rexp_assignment_rhs = match AssignmentMap.find_opt y_pvar edge.assignments with
+        let rexp_assignment_rhs = match PvarMap.find_opt y_pvar edge.assignments with
         | Some y_rhs -> Some y_rhs
         | None -> if PvarMap.mem y_pvar formals then Some (Exp.Lvar y_pvar) else None
         in
@@ -566,12 +518,12 @@ module DCP = struct
               assert(not (Pvar.equal rhs_pvar x_pvar));
               assert(Pvar.equal rhs_pvar y_pvar);
               match op with
-              | Binop.PlusA -> (
+              | Binop.PlusA _ -> (
                 (* norm [x - y], assignment [y = y + const] -> [(x - y) - const] *)
                 let dc_rhs = DC.make_rhs ~const:(IntLit.neg increment) norm in
                 DC.Map.add_dc norm dc_rhs dc_map, norm_set
               )
-              | Binop.MinusA -> (
+              | Binop.MinusA _ -> (
                 (* norm [x - y], assignment [y = y - const] -> [(x - y) + const] *)
                 let dc_rhs = DC.make_rhs ~const:increment norm in
                 DC.Map.add_dc norm dc_rhs dc_map, norm_set
@@ -586,7 +538,7 @@ module DCP = struct
                 DC.Map.add_dc norm (DC.make_rhs Exp.zero) dc_map, Exp.Set.add Exp.zero norm_set
               ) else (
                 (* norm [x - y], assignment [y = z] -> [x - z] *)
-                let new_norm = Exp.BinOp (Binop.MinusA, norm_lexp, y_rhs) in
+                let new_norm = Exp.BinOp (Binop.MinusA None, norm_lexp, y_rhs) in
                 DC.Map.add_dc norm (DC.make_rhs new_norm) dc_map, Exp.Set.add new_norm norm_set
               )
             )
@@ -603,12 +555,12 @@ module DCP = struct
               assert(not (Pvar.equal rhs_pvar y_pvar));
               assert(Pvar.equal rhs_pvar x_pvar);
               match op with
-              | Binop.PlusA -> (
+              | Binop.PlusA _ -> (
                 (* norm [x - y], assignment [x = x + const] -> [(x - y) + const] *)
                 let dc_rhs = DC.make_rhs ~const:increment norm in
                 DC.Map.add_dc norm dc_rhs dc_map, norm_set
               )
-              | Binop.MinusA -> (
+              | Binop.MinusA _ -> (
                 (* norm [x - y], assignment [x = x - const] -> [(x - y) - const] *)
                 let dc_rhs = DC.make_rhs ~const:(IntLit.neg increment) norm in
                 DC.Map.add_dc norm dc_rhs dc_map, norm_set
@@ -623,7 +575,7 @@ module DCP = struct
                 DC.Map.add_dc norm (DC.make_rhs Exp.zero) dc_map, Exp.Set.add Exp.zero norm_set
               ) else (
                 (* norm [x - y], assignment [x = z] -> [z - y] *)
-                let new_norm = Exp.BinOp (Binop.MinusA, x_rhs, norm_rexp) in
+                let new_norm = Exp.BinOp (Binop.MinusA None, x_rhs, norm_rexp) in
                 DC.Map.add_dc norm (DC.make_rhs new_norm) dc_map, Exp.Set.add new_norm norm_set
               )
             )
@@ -681,10 +633,10 @@ module DotConfig = struct
     | Some prune_info -> F.asprintf "%a\n" pp_prune_info prune_info
     | None -> ""
 
-  let vertex_attributes : DCP.Node.t -> 'a list = fun node -> (
-    [ `Shape `Box; `Label (LTSLocation.to_string node.location) ]
+  let vertex_attributes : Node.t -> 'a list = fun node -> (
+    [ `Shape `Box; `Label (LTSLocation.to_string node) ]
   )
-  let vertex_name : DCP.Node.t -> string = fun vertex -> string_of_int vertex.id
+  let vertex_name : Node.t -> string = fun vertex -> string_of_int (Node.hash vertex)
 end
 
 module LTSConfig = struct
@@ -696,7 +648,7 @@ module LTSConfig = struct
       acc ^ exp_to_str condition ^ "\n"
     ) edge_data.conditions label
     in
-    let label = AssignmentMap.fold (fun lhs rhs acc -> 
+    let label = PvarMap.fold (fun lhs rhs acc -> 
       let str = F.sprintf "%s = %s\n" (Pvar.to_string lhs) (exp_to_str rhs) in
       acc ^ str
     ) edge_data.assignments label
@@ -922,19 +874,19 @@ module RG = struct
       | Some (_, _, dcp_dst) -> dcp_dst
       | None -> assert(false)
       in
-      (* L.stdout "[UNOPTIMIZED CHAIN] %a\n" Chain.pp chain; *)
+      (* F.printf "[UNOPTIMIZED CHAIN] %a\n" Chain.pp chain; *)
       let optimize_chain : edge list -> edge -> edge list = 
       fun optimal_chain (src, edge_data, dst) ->
         match edge_data.dcp_edge with
         | Some (path_end, _, _) -> (
-          (* L.stdout "[PATH END] %a\n" DCP.Node.pp path_end; *)
+          (* F.printf "[PATH END] %a\n" DCP.Node.pp path_end; *)
           (* Find all paths from origin to end and check if they reset the end norm *)
           let current_norm = src.norm in
           let rec checkPaths origin visited_nodes norm_reset acc =
             let open Base.Continue_or_stop in
             if DCP.Node.equal origin path_end then (
               (* Found path, return info if norm was reset along the path *)
-              (* L.stdout "[PATH FOUND] Reset: %B\n" norm_reset; *)
+              (* F.printf "[PATH FOUND] Reset: %B\n" norm_reset; *)
               Some norm_reset
             ) else (
               let next = DCP.succ_e dcp origin in
@@ -992,7 +944,7 @@ module RG = struct
             optimal_chain @ [(src, edge_data, dst)]
           )
           | _ -> (
-            L.stdout "[NORM NOT RESET] %a\n" Exp.pp current_norm;
+            F.printf "[NORM NOT RESET] %a\n" Exp.pp current_norm;
             [(src, edge_data, dst)]
           )
         )
@@ -1000,7 +952,7 @@ module RG = struct
       in
       let chain_data = List.fold (List.tl_exn chain.data) ~init:[List.hd_exn chain.data] ~f:optimize_chain in
       let chain = { chain with data = chain_data} in
-      (* L.stdout "[OPTIMIZED CHAIN]   %a\n" Chain.pp chain; *)
+      (* F.printf "[OPTIMIZED CHAIN]   %a\n" Chain.pp chain; *)
       chain
     ) reset_chains
 end
@@ -1010,14 +962,12 @@ module RG_Dot = Graph.Graphviz.Dot(RG)
 
 module AggregateJoin = struct
   type t = {
-    join_nodes: IntSet.t;
     rhs: LTSLocation.t;
     lhs: LTSLocation.t;
     edges: DCP.EdgeSet.t;
   } [@@deriving compare]
 
   let initial : t = {
-    join_nodes = IntSet.empty;
     lhs = LTSLocation.Dummy;
     rhs = LTSLocation.Dummy;
     edges = DCP.EdgeSet.empty;
@@ -1025,23 +975,19 @@ module AggregateJoin = struct
 
   let edge_count : t -> int = fun node -> DCP.EdgeSet.cardinal node.edges
 
-  let add_node_id : t -> int -> t = fun aggregate join_id ->
-    { aggregate with join_nodes = IntSet.add join_id aggregate.join_nodes }
-
   let add_edge : t -> DCP.E.t -> t = fun info edge -> 
     { info with edges = DCP.EdgeSet.add edge info.edges } 
 
-  let make : int -> LTSLocation.t -> LTSLocation.t -> t = fun join_id rhs lhs ->
-    { join_nodes = IntSet.add join_id IntSet.empty; lhs = lhs; rhs = rhs; edges = DCP.EdgeSet.empty; }
+  let make : LTSLocation.t -> LTSLocation.t -> t = fun rhs lhs ->
+    { lhs = lhs; rhs = rhs; edges = DCP.EdgeSet.empty; }
 end
 
 
-type astate = {
+type t = {
   test: bool;
 
   last_node: DCP.Node.t;
   branchingPath: prune_info list;
-  joinLocs: int JoinLocations.t;
 
   potential_norms: Exp.Set.t;
   initial_norms: Exp.Set.t;
@@ -1055,13 +1001,12 @@ type astate = {
   aggregate_join: AggregateJoin.t;
 }
 
-let initial : DCP.Node.t -> astate = fun entry_point -> (
+let initial : DCP.Node.t -> t = fun entry_point -> (
   {
     test = false;
 
     last_node = entry_point;
     branchingPath = [];
-    joinLocs = JoinLocations.empty;
 
     potential_norms = Exp.Set.empty;
     initial_norms = Exp.Set.empty;
@@ -1086,10 +1031,10 @@ let norm_is_variable : Exp.t -> Typ.t PvarMap.t -> bool = fun norm formals ->
   in
   traverse_exp norm
 
-let get_tracked_pvars : astate -> PvarSet.t = fun astate ->
+let get_tracked_pvars : t -> PvarSet.t = fun astate ->
   PvarSet.union astate.locals astate.tracked_formals
 
-let get_unmodified_pvars : astate -> PvarSet.t = fun astate ->
+let get_unmodified_pvars : t -> PvarSet.t = fun astate ->
   PvarSet.diff (get_tracked_pvars astate) astate.modified_pvars
 
 let is_loop_prune : Sil.if_kind -> bool = function
@@ -1114,16 +1059,14 @@ let get_edge_label path = match List.last path with
 
 
 let ( <= ) ~lhs ~rhs =
-  (* L.stdout "[Partial order <= ]\n"; *)
-  (* L.stdout "  [LHS]\n"; *)
+  (* F.printf "[Partial order <= ]\n"; *)
+  (* F.printf "  [LHS]\n"; *)
   DCP.EdgeSet.equal lhs.graph_edges rhs.graph_edges || 
   DCP.EdgeSet.cardinal lhs.graph_edges < DCP.EdgeSet.cardinal rhs.graph_edges
 
-let join_cnt = ref 0
 
-
-let join : astate -> astate -> astate = fun lhs rhs ->
-  L.stdout "\n[JOIN] %a | %a\n" LTSLocation.pp lhs.last_node.location LTSLocation.pp rhs.last_node.location;
+let join : t -> t -> t = fun lhs rhs ->
+  F.printf "\n[JOIN] %a | %a\n" LTSLocation.pp lhs.last_node LTSLocation.pp rhs.last_node;
 
   (* Creates common path prefix of provided paths *)
   let rec common_path_prefix = fun (prefix, _) pathA pathB ->
@@ -1138,25 +1081,11 @@ let join : astate -> astate -> astate = fun lhs rhs ->
 
   let lhs_path = lhs.branchingPath in
   let rhs_path = rhs.branchingPath in
-  let (path_prefix_rev, scope_left) = common_path_prefix ([], false) lhs_path rhs_path in
+  let (path_prefix_rev, _) = common_path_prefix ([], false) lhs_path rhs_path in
   let path_prefix = List.rev path_prefix_rev in
-  L.stdout "  [NEW] Path prefix: %a\n" pp_path path_prefix;
+  F.printf "  [NEW] Path prefix: %a\n" pp_path path_prefix;
 
-  let join_locs = JoinLocations.union (fun _key a b -> 
-    if not (phys_equal a b) then L.(die InternalError)"Join location is not unique!" else Some a
-  ) lhs.joinLocs rhs.joinLocs 
-  in
-
-  (* Check if join location already exist and create new with higher ID if it doesn't *)
-  let key = (lhs.last_node.location, rhs.last_node.location) in
-  let join_id, join_locs = if JoinLocations.mem key join_locs then (
-    JoinLocations.find key join_locs, join_locs
-  ) else (
-    join_cnt := !join_cnt + 1;
-    !join_cnt, JoinLocations.add key !join_cnt join_locs
-  )
-  in
-  let join_location = LTSLocation.Join (IntSet.add join_id IntSet.empty) in
+  let join_location = LTSLocation.Join (lhs.last_node, rhs.last_node) in
 
   let ident_map = Ident.Map.union (fun _key a b ->
     if not (Pvar.equal a b) then 
@@ -1169,7 +1098,6 @@ let join : astate -> astate -> astate = fun lhs rhs ->
   let astate = { lhs with
     test = false;
     branchingPath = path_prefix;
-    joinLocs = join_locs;
     ident_map = ident_map;
 
     initial_norms = Exp.Set.union lhs.initial_norms rhs.initial_norms;
@@ -1185,7 +1113,9 @@ let join : astate -> astate -> astate = fun lhs rhs ->
   (* let is_consecutive_join = (GraphNode.is_join lhs.last_node && not (rhs.test))
    || (GraphNode.is_join rhs.last_node && not (lhs.test)) in *)
 
-  
+  let lhs_empty = DCP.EdgeData.equal lhs.edge_data DCP.EdgeData.empty in
+  let rhs_empty = DCP.EdgeData.equal rhs.edge_data DCP.EdgeData.empty in
+
   let is_consecutive_join = (DCP.Node.is_join lhs.last_node && not (equal_paths path_prefix lhs_path))
    || (DCP.Node.is_join rhs.last_node && not (equal_paths path_prefix rhs_path)) in
 
@@ -1197,37 +1127,38 @@ let join : astate -> astate -> astate = fun lhs rhs ->
   in *)
 
   let astate = if is_consecutive_join then (
-    L.stdout "-----------------------FAIL\n";
+    F.printf "-----------------------FAIL\n";
     (* Consecutive join, merge join nodes and possibly add new edge to aggregated join node *)
     let other_state, join_state = if DCP.Node.is_join lhs.last_node then rhs, lhs else lhs, rhs in
-    let aggregate_join = match other_state.last_node.location with
+    let aggregate_join, last_node = match other_state.last_node with
     | LTSLocation.Start _ -> (
       (* Don't add new edge if it's from the beginning location *)
-      join_state.aggregate_join
+      join_state.aggregate_join, join_state.last_node
     )
     | _ -> (
-      if scope_left then (
+      if equal_paths path_prefix other_state.branchingPath then (
         (* Heuristic: ignore edge from previous location if this is a "backedge" join which 
          * joins state from inside of the loop with outside state denoted by prune location before loop prune *)
-        L.stdout "-----------------------BACKEDGE\n";
-        join_state.aggregate_join
+        F.printf "-----------------------BACKEDGE\n";
+        join_state.aggregate_join, join_state.last_node
       ) else (
         (* Add edge from non-join node to current set of edges pointing to aggregated join node *)
-        L.stdout "-----------------------ADD EDGE\n";
+        F.printf "-----------------------ADD EDGE\n";
         let unmodified = get_unmodified_pvars other_state in
         let edge_data = DCP.EdgeData.add_invariants other_state.edge_data unmodified in
         let edge_data = DCP.EdgeData.set_path_end edge_data (List.last other_state.branchingPath) in
         let lts_edge = DCP.E.create other_state.last_node edge_data join_state.last_node in
         let aggregate_join = AggregateJoin.add_edge join_state.aggregate_join lts_edge in
-        aggregate_join
+        aggregate_join, LTSLocation.Join (join_state.last_node, other_state.last_node)
       )
     )
     in
     { astate with 
       edge_data = join_state.edge_data;
       modified_pvars = join_state.modified_pvars;
-      last_node = join_state.last_node; 
-      aggregate_join = AggregateJoin.add_node_id aggregate_join join_id; 
+      (* last_node = last_node;  *)
+      last_node = join_state.last_node;
+      aggregate_join = aggregate_join;
     }
   ) else (
     (* First join in a row, create new join node and join info *)
@@ -1236,18 +1167,18 @@ let join : astate -> astate -> astate = fun lhs rhs ->
       modified_pvars = PvarSet.empty
     }
     in
-    match lhs.last_node.location, rhs.last_node.location with
-    | LTSLocation.PruneLoc (kind, _), LTSLocation.Start _ when not (is_loop_prune kind) -> (
+    match lhs.last_node, rhs.last_node with
+    | LTSLocation.Prune (kind, _), LTSLocation.Start _ when not (is_loop_prune kind) -> (
       { astate with last_node = lhs.last_node }
     )
-    | LTSLocation.Start _, LTSLocation.PruneLoc (kind, _) when not (is_loop_prune kind) -> (
+    | LTSLocation.Start _, LTSLocation.Prune (kind, _) when not (is_loop_prune kind) -> (
       { astate with last_node = rhs.last_node }
     )
     | _, _ -> (
-      let join_node = DCP.Node.make join_location in
-      let aggregate_join = AggregateJoin.make join_id lhs.last_node.location rhs.last_node.location in
+      (* let join_node = DCP.Node.make join_location in *)
+      let aggregate_join = AggregateJoin.make lhs.last_node rhs.last_node in
       let tracked_pvars = get_tracked_pvars astate in
-      let add_edge aggregate state = match state.last_node.location with
+      (* let add_edge aggregate state = match state.last_node with
       | LTSLocation.Start _ -> aggregate
       | _ -> (
         let unmodified = PvarSet.diff tracked_pvars state.modified_pvars in
@@ -1256,13 +1187,24 @@ let join : astate -> astate -> astate = fun lhs rhs ->
         let lts_edge = DCP.E.create state.last_node edge_data join_node in
         AggregateJoin.add_edge aggregate lts_edge
       )
+      in *)
+      let add_edge aggregate state = 
+        if equal_paths path_prefix state.branchingPath then (
+          aggregate
+        ) else (
+          let unmodified = PvarSet.diff tracked_pvars state.modified_pvars in
+          let edge_data = DCP.EdgeData.add_invariants state.edge_data unmodified in
+          let edge_data = DCP.EdgeData.set_path_end edge_data (List.last state.branchingPath) in
+          let lts_edge = DCP.E.create state.last_node edge_data join_location in
+          AggregateJoin.add_edge aggregate lts_edge
+        )
       in
       let aggregate_join = add_edge aggregate_join lhs in
       let aggregate_join = add_edge aggregate_join rhs in
       { astate with 
-        last_node = join_node; 
+        last_node = join_location; 
         aggregate_join = aggregate_join;
-        graph_nodes = DCP.NodeSet.add join_node astate.graph_nodes;
+        graph_nodes = DCP.NodeSet.add join_location astate.graph_nodes;
       }
     )
   )
@@ -1275,11 +1217,11 @@ let widen ~prev ~next ~num_iters:_ =
 let pp fmt astate =
   DCP.EdgeSet.iter (fun (src, edge_data, dst) -> 
     F.fprintf fmt "(%a) -->  (%a) [%a]\n" 
-    LTSLocation.pp src.location
-    LTSLocation.pp dst.location 
+    LTSLocation.pp src
+    LTSLocation.pp dst 
     PvarSet.pp (DCP.EdgeData.modified_pvars edge_data)
   ) astate.graph_edges
 
-let pp_summary : F.formatter -> astate -> unit =
+let pp_summary : F.formatter -> t -> unit =
   fun fmt _astate ->
     F.fprintf fmt "loopus summary placeholder\n";

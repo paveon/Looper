@@ -200,6 +200,13 @@ OPTIONS
            Activates: Enable --loop-hoisting and disable all other checkers
            (Conversely: --no-loop-hoisting-only)
 
+       --looper
+           Activates: loop complexity analysis (Conversely: --no-looper)
+
+       --looper-only
+           Activates: Enable --looper and disable all other checkers
+           (Conversely: --no-looper-only)
+
        --perf-profiler-data-file file
            Specify the file containing perf profiler data to read
 

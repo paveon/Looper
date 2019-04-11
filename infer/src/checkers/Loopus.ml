@@ -6,14 +6,14 @@ module Domain = LoopusDomain
 
 
 module Payload = SummaryPayload.Make (struct
-  type t = Domain.astate
+  type t = Domain.t
 
-  let update_payloads astate (payloads : Payloads.t) = {payloads with loopus= Some astate}
+  let update_payloads astate (payloads : Payloads.t) = {payloads with looper= Some astate}
 
-  let of_payloads (payloads : Payloads.t) = payloads.loopus
+  let of_payloads (payloads : Payloads.t) = payloads.looper
 end)
 
-let log : ('a, Format.formatter, unit) format -> 'a = fun fmt -> L.stdout_cond true fmt
+let log : ('a, Format.formatter, unit) format -> 'a = fun fmt -> F.printf fmt
 
 module TransferFunctions (ProcCFG : ProcCfg.S) = struct
   module CFG = ProcCFG
@@ -21,10 +21,10 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
 
   type nonrec extras = (Typ.t Domain.PvarMap.t * Typ.t Domain.PvarMap.t)
 
-  let pp_session_name node fmt = F.fprintf fmt "loopus %a" CFG.Node.pp_id (CFG.Node.id node)
+  let pp_session_name node fmt = F.fprintf fmt "looper %a" CFG.Node.pp_id (CFG.Node.id node)
 
   (* Take an abstract state and instruction, produce a new abstract state *)
-  let exec_instr : Domain.astate -> extras ProcData.t -> CFG.Node.t -> Sil.instr -> Domain.astate =
+  let exec_instr : Domain.t -> extras ProcData.t -> CFG.Node.t -> Sil.instr -> Domain.t =
     fun astate {pdesc; tenv; extras} node instr ->
 
     let open Domain in
@@ -60,6 +60,9 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
       let referenced_pvar = Ident.Map.find ident astate.ident_map in
       Exp.Lvar referenced_pvar
     )
+    | Exp.Cast (_, exp) -> (
+      substitute_pvars exp
+    )
     | _ -> exp
     in
 
@@ -79,19 +82,25 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
 
     let astate = match instr with
     | Prune (cond, loc, branch, kind) -> (
-      log "[PRUNE] (%a) | %a\n" Location.pp loc Exp.pp cond;
+      let pvar_condition = substitute_pvars cond in
+
+      log "[PRUNE] (%a) | %a\n" Location.pp loc Exp.pp pvar_condition;
       let location_cmp : Location.t -> Location.t -> bool = fun loc_a loc_b ->
         loc_a.line > loc_b.line
       in
 
-      let lts_prune_loc = LTSLocation.PruneLoc (kind, loc) in
+      let lts_prune_loc = LTSLocation.Prune (kind, loc) in
       let prune_node = DCP.Node.make lts_prune_loc in
+      let loop_prune = is_loop_prune kind in
 
-      let astate = match astate.last_node.location with
-      | LTSLocation.PruneLoc (kind, prune_loc) 
-      when not (is_loop_prune kind) && location_cmp prune_loc loc  -> (
+      let astate = match astate.last_node with
+      | LTSLocation.Prune (kind, prune_loc) 
+      when not loop_prune && location_cmp prune_loc loc  -> (
         (* Do not create a backedge from single branch of "if" and 
          * wait for backedge from joined node *)
+
+        log "#####################################################\n";
+
         astate
       )
       | _ -> (
@@ -102,6 +111,9 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
 
         let is_direct_backedge = LTSLocation.equal lts_prune_loc lhs || LTSLocation.equal lts_prune_loc rhs in
         if is_direct_backedge then (
+
+          (* log "DIRECT BACKEDGE\n"; *)
+
           (* Discard join node and all edges poiting to it and instead make
             * one direct backedge with variables modified inside the loop *)
           let join_edges =  astate.aggregate_join.edges in
@@ -117,23 +129,32 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
           { astate with graph_edges = graph_edges; graph_nodes = graph_nodes }
         ) else (
           let is_backedge = match lhs, rhs with
-          | LTSLocation.PruneLoc (_, lhs), LTSLocation.PruneLoc (_, rhs) -> (
+          | LTSLocation.Prune (_, lhs), LTSLocation.Prune (_, rhs) -> (
             location_cmp lhs loc || location_cmp rhs loc
           )
-          | LTSLocation.PruneLoc (_, lhs), _ -> location_cmp lhs loc
-          | _, LTSLocation.PruneLoc (_, rhs) -> location_cmp rhs loc
+          | LTSLocation.Prune (_, lhs), _ -> location_cmp lhs loc
+          | _, LTSLocation.Prune (_, rhs) -> location_cmp rhs loc
           | _ -> false
           in
           (* Add all accumulated edges pointing to aggregated join node and
             * new edge pointing from aggregated join node to this prune node *)
           let edge_count = AggregateJoin.edge_count astate.aggregate_join in
           let is_empty_edge = DCP.EdgeData.equal astate.edge_data DCP.EdgeData.empty in
-          if not (is_loop_prune kind) && Int.equal edge_count 2 && is_empty_edge then (
+          let same_origin = match astate.last_node with
+          | LTSLocation.Join (lhs, rhs) -> LTSLocation.equal lhs rhs
+          | _ -> false
+          in
+          (* log "%B | %B | %B\n" (not (is_backedge)) (Int.equal edge_count 2) is_empty_edge; *)
+
+          if not (loop_prune) && same_origin && is_empty_edge then (
             (* LTS simplification, skip simple JOIN node and redirect edges pointing to it *)
             let graph_edges = DCP.EdgeSet.map (fun (src, data, _) ->
               (src, data, prune_node)
             ) astate.aggregate_join.edges
             in
+
+            (* log "---------------------------------------REMOVING: %a\n" LTSLocation.pp astate.last_node; *)
+
             let graph_nodes = DCP.NodeSet.remove astate.last_node graph_nodes in
             let graph_edges = (DCP.EdgeSet.union astate.graph_edges graph_edges) in
             { astate with graph_edges = graph_edges; graph_nodes = graph_nodes }
@@ -149,6 +170,7 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
             let graph_edges = (DCP.EdgeSet.union astate.graph_edges graph_edges) in
             { astate with graph_edges = graph_edges; graph_nodes = graph_nodes }
           ) else (
+            log "IS BACKEDGE %B\n" is_backedge;
             let path_end = List.last astate.branchingPath in
             let edge_data = DCP.EdgeData.set_path_end edge_data path_end in
             let edge_data = if is_backedge then DCP.EdgeData.set_backedge edge_data else edge_data in
@@ -161,7 +183,6 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
       )
       in
 
-      let pvar_condition = substitute_pvars cond in
       let prune_condition = match pvar_condition with
       | Exp.BinOp _ -> pvar_condition
       | Exp.UnOp (LNot, exp, _) -> (
@@ -191,8 +212,6 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
         is_loop_prune kind && branch
       )
       in
-
-      let loop_prune = is_loop_prune kind in
       let astate = if loop_prune || in_loop then (
         (* We're tracking formals which are used in
          * conditions of loops headers or on loop paths  *)
@@ -210,7 +229,6 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
           )
           | _ -> prune_condition
           in
-
           match normalized_condition with
           | Exp.BinOp (op, lexp, rexp) -> (
             let process_gt lhs rhs =
@@ -219,12 +237,12 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
               if lhs_is_zero && rhs_is_zero then Exp.zero
               else if lhs_is_zero then Exp.UnOp (Unop.Neg, rhs, None)
               else if rhs_is_zero then lhs
-              else Exp.BinOp (Binop.MinusA, lhs, rhs)
+              else Exp.BinOp (Binop.MinusA None, lhs, rhs)
             in
 
             let process_op op = match op with
               | Binop.Gt -> Some (process_gt lexp rexp)
-              | Binop.Ge -> Some (Exp.BinOp (Binop.PlusA, (process_gt lexp rexp), Exp.one))
+              | Binop.Ge -> Some (Exp.BinOp (Binop.PlusA None, (process_gt lexp rexp), Exp.one))
               | _ -> None
             in
             let astate = match process_op op with
@@ -252,10 +270,12 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
         astate
       )
       in
-      let not_consecutive = DCP.Node.is_join astate.last_node in
+      let branching_path = if loop_prune && not branch then (
+        astate.branchingPath
+      ) else astate.branchingPath @ [(kind, branch, loc)] 
+      in
       let edge_data = DCP.EdgeData.add_condition DCP.EdgeData.empty prune_condition in
       { astate with
-        test = not_consecutive;
         branchingPath = astate.branchingPath @ [(kind, branch, loc)];
         modified_pvars = PvarSet.empty;
         edge_data = edge_data;
@@ -263,37 +283,47 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
         aggregate_join = AggregateJoin.initial;
       }
     )
-    | Nullify (_, loc) -> (
-      log "[NULLIFY] %a\n" Location.pp loc;
-      astate
-    )
-    | Abstract loc -> (
-      log "[ABSTRACT] %a\n" Location.pp loc;
-      astate
-    )
-    | Remove_temps (ident_list, loc) -> (
-      log "[REMOVE_TEMPS] %a\n" Location.pp loc;
+    | Metadata metadata -> (match metadata with
+      | Nullify (_, loc) -> (
+        log "[NULLIFY] %a\n" Location.pp loc;
+        astate
+      )
+      | Abstract loc -> (
+        log "[ABSTRACT] %a\n" Location.pp loc;
+        astate
+      )
+      | ExitScope (_, loc) -> (
+        log "[ExitScope] %a\n" Location.pp loc;
 
-      if is_pvar_decl_node then log "  Decl node\n";
-      if is_start_node then (
-        let instrs = CFG.instrs node in
-        log "  Start node\n";
-        let count = Instrs.count instrs in
-        log "  Instr count: %d\n" count;
-      );
+        if is_pvar_decl_node then log "  Decl node\n";
+        if is_start_node then (
+          let instrs = CFG.instrs node in
+          log "  Start node\n";
+          let count = Instrs.count instrs in
+          log "  Instr count: %d\n" count;
+        );
 
-      if is_exit_node then (
-        log "  Exit node\n";
-        let exit_node = DCP.Node.make LTSLocation.Exit in
-        let path_end = List.last astate.branchingPath in
-        let edge_data = DCP.EdgeData.set_path_end astate.edge_data path_end in
-        let new_lts_edge = DCP.E.create astate.last_node edge_data exit_node in
-        let graph_edges = DCP.EdgeSet.add new_lts_edge astate.graph_edges in
-        { astate with
-          graph_nodes = DCP.NodeSet.add exit_node astate.graph_nodes;
-          graph_edges = DCP.EdgeSet.union astate.aggregate_join.edges graph_edges;
-        }
-      ) else (
+        if is_exit_node then (
+          log "  Exit node\n";
+          let exit_node = DCP.Node.make LTSLocation.Exit in
+          let path_end = List.last astate.branchingPath in
+          let edge_data = DCP.EdgeData.set_path_end astate.edge_data path_end in
+          let new_lts_edge = DCP.E.create astate.last_node edge_data exit_node in
+          let graph_edges = DCP.EdgeSet.add new_lts_edge astate.graph_edges in
+          { astate with
+            graph_nodes = DCP.NodeSet.add exit_node astate.graph_nodes;
+            graph_edges = DCP.EdgeSet.union astate.aggregate_join.edges graph_edges;
+          }
+        ) else (
+          astate
+        )
+      )
+      | Skip -> (
+        log "[Skip]\n"; 
+        astate
+      )
+      | VariableLifetimeBegins (_, _, _) -> (
+        log "[VariableLifetimeBegins]\n";
         astate
       )
     )
@@ -305,13 +335,13 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
         * eg. [beg = i; end = beg;] becomes [beg = i; end = i] *)
       let pvar_rexp = substitute_pvars rexp in
       let pvar_rexp = match pvar_rexp with
-      | Exp.BinOp (Binop.PlusA, Exp.Lvar lexp, Exp.Const (Const.Cint c1)) -> (
+      | Exp.BinOp (Binop.PlusA _, Exp.Lvar lexp, Exp.Const (Const.Cint c1)) -> (
         (* [BINOP] PVAR + CONST *)
         match (DCP.EdgeData.get_assignment_rhs astate.edge_data lexp) with
-        | Exp.BinOp (Binop.PlusA, lexp, Exp.Const (Const.Cint c2)) -> (
+        | Exp.BinOp (Binop.PlusA _, lexp, Exp.Const (Const.Cint c2)) -> (
           (* [BINOP] (PVAR + C1) + C2 -> PVAR + (C1 + C2) *)
           let const = Exp.Const (Const.Cint (IntLit.add c1 c2)) in
-          Exp.BinOp (Binop.PlusA, lexp, const)
+          Exp.BinOp (Binop.PlusA None, lexp, const)
         )
         | _ -> pvar_rexp
       )
@@ -321,7 +351,7 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
       | _ -> pvar_rexp
       in
       let is_plus_minus_op op = match op with
-      | Binop.PlusA | Binop.MinusA -> true | _ -> false
+      | Binop.PlusA _ | Binop.MinusA _ -> true | _ -> false
       in
 
       let astate = match pvar_rexp with 
@@ -388,7 +418,8 @@ module CFG = ProcCfg.NormalOneInstrPerNode
 module DCP_SCC = Graph.Components.Make(Domain.DCP)
 module VFG_SCC = Graph.Components.Make(Domain.VFG)
 
-module Analyzer = AbstractInterpreter.Make (CFG) (TransferFunctions)
+(* module Analyzer = AbstractInterpreter.Make (CFG) (TransferFunctions) *)
+module Analyzer = AbstractInterpreter.MakeRPO (TransferFunctions (CFG))
   module VFG_Map = Caml.Map.Make(struct
     type nonrec t = Domain.DCP.Node.t * Exp.t
     [@@deriving compare]
@@ -459,7 +490,7 @@ module Analyzer = AbstractInterpreter.Make (CFG) (TransferFunctions)
       (* Draw dot graph, use nodes and edges stored in post state *)
       let lts = DCP.create () in
       DCP.NodeSet.iter (fun node ->
-        log "%a = %d\n" LTSLocation.pp node.location node.id;
+        log "%a\n" LTSLocation.pp node;
         DCP.add_vertex lts node;
       ) post.graph_nodes;
       DCP.EdgeSet.iter (fun edge ->
@@ -540,8 +571,8 @@ module Analyzer = AbstractInterpreter.Make (CFG) (TransferFunctions)
 
           let node = DCP.NodeSet.min_elt nodes in
           let nodes = DCP.NodeSet.remove node nodes in
-          match node.location with
-          | LTSLocation.PruneLoc (kind, loc) when is_loop_prune kind -> (
+          match node with
+          | LTSLocation.Prune (kind, loc) when is_loop_prune kind -> (
             let incoming_edges = DCP.pred_e dcp node in
             let guards = get_shared_guards Exp.Set.empty incoming_edges in
             let out_edges = DCP.succ_e dcp node in
@@ -553,6 +584,7 @@ module Analyzer = AbstractInterpreter.Make (CFG) (TransferFunctions)
             in
             let (src, true_branch, dst) = List.hd_exn true_branch in
             true_branch.guards <- Exp.Set.union guards true_branch.guards;
+            log "SRC: %a ------------ DST: %a\n" LTSLocation.pp src LTSLocation.pp dst;
             if not (DCP.Node.equal src dst) then propagate_guards (DCP.NodeSet.add dst nodes);
             let (_, backedge, _) = List.find_exn incoming_edges ~f:(fun (_, edge_data, _) -> edge_data.backedge) in
             let backedge_guards = DCP.EdgeData.active_guards backedge in
@@ -884,14 +916,14 @@ module Analyzer = AbstractInterpreter.Make (CFG) (TransferFunctions)
             ) else (
               let const_exp = Exp.Const (Const.Cint const) in
               if Bound.is_one edge_bound then Some (Bound.Value const_exp)
-              else Some (Bound.BinOp (Binop.Mult, edge_bound, Bound.Value const_exp))
+              else Some (Bound.BinOp (Binop.Mult None, edge_bound, Bound.Value const_exp))
             )
           )
           in
           let sum = match sum with
           | Some sum -> (
             match increment_exp with
-            | Some exp -> Some (Bound.BinOp (Binop.PlusA, sum, exp))
+            | Some exp -> Some (Bound.BinOp (Binop.PlusA None, sum, exp))
             | None -> Some sum
           )
           | None -> increment_exp
@@ -900,7 +932,7 @@ module Analyzer = AbstractInterpreter.Make (CFG) (TransferFunctions)
         ) increments (None, cache)
         in
         let total_sum = match total_sum, sum with
-        | Some total_sum, Some sum -> Some (Bound.BinOp (Binop.PlusA, total_sum, sum))
+        | Some total_sum, Some sum -> Some (Bound.BinOp (Binop.PlusA None, total_sum, sum))
         | Some sum, None | None, Some sum -> Some sum
         | None, None -> None
         in
@@ -923,9 +955,9 @@ module Analyzer = AbstractInterpreter.Make (CFG) (TransferFunctions)
           let binop_bound = match var_bound with
           | Bound.Max args -> (
             (* max(max(x, 0) - 1, 0) == max(x - 1, 0) *)
-            Bound.BinOp (Binop.MinusA, (List.hd_exn args), const_bound)
+            Bound.BinOp (Binop.MinusA None, (List.hd_exn args), const_bound)
           )
-          | _ -> Bound.BinOp (Binop.MinusA, var_bound, const_bound)
+          | _ -> Bound.BinOp (Binop.MinusA None, var_bound, const_bound)
           in
           Bound.Max [binop_bound], cache
         ) else if IntLit.iszero chain_value then (
@@ -933,7 +965,7 @@ module Analyzer = AbstractInterpreter.Make (CFG) (TransferFunctions)
         ) else (
           (* const > 0 => result must be positive, max function is useless *)
           let const_bound = Bound.Value (Exp.Const (Const.Cint chain_value)) in
-          let binop_bound = Bound.BinOp (Binop.PlusA, var_bound, const_bound) in
+          let binop_bound = Bound.BinOp (Binop.PlusA None, var_bound, const_bound) in
           binop_bound, cache
         )
         in
@@ -963,11 +995,11 @@ module Analyzer = AbstractInterpreter.Make (CFG) (TransferFunctions)
             let args = List.dedup_and_sort ~compare:Bound.compare args in
             let edge_bound = if Int.equal (List.length args) 1 then List.hd_exn args else Bound.Min (args) in
             if Bound.is_one edge_bound then Some max_exp, cache
-            else Some (Bound.BinOp (Binop.Mult, edge_bound, max_exp)), cache
+            else Some (Bound.BinOp (Binop.Mult None, edge_bound, max_exp)), cache
           )
         in
         let calculate_sum e1 e2 = match e1, e2 with
-        | Some e1, Some e2 -> Some (Bound.BinOp (Binop.PlusA, e1, e2))
+        | Some e1, Some e2 -> Some (Bound.BinOp (Binop.PlusA None, e1, e2))
         | Some e, None | None, Some e -> Some e
         | None, None -> None
         in
@@ -1005,12 +1037,12 @@ module Analyzer = AbstractInterpreter.Make (CFG) (TransferFunctions)
                 let var_bound, cache = variable_bound norm cache in
                 let max_arg = if IntLit.isnegative const then (
                   let const = Bound.Value (Exp.Const (Const.Cint (IntLit.neg const))) in
-                  [Bound.BinOp (Binop.MinusA, var_bound, const)]
+                  [Bound.BinOp (Binop.MinusA None, var_bound, const)]
                 ) else if IntLit.iszero const then (
                   [var_bound]
                 ) else (
                   let const = Bound.Value (Exp.Const (Const.Cint const)) in
-                  [Bound.BinOp (Binop.PlusA, var_bound, const)]
+                  [Bound.BinOp (Binop.PlusA None, var_bound, const)]
                 )
                 in
                 args @ max_arg, cache
@@ -1029,7 +1061,7 @@ module Analyzer = AbstractInterpreter.Make (CFG) (TransferFunctions)
               let var_bound = match increment_sum with
               | Some increments -> if Bound.is_zero max then (
                 increments
-              ) else Bound.BinOp (Binop.PlusA, increments, max)
+              ) else Bound.BinOp (Binop.PlusA None, increments, max)
               | None -> max
               in
               var_bound, cache
@@ -1084,7 +1116,7 @@ module Analyzer = AbstractInterpreter.Make (CFG) (TransferFunctions)
               let reset_sum, cache = calculate_reset_sum reset_chains cache in
 
               let edge_bound = match increment_sum, reset_sum with
-              | Some increments, Some resets -> Bound.BinOp (Binop.PlusA, increments, resets)
+              | Some increments, Some resets -> Bound.BinOp (Binop.PlusA None, increments, resets)
               | Some bound, None | None, Some bound -> bound
               | None, None -> Bound.Value (Exp.zero)
               in
@@ -1108,7 +1140,7 @@ module Analyzer = AbstractInterpreter.Make (CFG) (TransferFunctions)
       let final_bound, _ = DCP.EdgeSet.fold (fun edge (final_bound, cache) ->
         let edge_bound, cache = transition_bound edge cache in
         let final_bound = match final_bound with
-        | Some sum -> Bound.BinOp (Binop.PlusA, sum, edge_bound)
+        | Some sum -> Bound.BinOp (Binop.PlusA None, sum, edge_bound)
         | None -> edge_bound
         in
         Some final_bound, cache

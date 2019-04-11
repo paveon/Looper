@@ -3010,6 +3010,8 @@ and sqlite_vfs = !sqlite_vfs
 
 and sqlite_write_daemon = !sqlite_write_daemon
 
+and looper = !looper
+
 and starvation_skip_analysis = !starvation_skip_analysis
 
 and starvation_strict_mode = !starvation_strict_mode

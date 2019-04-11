@@ -761,6 +761,14 @@ OPTIONS
            Activates: Enable --loop-hoisting and disable all other checkers
            (Conversely: --no-loop-hoisting-only)           See also infer-analyze(1).
 
+       --looper
+           Activates: loop complexity analysis (Conversely: --no-looper)       
+    See also infer-analyze(1).
+
+       --looper-only
+           Activates: Enable --looper and disable all other checkers
+           (Conversely: --no-looper-only)           See also infer-analyze(1).
+
        --max-nesting int
            Level of nested procedure calls to show. Trace elements beyond the
            maximum nesting level are skipped. If omitted, all levels are
