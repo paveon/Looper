@@ -41,27 +41,27 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
       | _ -> false
     in
 
-    let is_pvar_decl_node = match ProcCFG.Node.kind node with
+    let is_decl_node = match ProcCFG.Node.kind node with
     | Procdesc.Node.Stmt_node DeclStmt -> true
     | _ -> false
     in
 
-    let rec substitute_pvars exp = match exp with
+    let rec substitute_pvars exp ident_map = match exp with
     | Exp.BinOp (op, lexp, rexp) -> (
-      let lexp = substitute_pvars lexp in
-      let rexp = substitute_pvars rexp in
+      let lexp = substitute_pvars lexp ident_map in
+      let rexp = substitute_pvars rexp ident_map in
       Exp.BinOp (op, lexp, rexp)
     )
     | Exp.UnOp (op, sub_exp, typ) -> (
-      let sub_exp = substitute_pvars sub_exp in
+      let sub_exp = substitute_pvars sub_exp ident_map in
       Exp.UnOp (op, sub_exp, typ)
     )
     | Exp.Var ident -> (
-      let referenced_pvar = Ident.Map.find ident astate.ident_map in
+      let referenced_pvar = Ident.Map.find ident ident_map in
       Exp.Lvar referenced_pvar
     )
     | Exp.Cast (_, exp) -> (
-      substitute_pvars exp
+      substitute_pvars exp ident_map
     )
     | _ -> exp
     in
@@ -82,19 +82,19 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
 
     let astate = match instr with
     | Prune (cond, loc, branch, kind) -> (
-      let pvar_condition = substitute_pvars cond in
+      let pvar_condition = substitute_pvars cond astate.ident_map in
 
       log "[PRUNE] (%a) | %a\n" Location.pp loc Exp.pp pvar_condition;
       let location_cmp : Location.t -> Location.t -> bool = fun loc_a loc_b ->
         loc_a.line > loc_b.line
       in
 
-      let lts_prune_loc = LTSLocation.Prune (kind, loc) in
-      let prune_node = DCP.Node.make lts_prune_loc in
+      let prune_node = DCP.Node.Prune (kind, loc) in
+      (* let prune_node = DCP.Node.make lts_prune_loc in *)
       let loop_prune = is_loop_prune kind in
 
       let astate = match astate.last_node with
-      | LTSLocation.Prune (kind, prune_loc) 
+      | DCP.Node.Prune (kind, prune_loc) 
       when not loop_prune && location_cmp prune_loc loc  -> (
         (* Do not create a backedge from single branch of "if" and 
          * wait for backedge from joined node *)
@@ -109,7 +109,7 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
         let rhs = astate.aggregate_join.rhs in
         let graph_nodes = DCP.NodeSet.add prune_node astate.graph_nodes in
 
-        let is_direct_backedge = LTSLocation.equal lts_prune_loc lhs || LTSLocation.equal lts_prune_loc rhs in
+        let is_direct_backedge = DCP.Node.equal prune_node lhs || DCP.Node.equal prune_node rhs in
         if is_direct_backedge then (
 
           (* log "DIRECT BACKEDGE\n"; *)
@@ -129,11 +129,11 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
           { astate with graph_edges = graph_edges; graph_nodes = graph_nodes }
         ) else (
           let is_backedge = match lhs, rhs with
-          | LTSLocation.Prune (_, lhs), LTSLocation.Prune (_, rhs) -> (
+          | DCP.Node.Prune (_, lhs), DCP.Node.Prune (_, rhs) -> (
             location_cmp lhs loc || location_cmp rhs loc
           )
-          | LTSLocation.Prune (_, lhs), _ -> location_cmp lhs loc
-          | _, LTSLocation.Prune (_, rhs) -> location_cmp rhs loc
+          | DCP.Node.Prune (_, lhs), _ -> location_cmp lhs loc
+          | _, DCP.Node.Prune (_, rhs) -> location_cmp rhs loc
           | _ -> false
           in
           (* Add all accumulated edges pointing to aggregated join node and
@@ -141,7 +141,7 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
           let edge_count = AggregateJoin.edge_count astate.aggregate_join in
           let is_empty_edge = DCP.EdgeData.equal astate.edge_data DCP.EdgeData.empty in
           let same_origin = match astate.last_node with
-          | LTSLocation.Join (lhs, rhs) -> LTSLocation.equal lhs rhs
+          | DCP.Node.Join (lhs, rhs) -> DCP.Node.equal lhs rhs
           | _ -> false
           in
           (* log "%B | %B | %B\n" (not (is_backedge)) (Int.equal edge_count 2) is_empty_edge; *)
@@ -212,68 +212,56 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
         is_loop_prune kind && branch
       )
       in
-      let astate = if loop_prune || in_loop then (
-        (* We're tracking formals which are used in
-         * conditions of loops headers or on loop paths  *)
-        let cond_formals = extract_formals pvar_condition PvarSet.empty in
-        if branch then (
-          (* Derive norm from prune condition.
-           * [x > y] -> [x - y] > 0
-           * [x >= y] -> [x - y + 1] > 0 *)
-          let normalized_condition = match prune_condition with
-          | Exp.BinOp (op, lexp, rexp) -> (
-            match op with
-            | Binop.Lt -> Exp.BinOp (Binop.Gt, rexp, lexp)
-            | Binop.Le -> Exp.BinOp (Binop.Ge, rexp, lexp)
-            | _ -> Exp.BinOp (op, lexp, rexp)
-          )
-          | _ -> prune_condition
-          in
-          match normalized_condition with
-          | Exp.BinOp (op, lexp, rexp) -> (
-            let process_gt lhs rhs =
-              let lhs_is_zero = Exp.is_zero lhs in
-              let rhs_is_zero = Exp.is_zero rhs in
-              if lhs_is_zero && rhs_is_zero then Exp.zero
-              else if lhs_is_zero then Exp.UnOp (Unop.Neg, rhs, None)
-              else if rhs_is_zero then lhs
-              else Exp.BinOp (Binop.MinusA None, lhs, rhs)
-            in
-
-            let process_op op = match op with
-              | Binop.Gt -> Some (process_gt lexp rexp)
-              | Binop.Ge -> Some (Exp.BinOp (Binop.PlusA None, (process_gt lexp rexp), Exp.one))
-              | _ -> None
-            in
-            let astate = match process_op op with
-            | Some new_norm -> (
-              if not loop_prune then (
-                (* Prune on loop path but not loop head. Norm is only potential,
-                * must be confirmed by increment/decrement on this loop path *)
-                { astate with potential_norms = Exp.Set.add new_norm astate.potential_norms; }
-              ) else (
-                { astate with initial_norms = Exp.Set.add new_norm astate.initial_norms; }
-              )
-            ) 
-            | None -> astate
-            in
-            { astate with tracked_formals = PvarSet.union astate.tracked_formals cond_formals }
-          )
-          | _ -> L.(die InternalError)"Unsupported PRUNE expression!"
-        ) else (
-          (* Remove formals of condition from false branch *)
-          { astate with
-            tracked_formals = PvarSet.diff astate.tracked_formals cond_formals;
-          }
+      let astate = if branch && (loop_prune || in_loop) then (
+        (* Derive norm from prune condition.
+         * [x > y] -> [x - y] > 0
+         * [x >= y] -> [x - y + 1] > 0 *)
+        let normalized_condition = match prune_condition with
+        | Exp.BinOp (op, lexp, rexp) -> (
+          match op with
+          | Binop.Lt -> Exp.BinOp (Binop.Gt, rexp, lexp)
+          | Binop.Le -> Exp.BinOp (Binop.Ge, rexp, lexp)
+          | _ -> Exp.BinOp (op, lexp, rexp)
         )
+        | _ -> prune_condition
+        in
+        match normalized_condition with
+        | Exp.BinOp (op, lexp, rexp) -> (
+          let process_gt lhs rhs =
+            let lhs_is_zero = Exp.is_zero lhs in
+            let rhs_is_zero = Exp.is_zero rhs in
+            if lhs_is_zero && rhs_is_zero then Exp.zero
+            else if lhs_is_zero then Exp.UnOp (Unop.Neg, rhs, None)
+            else if rhs_is_zero then lhs
+            else Exp.BinOp (Binop.MinusA None, lhs, rhs)
+          in
+
+          let process_op op = match op with
+            | Binop.Gt -> Some (process_gt lexp rexp)
+            | Binop.Ge -> Some (Exp.BinOp (Binop.PlusA None, (process_gt lexp rexp), Exp.one))
+            | _ -> None
+          in
+          match process_op op with
+          | Some new_norm -> (
+            if not loop_prune then (
+              (* Prune on loop path but not loop head. Norm is only potential,
+              * must be confirmed by increment/decrement on this loop path *)
+              { astate with potential_norms = Exp.Set.add new_norm astate.potential_norms; }
+            ) else (
+              { astate with initial_norms = Exp.Set.add new_norm astate.initial_norms; }
+            )
+          ) 
+          | None -> astate
+        )
+        | _ -> L.(die InternalError)"Unsupported PRUNE expression!"
       ) else (
         astate
       )
       in
-      let branching_path = if loop_prune && not branch then (
+      (* let branching_path = if loop_prune && not branch then (
         astate.branchingPath
       ) else astate.branchingPath @ [(kind, branch, loc)] 
-      in
+      in *)
       let edge_data = DCP.EdgeData.add_condition DCP.EdgeData.empty prune_condition in
       { astate with
         branchingPath = astate.branchingPath @ [(kind, branch, loc)];
@@ -283,57 +271,61 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
         aggregate_join = AggregateJoin.initial;
       }
     )
-    | Metadata metadata -> (match metadata with
+    | Metadata metadata -> (
+      log "[METADATA]\n";
+      if is_decl_node then log "  Decl node\n";
+      if is_start_node then (
+        let instrs = CFG.instrs node in
+        log "  Start node\n";
+        let count = Instrs.count instrs in
+        log "  Instr count: %d\n" count;
+      );
+
+      let astate = if is_exit_node then (
+        log "  Exit node\n";
+        let exit_node = DCP.Node.Exit in
+        let path_end = List.last astate.branchingPath in
+        let edge_data = DCP.EdgeData.set_path_end astate.edge_data path_end in
+        let new_lts_edge = DCP.E.create astate.last_node edge_data exit_node in
+        let graph_edges = DCP.EdgeSet.add new_lts_edge astate.graph_edges in
+        { astate with
+          graph_nodes = DCP.NodeSet.add exit_node astate.graph_nodes;
+          graph_edges = DCP.EdgeSet.union astate.aggregate_join.edges graph_edges;
+        }
+      ) else (
+        astate
+      )
+      in
+
+      match metadata with
       | Nullify (_, loc) -> (
-        log "[NULLIFY] %a\n" Location.pp loc;
+        log "  [NULLIFY] %a\n" Location.pp loc;
         astate
       )
       | Abstract loc -> (
-        log "[ABSTRACT] %a\n" Location.pp loc;
+        log "  [ABSTRACT] %a\n" Location.pp loc;
         astate
       )
       | ExitScope (_, loc) -> (
-        log "[ExitScope] %a\n" Location.pp loc;
-
-        if is_pvar_decl_node then log "  Decl node\n";
-        if is_start_node then (
-          let instrs = CFG.instrs node in
-          log "  Start node\n";
-          let count = Instrs.count instrs in
-          log "  Instr count: %d\n" count;
-        );
-
-        if is_exit_node then (
-          log "  Exit node\n";
-          let exit_node = DCP.Node.make LTSLocation.Exit in
-          let path_end = List.last astate.branchingPath in
-          let edge_data = DCP.EdgeData.set_path_end astate.edge_data path_end in
-          let new_lts_edge = DCP.E.create astate.last_node edge_data exit_node in
-          let graph_edges = DCP.EdgeSet.add new_lts_edge astate.graph_edges in
-          { astate with
-            graph_nodes = DCP.NodeSet.add exit_node astate.graph_nodes;
-            graph_edges = DCP.EdgeSet.union astate.aggregate_join.edges graph_edges;
-          }
-        ) else (
-          astate
-        )
-      )
-      | Skip -> (
-        log "[Skip]\n"; 
+        log "  [ExitScope] %a\n" Location.pp loc;
         astate
       )
-      | VariableLifetimeBegins (_, _, _) -> (
-        log "[VariableLifetimeBegins]\n";
+      | Skip -> (
+        log "  [Skip]\n"; 
+        astate
+      )
+      | VariableLifetimeBegins (pvar, _, _) -> (
+        log "  [DECLARE] %a\n" Pvar.pp_value pvar;
         astate
       )
     )
-    | Store (Exp.Lvar assigned, _expType, rexp, loc) -> (
-      log "[STORE] (%a) | %a = %a | %B\n"
-      Location.pp loc Pvar.pp_value assigned Exp.pp rexp is_pvar_decl_node;
-
+    | Store (Exp.Lvar assigned, _, rexp, loc) -> (
+      let pvar_rexp = substitute_pvars rexp astate.ident_map in
+      log "[STORE] (%a) | %a = %a | %B\n" Location.pp loc Pvar.pp_value assigned 
+      Exp.pp pvar_rexp is_decl_node;
+  
       (* Substitute rexp based on previous assignments,
-        * eg. [beg = i; end = beg;] becomes [beg = i; end = i] *)
-      let pvar_rexp = substitute_pvars rexp in
+       * eg. [beg = i; end = beg;] becomes [beg = i; end = i] *)
       let pvar_rexp = match pvar_rexp with
       | Exp.BinOp (Binop.PlusA _, Exp.Lvar lexp, Exp.Const (Const.Cint c1)) -> (
         (* [BINOP] PVAR + CONST *)
@@ -368,18 +360,10 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
       )
       | _ -> astate
       in
-
-      (* Check if set already contains assignment with specified
-        * lhs and replace it with updated formulas if so. Needed
-        * when one edge contains multiple assignments to same variable *)
       let edge_data = DCP.EdgeData.add_assignment astate.edge_data assigned pvar_rexp in
       let astate = {astate with edge_data = edge_data} in
-      let locals = if is_pvar_decl_node then (
-        PvarSet.add assigned astate.locals
-      ) else (
-        astate.locals
-      )
-      in
+      let locals = if is_decl_node then PvarSet.add assigned astate.locals
+      else astate.locals in
       { astate with
         locals = locals;
         edge_data = edge_data;
@@ -398,9 +382,9 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
       in
       { astate with ident_map = ident_map }
     )
-    | Call (_retValue, Const Cfun callee_pname, _actuals, loc, _) -> (
-      let _fun_name = Typ.Procname.to_simplified_string callee_pname in
-      log "[CALL] (%a)\n" Location.pp loc;
+    | Call (_, callee_pname, _, loc, _) -> (
+      (* let _fun_name = Typ.Procname.to_simplified_string callee_pname in *)
+      log "[CALL] (%a) | %a\n" Location.pp loc Exp.pp callee_pname;
       astate
     )
     | _ -> (
@@ -419,7 +403,7 @@ module DCP_SCC = Graph.Components.Make(Domain.DCP)
 module VFG_SCC = Graph.Components.Make(Domain.VFG)
 
 (* module Analyzer = AbstractInterpreter.Make (CFG) (TransferFunctions) *)
-module Analyzer = AbstractInterpreter.MakeRPO (TransferFunctions (CFG))
+module Analyzer = AbstractInterpreter.MakeWTO (TransferFunctions (CFG))
   module VFG_Map = Caml.Map.Make(struct
     type nonrec t = Domain.DCP.Node.t * Exp.t
     [@@deriving compare]
@@ -477,8 +461,8 @@ module Analyzer = AbstractInterpreter.MakeRPO (TransferFunctions (CFG))
     in
     let extras = (locals, formals) in
     let proc_data = ProcData.make proc_desc tenv extras in
-    let begin_loc = LTSLocation.Start beginLoc in
-    let entry_point = DCP.Node.make begin_loc in
+    (* let begin_loc = DCP.Node.Start beginLoc in *)
+    let entry_point = DCP.Node.Start beginLoc in
     let initial_state = initial entry_point in
     match Analyzer.compute_post proc_data ~initial:initial_state with
     | Some post -> (
@@ -490,7 +474,7 @@ module Analyzer = AbstractInterpreter.MakeRPO (TransferFunctions (CFG))
       (* Draw dot graph, use nodes and edges stored in post state *)
       let lts = DCP.create () in
       DCP.NodeSet.iter (fun node ->
-        log "%a\n" LTSLocation.pp node;
+        log "%a\n" DCP.Node.pp node;
         DCP.add_vertex lts node;
       ) post.graph_nodes;
       DCP.EdgeSet.iter (fun edge ->
@@ -572,7 +556,7 @@ module Analyzer = AbstractInterpreter.MakeRPO (TransferFunctions (CFG))
           let node = DCP.NodeSet.min_elt nodes in
           let nodes = DCP.NodeSet.remove node nodes in
           match node with
-          | LTSLocation.Prune (kind, loc) when is_loop_prune kind -> (
+          | DCP.Node.Prune (kind, loc) when is_loop_prune kind -> (
             let incoming_edges = DCP.pred_e dcp node in
             let guards = get_shared_guards Exp.Set.empty incoming_edges in
             let out_edges = DCP.succ_e dcp node in
@@ -584,7 +568,6 @@ module Analyzer = AbstractInterpreter.MakeRPO (TransferFunctions (CFG))
             in
             let (src, true_branch, dst) = List.hd_exn true_branch in
             true_branch.guards <- Exp.Set.union guards true_branch.guards;
-            log "SRC: %a ------------ DST: %a\n" LTSLocation.pp src LTSLocation.pp dst;
             if not (DCP.Node.equal src dst) then propagate_guards (DCP.NodeSet.add dst nodes);
             let (_, backedge, _) = List.find_exn incoming_edges ~f:(fun (_, edge_data, _) -> edge_data.backedge) in
             let backedge_guards = DCP.EdgeData.active_guards backedge in
@@ -654,10 +637,6 @@ module Analyzer = AbstractInterpreter.MakeRPO (TransferFunctions (CFG))
       )
       in
       to_natural_numbers post.graph_edges;
-
-      (* let file = Out_channel.create "DCP.dot" in
-      DCPDot.output_graph file dcp;
-      Out_channel.close file; *)
 
       (* Create variable flow graph which is necessary for
        * DCP preprocessing which renames variables and consequently

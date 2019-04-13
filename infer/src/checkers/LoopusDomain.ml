@@ -138,39 +138,6 @@ let pp_prune_info fmt (kind, branch, loc) =
   let kind = Sil.if_kind_to_string kind in
   F.fprintf fmt "%s[%s](%B)" kind (Location.to_string loc) branch
 
-
-module LTSLocation = struct
-  type t = 
-    | Prune of (Sil.if_kind * Location.t)
-    | Start of Location.t
-    | Join of (t * t)
-    | Exit
-    | Dummy
-  [@@deriving compare]
-
-  let is_join_loc : t -> bool = fun loc -> 
-    match loc with
-    | Join _ -> true
-    | _ -> false
-
-  let rec to_string loc = match loc with
-    | Prune (kind, loc) -> F.sprintf "%s [%s]" (Sil.if_kind_to_string kind) (Location.to_string loc)
-    | Start loc -> F.sprintf "Begin [%s]" (Location.to_string loc)
-    | Join (lhs, rhs) -> F.sprintf "Join(%s, %s)" (to_string lhs) (to_string rhs)
-    | Exit -> F.sprintf "Exit"
-    | Dummy -> F.sprintf "Dummy"
-
-  let pp fmt loc = F.fprintf fmt "%s" (to_string loc)
-
-  let equal = [%compare.equal: t]
-
-  module Map = Caml.Map.Make(struct
-    type nonrec t = t
-    let compare = compare
-  end)
-end
-
-
 let rec exp_to_z3_expr smt_ctx exp = 
   let int_sort = Z3.Arithmetic.Integer.mk_sort smt_ctx in
   match exp with
@@ -282,13 +249,34 @@ end
 (* Difference Constraint Program *)
 module DCP = struct
   module Node = struct
-    type t = LTSLocation.t [@@deriving compare]
+    type t = 
+      | Prune of (Sil.if_kind * Location.t)
+      | Start of Location.t
+      | Join of (t * t)
+      | Exit
+      | Dummy
+    [@@deriving compare]
+
     let equal = [%compare.equal: t]
     let hash = Hashtbl.hash
 
-    let is_join : t -> bool = fun node -> LTSLocation.is_join_loc node
-    let make : LTSLocation.t -> t = fun loc -> loc
-    let pp fmt node = F.fprintf fmt "%a" LTSLocation.pp node
+    let is_join : t -> bool = function Join _ -> true | _ -> false
+
+    let rec to_string loc = match loc with
+      | Prune (kind, loc) -> F.sprintf "%s [%s]" (Sil.if_kind_to_string kind) (Location.to_string loc)
+      | Start loc -> F.sprintf "Begin [%s]" (Location.to_string loc)
+      | Join (lhs, rhs) -> F.sprintf "Join(%s, %s)" (to_string lhs) (to_string rhs)
+      | Exit -> F.sprintf "Exit"
+      | Dummy -> F.sprintf "Dummy"
+
+    let pp fmt loc = F.fprintf fmt "%s" (to_string loc)
+
+    let equal = [%compare.equal: t]
+
+    module Map = Caml.Map.Make(struct
+      type nonrec t = t
+      let compare = compare
+    end)
   end
 
   module EdgeData = struct
@@ -634,7 +622,7 @@ module DotConfig = struct
     | None -> ""
 
   let vertex_attributes : Node.t -> 'a list = fun node -> (
-    [ `Shape `Box; `Label (LTSLocation.to_string node) ]
+    [ `Shape `Box; `Label (Node.to_string node) ]
   )
   let vertex_name : Node.t -> string = fun vertex -> string_of_int (Node.hash vertex)
 end
@@ -962,14 +950,14 @@ module RG_Dot = Graph.Graphviz.Dot(RG)
 
 module AggregateJoin = struct
   type t = {
-    rhs: LTSLocation.t;
-    lhs: LTSLocation.t;
+    rhs: DCP.Node.t;
+    lhs: DCP.Node.t;
     edges: DCP.EdgeSet.t;
   } [@@deriving compare]
 
   let initial : t = {
-    lhs = LTSLocation.Dummy;
-    rhs = LTSLocation.Dummy;
+    lhs = DCP.Node.Dummy;
+    rhs = DCP.Node.Dummy;
     edges = DCP.EdgeSet.empty;
   }
 
@@ -978,20 +966,17 @@ module AggregateJoin = struct
   let add_edge : t -> DCP.E.t -> t = fun info edge -> 
     { info with edges = DCP.EdgeSet.add edge info.edges } 
 
-  let make : LTSLocation.t -> LTSLocation.t -> t = fun rhs lhs ->
+  let make : DCP.Node.t -> DCP.Node.t -> t = fun rhs lhs ->
     { lhs = lhs; rhs = rhs; edges = DCP.EdgeSet.empty; }
 end
 
 
 type t = {
-  test: bool;
-
   last_node: DCP.Node.t;
   branchingPath: prune_info list;
 
   potential_norms: Exp.Set.t;
   initial_norms: Exp.Set.t;
-  tracked_formals: PvarSet.t;
   locals: PvarSet.t;
   ident_map: Pvar.t Ident.Map.t;
   modified_pvars: PvarSet.t;
@@ -1003,14 +988,11 @@ type t = {
 
 let initial : DCP.Node.t -> t = fun entry_point -> (
   {
-    test = false;
-
     last_node = entry_point;
     branchingPath = [];
 
     potential_norms = Exp.Set.empty;
     initial_norms = Exp.Set.empty;
-    tracked_formals = PvarSet.empty;
     locals = PvarSet.empty;
     ident_map = Ident.Map.empty;
     modified_pvars = PvarSet.empty;
@@ -1031,11 +1013,8 @@ let norm_is_variable : Exp.t -> Typ.t PvarMap.t -> bool = fun norm formals ->
   in
   traverse_exp norm
 
-let get_tracked_pvars : t -> PvarSet.t = fun astate ->
-  PvarSet.union astate.locals astate.tracked_formals
-
 let get_unmodified_pvars : t -> PvarSet.t = fun astate ->
-  PvarSet.diff (get_tracked_pvars astate) astate.modified_pvars
+  PvarSet.diff astate.locals astate.modified_pvars
 
 let is_loop_prune : Sil.if_kind -> bool = function
   | Ik_dowhile | Ik_for | Ik_while -> true
@@ -1066,72 +1045,54 @@ let ( <= ) ~lhs ~rhs =
 
 
 let join : t -> t -> t = fun lhs rhs ->
-  F.printf "\n[JOIN] %a | %a\n" LTSLocation.pp lhs.last_node LTSLocation.pp rhs.last_node;
+  F.printf "\n[JOIN] %a | %a\n" DCP.Node.pp lhs.last_node DCP.Node.pp rhs.last_node;
 
   (* Creates common path prefix of provided paths *)
-  let rec common_path_prefix = fun (prefix, _) pathA pathB ->
+  let rec common_path_prefix = fun prefix pathA pathB ->
     match (pathA, pathB) with
     | headA :: tailA, headB :: tailB when Int.equal (compare_prune_info headA headB) 0 -> 
-      common_path_prefix (headA :: prefix, false) tailA tailB
-    | _ :: _, [] | [], _ :: _ -> 
-      (prefix, true)
-    | _, _ ->
-      (prefix, false)
+      common_path_prefix (headA :: prefix) tailA tailB
+    | _, _ -> prefix
   in
 
   let lhs_path = lhs.branchingPath in
   let rhs_path = rhs.branchingPath in
-  let (path_prefix_rev, _) = common_path_prefix ([], false) lhs_path rhs_path in
+  let path_prefix_rev = common_path_prefix [] lhs_path rhs_path in
   let path_prefix = List.rev path_prefix_rev in
   F.printf "  [NEW] Path prefix: %a\n" pp_path path_prefix;
 
-  let join_location = LTSLocation.Join (lhs.last_node, rhs.last_node) in
+  let join_node = DCP.Node.Join (lhs.last_node, rhs.last_node) in
 
-  let ident_map = Ident.Map.union (fun _key a b ->
+  let ident_map = Ident.Map.union (fun _ a b ->
     if not (Pvar.equal a b) then 
       L.(die InternalError)"One SIL identificator maps to multiple Pvars!" 
-    else 
-      Some a
+    else Some a
   ) lhs.ident_map rhs.ident_map 
   in
   
   let astate = { lhs with
-    test = false;
     branchingPath = path_prefix;
     ident_map = ident_map;
-
+    edge_data = DCP.EdgeData.empty;
     initial_norms = Exp.Set.union lhs.initial_norms rhs.initial_norms;
-    tracked_formals = PvarSet.union lhs.tracked_formals rhs.tracked_formals;
     locals = PvarSet.inter lhs.locals rhs.locals;
+    modified_pvars = PvarSet.empty;
     graph_nodes = DCP.NodeSet.union lhs.graph_nodes rhs.graph_nodes;
     graph_edges = DCP.EdgeSet.union lhs.graph_edges rhs.graph_edges;
   }
   in
-
-  (* let is_consecutive_join = GraphNode.is_join lhs.last_node || GraphNode.is_join rhs.last_node in *)
-  
-  (* let is_consecutive_join = (GraphNode.is_join lhs.last_node && not (rhs.test))
-   || (GraphNode.is_join rhs.last_node && not (lhs.test)) in *)
-
   let lhs_empty = DCP.EdgeData.equal lhs.edge_data DCP.EdgeData.empty in
   let rhs_empty = DCP.EdgeData.equal rhs.edge_data DCP.EdgeData.empty in
 
   let is_consecutive_join = (DCP.Node.is_join lhs.last_node && not (equal_paths path_prefix lhs_path))
    || (DCP.Node.is_join rhs.last_node && not (equal_paths path_prefix rhs_path)) in
 
-  (* let is_consecutive_join = (GraphNode.is_join lhs.last_node || GraphNode.is_join rhs.last_node) &&
-  not (LTS.EdgeSet.exists (fun (src, _, dst) -> 
-    (GraphNode.equal src lhs.last_node && GraphNode.equal dst rhs.last_node) ||
-    (GraphNode.equal src rhs.last_node && GraphNode.equal dst lhs.last_node)
-  ) astate.graph_edges)
-  in *)
-
   let astate = if is_consecutive_join then (
     F.printf "-----------------------FAIL\n";
     (* Consecutive join, merge join nodes and possibly add new edge to aggregated join node *)
     let other_state, join_state = if DCP.Node.is_join lhs.last_node then rhs, lhs else lhs, rhs in
     let aggregate_join, last_node = match other_state.last_node with
-    | LTSLocation.Start _ -> (
+    | DCP.Node.Start _ -> (
       (* Don't add new edge if it's from the beginning location *)
       join_state.aggregate_join, join_state.last_node
     )
@@ -1149,62 +1110,44 @@ let join : t -> t -> t = fun lhs rhs ->
         let edge_data = DCP.EdgeData.set_path_end edge_data (List.last other_state.branchingPath) in
         let lts_edge = DCP.E.create other_state.last_node edge_data join_state.last_node in
         let aggregate_join = AggregateJoin.add_edge join_state.aggregate_join lts_edge in
-        aggregate_join, LTSLocation.Join (join_state.last_node, other_state.last_node)
+        aggregate_join, DCP.Node.Join (join_state.last_node, other_state.last_node)
       )
     )
     in
     { astate with 
       edge_data = join_state.edge_data;
-      modified_pvars = join_state.modified_pvars;
-      (* last_node = last_node;  *)
       last_node = join_state.last_node;
       aggregate_join = aggregate_join;
+      (* last_node = last_node;  *)
     }
   ) else (
     (* First join in a row, create new join node and join info *)
-    let astate = { astate with
-      edge_data = DCP.EdgeData.empty;
-      modified_pvars = PvarSet.empty
-    }
-    in
     match lhs.last_node, rhs.last_node with
-    | LTSLocation.Prune (kind, _), LTSLocation.Start _ when not (is_loop_prune kind) -> (
+    | DCP.Node.Prune (kind, _), DCP.Node.Start _ when not (is_loop_prune kind) -> (
       { astate with last_node = lhs.last_node }
     )
-    | LTSLocation.Start _, LTSLocation.Prune (kind, _) when not (is_loop_prune kind) -> (
+    | DCP.Node.Start _, DCP.Node.Prune (kind, _) when not (is_loop_prune kind) -> (
       { astate with last_node = rhs.last_node }
     )
     | _, _ -> (
-      (* let join_node = DCP.Node.make join_location in *)
       let aggregate_join = AggregateJoin.make lhs.last_node rhs.last_node in
-      let tracked_pvars = get_tracked_pvars astate in
-      (* let add_edge aggregate state = match state.last_node with
-      | LTSLocation.Start _ -> aggregate
-      | _ -> (
-        let unmodified = PvarSet.diff tracked_pvars state.modified_pvars in
-        let edge_data = DCP.EdgeData.add_invariants state.edge_data unmodified in
-        let edge_data = DCP.EdgeData.set_path_end edge_data (List.last state.branchingPath) in
-        let lts_edge = DCP.E.create state.last_node edge_data join_node in
-        AggregateJoin.add_edge aggregate lts_edge
-      )
-      in *)
       let add_edge aggregate state = 
         if equal_paths path_prefix state.branchingPath then (
           aggregate
         ) else (
-          let unmodified = PvarSet.diff tracked_pvars state.modified_pvars in
+          let unmodified = PvarSet.diff astate.locals state.modified_pvars in
           let edge_data = DCP.EdgeData.add_invariants state.edge_data unmodified in
           let edge_data = DCP.EdgeData.set_path_end edge_data (List.last state.branchingPath) in
-          let lts_edge = DCP.E.create state.last_node edge_data join_location in
+          let lts_edge = DCP.E.create state.last_node edge_data join_node in
           AggregateJoin.add_edge aggregate lts_edge
         )
       in
       let aggregate_join = add_edge aggregate_join lhs in
       let aggregate_join = add_edge aggregate_join rhs in
       { astate with 
-        last_node = join_location; 
+        last_node = join_node; 
         aggregate_join = aggregate_join;
-        graph_nodes = DCP.NodeSet.add join_location astate.graph_nodes;
+        graph_nodes = DCP.NodeSet.add join_node astate.graph_nodes;
       }
     )
   )
@@ -1217,8 +1160,8 @@ let widen ~prev ~next ~num_iters:_ =
 let pp fmt astate =
   DCP.EdgeSet.iter (fun (src, edge_data, dst) -> 
     F.fprintf fmt "(%a) -->  (%a) [%a]\n" 
-    LTSLocation.pp src
-    LTSLocation.pp dst 
+    DCP.Node.pp src
+    DCP.Node.pp dst 
     PvarSet.pp (DCP.EdgeData.modified_pvars edge_data)
   ) astate.graph_edges
 
