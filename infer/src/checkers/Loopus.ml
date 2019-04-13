@@ -94,32 +94,16 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
       let loop_prune = is_loop_prune kind in
 
       let astate = match astate.last_node with
-      | DCP.Node.Prune (kind, prune_loc) 
-      when not loop_prune && location_cmp prune_loc loc  -> (
-        (* Do not create a backedge from single branch of "if" and 
-         * wait for backedge from joined node *)
-
-        log "#####################################################\n";
-
-        astate
-      )
-      | _ -> (
+      | DCP.Node.Join (lhs, rhs) -> (
         let edge_data = DCP.EdgeData.add_invariants astate.edge_data (get_unmodified_pvars astate) in
-        let lhs = astate.aggregate_join.lhs in
-        let rhs = astate.aggregate_join.rhs in
         let graph_nodes = DCP.NodeSet.add prune_node astate.graph_nodes in
 
         let is_direct_backedge = DCP.Node.equal prune_node lhs || DCP.Node.equal prune_node rhs in
         if is_direct_backedge then (
-
-          (* log "DIRECT BACKEDGE\n"; *)
-
           (* Discard join node and all edges poiting to it and instead make
             * one direct backedge with variables modified inside the loop *)
-          let join_edges =  astate.aggregate_join.edges in
-          let src, edge_data, _ = List.find_exn (DCP.EdgeSet.elements join_edges) ~f:(fun edge ->
-            let backedge_origin = DCP.E.src edge in
-            DCP.Node.equal backedge_origin prune_node
+          let src, edge_data, _ = List.find_exn (DCP.EdgeSet.elements astate.incoming_edges) ~f:(fun edge ->
+            DCP.Node.equal (DCP.E.src edge) prune_node
           )
           in
           let edge_data = DCP.EdgeData.set_backedge edge_data in
@@ -138,23 +122,18 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
           in
           (* Add all accumulated edges pointing to aggregated join node and
             * new edge pointing from aggregated join node to this prune node *)
-          let edge_count = AggregateJoin.edge_count astate.aggregate_join in
+          let edge_count = DCP.EdgeSet.cardinal astate.incoming_edges in
           let is_empty_edge = DCP.EdgeData.equal astate.edge_data DCP.EdgeData.empty in
           let same_origin = match astate.last_node with
           | DCP.Node.Join (lhs, rhs) -> DCP.Node.equal lhs rhs
           | _ -> false
           in
-          (* log "%B | %B | %B\n" (not (is_backedge)) (Int.equal edge_count 2) is_empty_edge; *)
-
           if not (loop_prune) && same_origin && is_empty_edge then (
             (* LTS simplification, skip simple JOIN node and redirect edges pointing to it *)
             let graph_edges = DCP.EdgeSet.map (fun (src, data, _) ->
               (src, data, prune_node)
-            ) astate.aggregate_join.edges
+            ) astate.incoming_edges
             in
-
-            (* log "---------------------------------------REMOVING: %a\n" LTSLocation.pp astate.last_node; *)
-
             let graph_nodes = DCP.NodeSet.remove astate.last_node graph_nodes in
             let graph_edges = (DCP.EdgeSet.union astate.graph_edges graph_edges) in
             { astate with graph_edges = graph_edges; graph_nodes = graph_nodes }
@@ -164,7 +143,7 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
             let graph_edges = DCP.EdgeSet.map (fun (src, edge_data, _) ->
               let edge_data = if is_backedge then DCP.EdgeData.set_backedge edge_data else edge_data in
               (src, edge_data, prune_node)
-            ) astate.aggregate_join.edges
+            ) astate.incoming_edges
             in
             let graph_nodes = DCP.NodeSet.remove astate.last_node graph_nodes in
             let graph_edges = (DCP.EdgeSet.union astate.graph_edges graph_edges) in
@@ -176,10 +155,29 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
             let edge_data = if is_backedge then DCP.EdgeData.set_backedge edge_data else edge_data in
             let new_lts_edge = DCP.E.create astate.last_node edge_data prune_node in
             let graph_edges = DCP.EdgeSet.add new_lts_edge astate.graph_edges in
-            let graph_edges = DCP.EdgeSet.union astate.aggregate_join.edges graph_edges in
+            let graph_edges = DCP.EdgeSet.union astate.incoming_edges graph_edges in
             { astate with graph_edges = graph_edges; graph_nodes = graph_nodes }
           )
         )
+      )
+      | DCP.Node.Prune (_, last_loc) | DCP.Node.Start last_loc -> (
+        if not loop_prune && location_cmp last_loc loc then (
+          (* ----Does not seem to occur in current version of Infer----
+           * Do not create a backedge from single branch of "if" and 
+           * wait for backedge from joined node *)
+          assert(false)
+        ) else (
+          let path_end = List.last astate.branchingPath in
+          let graph_nodes = DCP.NodeSet.add prune_node astate.graph_nodes in
+          let edge_data = DCP.EdgeData.add_invariants astate.edge_data (get_unmodified_pvars astate) in
+          let edge_data = DCP.EdgeData.set_path_end edge_data path_end in
+          let new_lts_edge = DCP.E.create astate.last_node edge_data prune_node in
+          let graph_edges = DCP.EdgeSet.add new_lts_edge astate.graph_edges in
+          { astate with graph_edges = graph_edges; graph_nodes = graph_nodes } 
+        )
+      )
+      | DCP.Node.Exit -> (
+        assert(false)
       )
       in
 
@@ -258,17 +256,13 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
         astate
       )
       in
-      (* let branching_path = if loop_prune && not branch then (
-        astate.branchingPath
-      ) else astate.branchingPath @ [(kind, branch, loc)] 
-      in *)
       let edge_data = DCP.EdgeData.add_condition DCP.EdgeData.empty prune_condition in
       { astate with
         branchingPath = astate.branchingPath @ [(kind, branch, loc)];
         modified_pvars = PvarSet.empty;
         edge_data = edge_data;
         last_node = prune_node;
-        aggregate_join = AggregateJoin.initial;
+        incoming_edges = DCP.EdgeSet.empty;
       }
     )
     | Metadata metadata -> (
@@ -290,7 +284,7 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
         let graph_edges = DCP.EdgeSet.add new_lts_edge astate.graph_edges in
         { astate with
           graph_nodes = DCP.NodeSet.add exit_node astate.graph_nodes;
-          graph_edges = DCP.EdgeSet.union astate.aggregate_join.edges graph_edges;
+          graph_edges = DCP.EdgeSet.union astate.incoming_edges graph_edges;
         }
       ) else (
         astate

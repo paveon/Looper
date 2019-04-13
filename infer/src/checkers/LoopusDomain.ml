@@ -254,7 +254,6 @@ module DCP = struct
       | Start of Location.t
       | Join of (t * t)
       | Exit
-      | Dummy
     [@@deriving compare]
 
     let equal = [%compare.equal: t]
@@ -267,7 +266,6 @@ module DCP = struct
       | Start loc -> F.sprintf "Begin [%s]" (Location.to_string loc)
       | Join (lhs, rhs) -> F.sprintf "Join(%s, %s)" (to_string lhs) (to_string rhs)
       | Exit -> F.sprintf "Exit"
-      | Dummy -> F.sprintf "Dummy"
 
     let pp fmt loc = F.fprintf fmt "%s" (to_string loc)
 
@@ -948,29 +946,6 @@ end
 module RG_Dot = Graph.Graphviz.Dot(RG)
 
 
-module AggregateJoin = struct
-  type t = {
-    rhs: DCP.Node.t;
-    lhs: DCP.Node.t;
-    edges: DCP.EdgeSet.t;
-  } [@@deriving compare]
-
-  let initial : t = {
-    lhs = DCP.Node.Dummy;
-    rhs = DCP.Node.Dummy;
-    edges = DCP.EdgeSet.empty;
-  }
-
-  let edge_count : t -> int = fun node -> DCP.EdgeSet.cardinal node.edges
-
-  let add_edge : t -> DCP.E.t -> t = fun info edge -> 
-    { info with edges = DCP.EdgeSet.add edge info.edges } 
-
-  let make : DCP.Node.t -> DCP.Node.t -> t = fun rhs lhs ->
-    { lhs = lhs; rhs = rhs; edges = DCP.EdgeSet.empty; }
-end
-
-
 type t = {
   last_node: DCP.Node.t;
   branchingPath: prune_info list;
@@ -983,7 +958,7 @@ type t = {
   edge_data: DCP.EdgeData.t;
   graph_nodes: DCP.NodeSet.t;
   graph_edges: DCP.EdgeSet.t;
-  aggregate_join: AggregateJoin.t;
+  incoming_edges: DCP.EdgeSet.t;
 }
 
 let initial : DCP.Node.t -> t = fun entry_point -> (
@@ -999,7 +974,7 @@ let initial : DCP.Node.t -> t = fun entry_point -> (
     edge_data = DCP.EdgeData.empty;
     graph_nodes = DCP.NodeSet.add entry_point DCP.NodeSet.empty;
     graph_edges = DCP.EdgeSet.empty;
-    aggregate_join = AggregateJoin.initial;
+    incoming_edges = DCP.EdgeSet.empty;
   }
 )
 
@@ -1091,17 +1066,17 @@ let join : t -> t -> t = fun lhs rhs ->
     F.printf "-----------------------FAIL\n";
     (* Consecutive join, merge join nodes and possibly add new edge to aggregated join node *)
     let other_state, join_state = if DCP.Node.is_join lhs.last_node then rhs, lhs else lhs, rhs in
-    let aggregate_join, last_node = match other_state.last_node with
+    let incoming_edges, last_node = match other_state.last_node with
     | DCP.Node.Start _ -> (
       (* Don't add new edge if it's from the beginning location *)
-      join_state.aggregate_join, join_state.last_node
+      join_state.incoming_edges, join_state.last_node
     )
     | _ -> (
       if equal_paths path_prefix other_state.branchingPath then (
         (* Heuristic: ignore edge from previous location if this is a "backedge" join which 
          * joins state from inside of the loop with outside state denoted by prune location before loop prune *)
         F.printf "-----------------------BACKEDGE\n";
-        join_state.aggregate_join, join_state.last_node
+        join_state.incoming_edges, join_state.last_node
       ) else (
         (* Add edge from non-join node to current set of edges pointing to aggregated join node *)
         F.printf "-----------------------ADD EDGE\n";
@@ -1109,15 +1084,15 @@ let join : t -> t -> t = fun lhs rhs ->
         let edge_data = DCP.EdgeData.add_invariants other_state.edge_data unmodified in
         let edge_data = DCP.EdgeData.set_path_end edge_data (List.last other_state.branchingPath) in
         let lts_edge = DCP.E.create other_state.last_node edge_data join_state.last_node in
-        let aggregate_join = AggregateJoin.add_edge join_state.aggregate_join lts_edge in
-        aggregate_join, DCP.Node.Join (join_state.last_node, other_state.last_node)
+        let edges = DCP.EdgeSet.add lts_edge join_state.incoming_edges in
+        edges, DCP.Node.Join (join_state.last_node, other_state.last_node)
       )
     )
     in
     { astate with 
       edge_data = join_state.edge_data;
       last_node = join_state.last_node;
-      aggregate_join = aggregate_join;
+      incoming_edges = incoming_edges;
       (* last_node = last_node;  *)
     }
   ) else (
@@ -1130,23 +1105,22 @@ let join : t -> t -> t = fun lhs rhs ->
       { astate with last_node = rhs.last_node }
     )
     | _, _ -> (
-      let aggregate_join = AggregateJoin.make lhs.last_node rhs.last_node in
-      let add_edge aggregate state = 
+      let add_edge incoming_edges state = 
         if equal_paths path_prefix state.branchingPath then (
-          aggregate
+          incoming_edges
         ) else (
           let unmodified = PvarSet.diff astate.locals state.modified_pvars in
           let edge_data = DCP.EdgeData.add_invariants state.edge_data unmodified in
           let edge_data = DCP.EdgeData.set_path_end edge_data (List.last state.branchingPath) in
           let lts_edge = DCP.E.create state.last_node edge_data join_node in
-          AggregateJoin.add_edge aggregate lts_edge
+          DCP.EdgeSet.add lts_edge incoming_edges
         )
       in
-      let aggregate_join = add_edge aggregate_join lhs in
-      let aggregate_join = add_edge aggregate_join rhs in
+      let incoming = add_edge DCP.EdgeSet.empty lhs in
+      let incoming = add_edge incoming rhs in
       { astate with 
         last_node = join_node; 
-        aggregate_join = aggregate_join;
+        incoming_edges = incoming;
         graph_nodes = DCP.NodeSet.add join_node astate.graph_nodes;
       }
     )
