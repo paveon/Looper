@@ -125,18 +125,47 @@ module DC = struct
   end
 end
 
+let is_loop_prune : Sil.if_kind -> bool = function
+  | Ik_dowhile | Ik_for | Ik_while -> true
+  | _ -> false
 
-type prune_info = (Sil.if_kind * bool * Location.t)
-[@@deriving compare]
+module Path = struct
+  type element = (Sil.if_kind * bool * Location.t) [@@deriving compare]
+  let element_equal = [%compare.equal: element]
 
-let prune_info_equal = [%compare.equal: prune_info]
+  let pp_element fmt (kind, branch, loc) = 
+    let kind = Sil.if_kind_to_string kind in
+    F.fprintf fmt "%s[%s](%B)" kind (Location.to_string loc) branch
 
-let equal_paths path_a path_b = List.equal path_a path_b ~equal:prune_info_equal
+  type t = element list
+  let equal x y = List.equal x y ~equal:element_equal
 
+  let empty = []
 
-let pp_prune_info fmt (kind, branch, loc) = 
-  let kind = Sil.if_kind_to_string kind in
-  F.fprintf fmt "%s[%s](%B)" kind (Location.to_string loc) branch
+  (* Creates common path prefix of provided paths *)
+  let common_prefix = fun path_x path_y ->
+    let rec aux prefix x y = match (x, y) with
+    | head_x :: tail_x, head_y :: tail_y when element_equal head_x head_y -> 
+      aux (head_x :: prefix) tail_x tail_y
+    | _, _ -> prefix
+    in
+    List.rev (aux [] path_x path_y)
+
+  let in_loop path = List.exists path ~f:(fun (kind, branch, _) -> 
+    is_loop_prune kind && branch
+  )
+
+  let pp fmt path = List.iter path ~f:(fun prune_info ->
+    F.fprintf fmt "-> %a " pp_element prune_info
+  )
+
+  let path_to_string path = List.fold path ~init:"" ~f:(fun acc (kind, branch, _) ->
+    let kind = Sil.if_kind_to_string kind in
+    let part = F.sprintf "-> %s(%B) " kind branch in
+    acc ^ part
+  )
+end
+
 
 let rec exp_to_z3_expr smt_ctx exp = 
   let int_sort = Z3.Arithmetic.Integer.mk_sort smt_ctx in
@@ -164,6 +193,7 @@ module Bound = struct
   | Value of Exp.t
   | Max of t list
   | Min of t list
+  | Inf
   [@@deriving compare]
 
   let rec to_string bound = match bound with
@@ -192,7 +222,7 @@ module Bound = struct
     | _ -> F.sprintf "max(%s, 0)" str
   ) else (
     if List.is_empty args then (
-      "max()"
+      assert(false)
     ) else (
       let str = List.fold args ~init:"max(" ~f:(fun str arg -> str ^ to_string arg ^ ", ") in
       (String.slice str 0 ((String.length str) - 2)) ^ ")"
@@ -204,6 +234,7 @@ module Bound = struct
     let str = List.fold args ~init:"min(" ~f:(fun str arg -> str ^ to_string arg ^ ", ") in
     (String.slice str 0 ((String.length str) - 2)) ^ ")"
   )
+  | Inf -> "Infinity"
 
   let pp fmt bound = F.fprintf fmt "%s" (to_string bound)
 
@@ -286,9 +317,10 @@ module DCP = struct
       mutable guards: Exp.Set.t;
       mutable bound_cache: Bound.t option;
       mutable bound_norm: Exp.t option;
+      mutable computing: bool;
 
       (* Last element of common path prefix *)
-      path_prefix_end: prune_info option; 
+      path_prefix_end: Path.element option;
     }
     [@@deriving compare]
 
@@ -312,7 +344,7 @@ module DCP = struct
       let compare = compare
     end)
 
-    let make : Exp.t PvarMap.t -> prune_info option -> t = fun assignments prefix_end -> {
+    let make : Exp.t PvarMap.t -> Path.element option -> t = fun assignments prefix_end -> {
       backedge = false;
       conditions = Exp.Set.empty;
       assignments = assignments;
@@ -320,6 +352,7 @@ module DCP = struct
       guards = Exp.Set.empty;
       bound_cache = None;
       bound_norm = None;
+      computing = false;
       path_prefix_end = prefix_end; 
     }
 
@@ -348,7 +381,7 @@ module DCP = struct
       in
       { edge with assignments = with_invariants }
 
-    let set_path_end : t -> prune_info option -> t = fun edge path_end ->
+    let set_path_end : t -> Path.element option -> t = fun edge path_end ->
       { edge with path_prefix_end = path_end }
 
     let get_assignment_rhs : t -> Pvar.t -> Exp.t = fun edge lhs ->
@@ -427,7 +460,7 @@ module DCP = struct
     )
     
     (* Derive difference constraints "x <= y + c" based on edge assignments *)
-    let derive_constraints : t -> Exp.t -> Typ.t PvarMap.t -> Exp.Set.t = fun edge norm formals -> (
+    let derive_constraint : t -> Exp.t -> Typ.t PvarMap.t -> Exp.Set.t = fun edge norm formals -> (
       let dc_map = edge.constraints in
       let norm_set = Exp.Set.empty in
       let dc_map, norm_set = match norm with
@@ -436,18 +469,12 @@ module DCP = struct
         if PvarMap.mem x_pvar formals then (
           (* Ignore norms that are formal parameters *)
           dc_map, norm_set
-        ) else (
-          let x_assignment = match PvarMap.find_opt x_pvar edge.assignments with
-          | Some x_rhs -> Some x_rhs
-          | None -> if PvarMap.mem x_pvar formals then Some (Exp.Lvar x_pvar) else None
-          in
-          match x_assignment with
+        ) else match PvarMap.find_opt x_pvar edge.assignments with
           | Some x_rhs -> (
             if Exp.equal norm x_rhs then (
               (* [x = x], unchanged *)
               DC.Map.add_dc norm (DC.make_rhs norm) dc_map, norm_set
-            ) else (
-              match x_rhs with
+            ) else match x_rhs with
               | Exp.BinOp (op, Exp.Lvar rhs_pvar, Exp.Const Const.Cint increment) -> (
                 let const = match op with
                 | Binop.PlusA _ -> increment
@@ -464,16 +491,13 @@ module DCP = struct
                   let dc_rhs = DC.make_rhs ~const rhs_pvar_exp in
                   DC.Map.add_dc norm dc_rhs dc_map, Exp.Set.add rhs_pvar_exp norm_set
                 )
-                
               )
               | Exp.Lvar _ | Exp.Const Const.Cint _-> (
                 DC.Map.add_dc norm (DC.make_rhs x_rhs) dc_map, Exp.Set.add x_rhs norm_set
               )
               | _ -> L.(die InternalError)"[TODO] currently unsupported assignment expression!"
-            )
           )
           | None -> dc_map, norm_set
-        )
       )
       | Exp.BinOp (Binop.MinusA _, Exp.Lvar x_pvar, Exp.Lvar y_pvar) -> (
         (* Most common form of norm, obtained from condition of form [x > y] -> norm [x - y] *)
@@ -616,7 +640,7 @@ module DotConfig = struct
   include DefaultDot
   let edge_label : EdgeData.t -> string = fun edge_data ->
     match edge_data.path_prefix_end with
-    | Some prune_info -> F.asprintf "%a\n" pp_prune_info prune_info
+    | Some prune_info -> F.asprintf "%a\n" Path.pp_element prune_info
     | None -> ""
 
   let vertex_attributes : Node.t -> 'a list = fun node -> (
@@ -699,7 +723,7 @@ module VFG = struct
   include Graph.Imperative.Digraph.ConcreteBidirectionalLabeled(Node)(Edge)
   include DefaultDot
 
-  let edge_attributes : E.t -> 'a list = fun (_, edge, _) -> [`Label ""; `Color 4711]
+  let edge_attributes : E.t -> 'a list = fun _ -> [`Label ""; `Color 4711]
   let vertex_attributes : V.t -> 'a list = fun node -> (
     let label = F.asprintf "%a, %a" Exp.pp node.norm DCP.Node.pp node.dcp_node in
     [ `Shape `Box; `Label label ]
@@ -713,17 +737,9 @@ module VFG_Dot = Graph.Graphviz.Dot(VFG)
 (* Reset graph *)
 module RG = struct 
   module Node = struct
-    type t = {
-      norm : Exp.t
-    } [@@deriving compare]
+    type t = Exp.t [@@deriving compare]
     let hash = Hashtbl.hash
-    let equal = [%compare.equal: t]
-    let make : Exp.t -> t = fun norm -> { norm }
-
-    module Set = Caml.Set.Make(struct
-      type nonrec t = t
-      let compare = compare
-    end)
+    let equal = Exp.equal
   end
 
   module Edge = struct
@@ -763,11 +779,11 @@ module RG = struct
   let default_edge_attributes _ = []
   let get_subgraph _ = None
   let vertex_attributes : V.t -> 'a list = fun node -> (
-    [ `Shape `Box; `Label (Exp.to_string node.norm) ]
+    [ `Shape `Box; `Label (Exp.to_string node) ]
   )
 
-  let vertex_name : V.t -> string = fun vertex -> (
-    string_of_int (Hashtbl.hash vertex.norm)
+  let vertex_name : V.t -> string = fun node -> (
+    string_of_int (Hashtbl.hash node)
   )
     
   let default_vertex_attributes _ = []
@@ -785,8 +801,7 @@ module RG = struct
       norms = None;
     }
 
-    let origin : t -> Exp.t = fun chain ->
-      (E.src (List.hd_exn chain.data)).norm
+    let origin : t -> Exp.t = fun chain -> E.src (List.hd_exn chain.data)
 
     let value : t -> IntLit.t = fun chain ->
       List.fold chain.data ~init:IntLit.zero ~f:(fun acc (_, (data : Edge.t), _) -> 
@@ -807,18 +822,18 @@ module RG = struct
           if Node.equal origin path_end then counter + 1 else (
             let next = succ_e reset_graph origin in
             if List.is_empty next then counter else (
-              let visited = Node.Set.add origin visited in
+              let visited = Exp.Set.add origin visited in
               List.fold next ~init:counter ~f:(fun counter (_, _, dst) ->
-                if Node.Set.mem dst visited then counter else find_paths dst visited counter
+                if Exp.Set.mem dst visited then counter else find_paths dst visited counter
               )
             )
           )
         in
         let norms = List.fold chain.data ~init:(Exp.Set.empty, Exp.Set.empty) 
         ~f:(fun (norms_1, norms_2) (_, _, (dst : Node.t)) ->
-          let path_count = find_paths dst Node.Set.empty 0 in
-          if path_count < 2 then Exp.Set.add dst.norm norms_1, norms_2
-          else norms_1, Exp.Set.add dst.norm norms_2
+          let path_count = find_paths dst Exp.Set.empty 0 in
+          if path_count < 2 then Exp.Set.add dst norms_1, norms_2
+          else norms_1, Exp.Set.add dst norms_2
         )
         in
         chain.norms <- Some norms;
@@ -826,10 +841,10 @@ module RG = struct
       )
 
     let pp fmt chain = List.iter chain.data ~f:(fun ((src : Node.t), _, _) ->
-        F.fprintf fmt "%a --> " Exp.pp src.norm
+        F.fprintf fmt "%a --> " Exp.pp src
       );
       let _, _, (dst : Node.t) = List.last_exn chain.data in
-      F.fprintf fmt "%a" Exp.pp dst.norm
+      F.fprintf fmt "%a" Exp.pp dst
 
     module Set = Caml.Set.Make(struct
       type nonrec t = t
@@ -840,10 +855,11 @@ module RG = struct
 
   (* Finds all reset chains leading to the norm through reset graph *)
   let get_reset_chains origin reset_graph dcp =
+    let open Base.Continue_or_stop in
     let rec traverse_reset_graph node (chain : Chain.t) =
       let preds = pred_e reset_graph node in
       if List.is_empty preds then (
-        Chain.Set.singleton { chain with data = List.rev chain.data; }
+        Chain.Set.singleton chain
       ) else (
         List.fold preds ~init:Chain.Set.empty ~f:(fun chains (src, edge_data, dst) ->
           let current_chain = { chain with data = chain.data @ [(src, edge_data, dst)]} in
@@ -855,21 +871,19 @@ module RG = struct
     let reset_chains = traverse_reset_graph origin Chain.empty in
     (* Shorten the chain until it's optimal, i.e., maximal while remaining sound *)
     Chain.Set.map (fun chain -> 
-      let _, edge_data, _ = List.last_exn chain.data in
+      let src, edge_data, dst = List.hd_exn chain.data in
       let path_origin = match edge_data.dcp_edge with
       | Some (_, _, dcp_dst) -> dcp_dst
       | None -> assert(false)
       in
       (* F.printf "[UNOPTIMIZED CHAIN] %a\n" Chain.pp chain; *)
-      let optimize_chain : edge list -> edge -> edge list = 
-      fun optimal_chain (src, edge_data, dst) ->
+      let optimize_chain optimal_chain (src, (edge_data : Edge.t), dst) =
         match edge_data.dcp_edge with
-        | Some (path_end, _, _) -> (
+        | Some (_, _, path_end) -> (
           (* F.printf "[PATH END] %a\n" DCP.Node.pp path_end; *)
           (* Find all paths from origin to end and check if they reset the end norm *)
-          let current_norm = src.norm in
+          let current_norm = dst in
           let rec checkPaths origin visited_nodes norm_reset acc =
-            let open Base.Continue_or_stop in
             if DCP.Node.equal origin path_end then (
               (* Found path, return info if norm was reset along the path *)
               (* F.printf "[PATH FOUND] Reset: %B\n" norm_reset; *)
@@ -895,9 +909,7 @@ module RG = struct
                     in
                     let norm_reset = checkPaths dcp_dst visited_nodes norm_reset acc in
                     match norm_reset with
-                    | Some norm_reset -> if norm_reset then (
-                      Continue (Some true)
-                    ) else Stop (Some false)
+                    | Some norm_reset -> if norm_reset then Continue (Some true) else Stop (Some false)
                     | None -> Continue acc
                   )
                 ) ~finish:(fun acc -> acc)
@@ -918,25 +930,24 @@ module RG = struct
               in
               let norm_reset = checkPaths dst DCP.NodeSet.empty norm_reset None in
               match norm_reset with
-              | Some norm_reset -> if norm_reset then (
-                Continue (Some true)
-              ) else Stop None
+              | Some norm_reset -> if norm_reset then Continue (Some true) else Stop None
               | None -> Continue acc
             )
           ) ~finish:(fun acc -> acc)
           in
+          let optimal_chain = [(src, edge_data, dst)] @ optimal_chain in
           match all_paths_reset with
-          | Some _ -> (
-            optimal_chain @ [(src, edge_data, dst)]
-          )
+          | Some _ -> Continue optimal_chain
           | _ -> (
             F.printf "[NORM NOT RESET] %a\n" Exp.pp current_norm;
-            [(src, edge_data, dst)]
+            Stop optimal_chain
           )
         )
         | None -> assert(false)
+      in 
+      let chain_data = List.fold_until (List.tl_exn chain.data) ~init:[(src, edge_data, dst)] 
+      ~f:optimize_chain ~finish:(fun acc -> acc) 
       in
-      let chain_data = List.fold (List.tl_exn chain.data) ~init:[List.hd_exn chain.data] ~f:optimize_chain in
       let chain = { chain with data = chain_data} in
       (* F.printf "[OPTIMIZED CHAIN]   %a\n" Chain.pp chain; *)
       chain
@@ -947,14 +958,14 @@ module RG_Dot = Graph.Graphviz.Dot(RG)
 
 
 type t = {
+  path: Path.t;
   last_node: DCP.Node.t;
-  branchingPath: prune_info list;
-
   potential_norms: Exp.Set.t;
   initial_norms: Exp.Set.t;
   locals: PvarSet.t;
   ident_map: Pvar.t Ident.Map.t;
-  modified_pvars: PvarSet.t;
+  edge_modified: PvarSet.t;
+  loop_modified: PvarSet.t;
   edge_data: DCP.EdgeData.t;
   graph_nodes: DCP.NodeSet.t;
   graph_edges: DCP.EdgeSet.t;
@@ -963,14 +974,14 @@ type t = {
 
 let initial : DCP.Node.t -> t = fun entry_point -> (
   {
+    path = Path.empty;
     last_node = entry_point;
-    branchingPath = [];
-
     potential_norms = Exp.Set.empty;
     initial_norms = Exp.Set.empty;
     locals = PvarSet.empty;
     ident_map = Ident.Map.empty;
-    modified_pvars = PvarSet.empty;
+    edge_modified = PvarSet.empty;
+    loop_modified = PvarSet.empty;
     edge_data = DCP.EdgeData.empty;
     graph_nodes = DCP.NodeSet.add entry_point DCP.NodeSet.empty;
     graph_edges = DCP.EdgeSet.empty;
@@ -989,28 +1000,7 @@ let norm_is_variable : Exp.t -> Typ.t PvarMap.t -> bool = fun norm formals ->
   traverse_exp norm
 
 let get_unmodified_pvars : t -> PvarSet.t = fun astate ->
-  PvarSet.diff astate.locals astate.modified_pvars
-
-let is_loop_prune : Sil.if_kind -> bool = function
-  | Ik_dowhile | Ik_for | Ik_while -> true
-  | _ -> false
-
-let pp_path fmt path =
-  List.iter path ~f:(fun prune_info ->
-    F.fprintf fmt "-> %a " pp_prune_info prune_info
-  )
-
-let path_to_string path =
-  List.fold path ~init:"" ~f:(fun acc (kind, branch, _) ->
-    let kind = Sil.if_kind_to_string kind in
-    let part = F.sprintf "-> %s(%B) " kind branch in
-    acc ^ part
-  )
-
-let get_edge_label path = match List.last path with
-  | Some (_, branch, _) -> string_of_bool branch
-  | None -> "none"
-
+  PvarSet.diff astate.locals astate.edge_modified
 
 let ( <= ) ~lhs ~rhs =
   (* F.printf "[Partial order <= ]\n"; *)
@@ -1021,20 +1011,8 @@ let ( <= ) ~lhs ~rhs =
 
 let join : t -> t -> t = fun lhs rhs ->
   F.printf "\n[JOIN] %a | %a\n" DCP.Node.pp lhs.last_node DCP.Node.pp rhs.last_node;
-
-  (* Creates common path prefix of provided paths *)
-  let rec common_path_prefix = fun prefix pathA pathB ->
-    match (pathA, pathB) with
-    | headA :: tailA, headB :: tailB when Int.equal (compare_prune_info headA headB) 0 -> 
-      common_path_prefix (headA :: prefix) tailA tailB
-    | _, _ -> prefix
-  in
-
-  let lhs_path = lhs.branchingPath in
-  let rhs_path = rhs.branchingPath in
-  let path_prefix_rev = common_path_prefix [] lhs_path rhs_path in
-  let path_prefix = List.rev path_prefix_rev in
-  F.printf "  [NEW] Path prefix: %a\n" pp_path path_prefix;
+  let path_prefix = Path.common_prefix lhs.path rhs.path in
+  F.printf "  [NEW] Path prefix: %a\n" Path.pp path_prefix;
 
   let join_node = DCP.Node.Join (lhs.last_node, rhs.last_node) in
 
@@ -1044,14 +1022,25 @@ let join : t -> t -> t = fun lhs rhs ->
     else Some a
   ) lhs.ident_map rhs.ident_map 
   in
+
+  let loop_modified, potential_norms = if Path.in_loop path_prefix then (
+    PvarSet.union lhs.loop_modified rhs.loop_modified,
+    Exp.Set.union lhs.potential_norms rhs.potential_norms
+  ) else (
+    F.printf "LOOP MODIFIED: %a\n" PvarSet.pp (PvarSet.union lhs.loop_modified rhs.loop_modified);
+    PvarSet.empty, Exp.Set.empty
+  )
+  in
   
   let astate = { lhs with
-    branchingPath = path_prefix;
+    path = path_prefix;
     ident_map = ident_map;
     edge_data = DCP.EdgeData.empty;
     initial_norms = Exp.Set.union lhs.initial_norms rhs.initial_norms;
+    potential_norms = potential_norms;
     locals = PvarSet.inter lhs.locals rhs.locals;
-    modified_pvars = PvarSet.empty;
+    edge_modified = PvarSet.empty;
+    loop_modified = loop_modified;
     graph_nodes = DCP.NodeSet.union lhs.graph_nodes rhs.graph_nodes;
     graph_edges = DCP.EdgeSet.union lhs.graph_edges rhs.graph_edges;
   }
@@ -1059,8 +1048,8 @@ let join : t -> t -> t = fun lhs rhs ->
   let lhs_empty = DCP.EdgeData.equal lhs.edge_data DCP.EdgeData.empty in
   let rhs_empty = DCP.EdgeData.equal rhs.edge_data DCP.EdgeData.empty in
 
-  let is_consecutive_join = (DCP.Node.is_join lhs.last_node && not (equal_paths path_prefix lhs_path))
-   || (DCP.Node.is_join rhs.last_node && not (equal_paths path_prefix rhs_path)) in
+  let is_consecutive_join = (DCP.Node.is_join lhs.last_node && not (Path.equal path_prefix lhs.path))
+   || (DCP.Node.is_join rhs.last_node && not (Path.equal path_prefix rhs.path)) in
 
   let astate = if is_consecutive_join then (
     F.printf "-----------------------FAIL\n";
@@ -1072,7 +1061,7 @@ let join : t -> t -> t = fun lhs rhs ->
       join_state.incoming_edges, join_state.last_node
     )
     | _ -> (
-      if equal_paths path_prefix other_state.branchingPath then (
+      if Path.equal path_prefix other_state.path then (
         (* Heuristic: ignore edge from previous location if this is a "backedge" join which 
          * joins state from inside of the loop with outside state denoted by prune location before loop prune *)
         F.printf "-----------------------BACKEDGE\n";
@@ -1082,7 +1071,7 @@ let join : t -> t -> t = fun lhs rhs ->
         F.printf "-----------------------ADD EDGE\n";
         let unmodified = get_unmodified_pvars other_state in
         let edge_data = DCP.EdgeData.add_invariants other_state.edge_data unmodified in
-        let edge_data = DCP.EdgeData.set_path_end edge_data (List.last other_state.branchingPath) in
+        let edge_data = DCP.EdgeData.set_path_end edge_data (List.last other_state.path) in
         let lts_edge = DCP.E.create other_state.last_node edge_data join_state.last_node in
         let edges = DCP.EdgeSet.add lts_edge join_state.incoming_edges in
         edges, DCP.Node.Join (join_state.last_node, other_state.last_node)
@@ -1106,12 +1095,12 @@ let join : t -> t -> t = fun lhs rhs ->
     )
     | _, _ -> (
       let add_edge incoming_edges state = 
-        if equal_paths path_prefix state.branchingPath then (
+        if Path.equal path_prefix state.path then (
           incoming_edges
         ) else (
-          let unmodified = PvarSet.diff astate.locals state.modified_pvars in
+          let unmodified = PvarSet.diff astate.locals state.edge_modified in
           let edge_data = DCP.EdgeData.add_invariants state.edge_data unmodified in
-          let edge_data = DCP.EdgeData.set_path_end edge_data (List.last state.branchingPath) in
+          let edge_data = DCP.EdgeData.set_path_end edge_data (List.last state.path) in
           let lts_edge = DCP.E.create state.last_node edge_data join_node in
           DCP.EdgeSet.add lts_edge incoming_edges
         )
