@@ -402,11 +402,6 @@ module Analyzer = AbstractInterpreter.MakeWTO (TransferFunctions (CFG))
   module DCP_SCC = Graph.Components.Make(Domain.DCP)
   module VFG_SCC = Graph.Components.Make(Domain.VFG)
 
-  module VFG_Map = Caml.Map.Make(struct
-    type nonrec t = Domain.DCP.Node.t * Exp.t
-    [@@deriving compare]
-  end)
-
   module Increments = Caml.Set.Make(struct
     type nonrec t = Domain.DCP.E.t * IntLit.t
     [@@deriving compare]
@@ -634,14 +629,16 @@ module Analyzer = AbstractInterpreter.MakeWTO (TransferFunctions (CFG))
       in
       to_natural_numbers post.graph_edges;
 
+      let file = Out_channel.create "DCP.dot" in
+      DCPDot.output_graph file dcp;
+      Out_channel.close file;
+
       (* Create variable flow graph which is necessary for
        * DCP preprocessing which renames variables and consequently
        * ensures that we get an acyclic reset DAG *)
       let vf_graph = VFG.create () in
       DCP.EdgeSet.iter (fun (src, edge_data, dst) -> 
-        (* Search for resets *)
-        DC.Map.iter (fun lhs_norm (rhs_norm, const) ->
-          let dc_is_constant = DC.is_constant (lhs_norm, rhs_norm, const) in
+        DC.Map.iter (fun lhs_norm (rhs_norm, _) ->
           if 
           (norm_is_variable lhs_norm formals) && 
           (norm_is_variable rhs_norm formals) then (
@@ -649,8 +646,8 @@ module Analyzer = AbstractInterpreter.MakeWTO (TransferFunctions (CFG))
               VFG.add_vertex vf_graph node
             )
             in
-            let dst_node = VFG.Node.make lhs_norm dst in
-            let src_node = VFG.Node.make rhs_norm src in
+            let dst_node = (lhs_norm, dst) in
+            let src_node = (rhs_norm, src) in
             vfg_add_node dst_node; vfg_add_node src_node;
             VFG.add_edge_e vf_graph (VFG.E.create src_node (VFG.Edge.default) dst_node);
           );
@@ -664,41 +661,39 @@ module Analyzer = AbstractInterpreter.MakeWTO (TransferFunctions (CFG))
       (* Create VFG mapping, create fresh variable 'v' for each SCC
        * and map each VFG node to this fresh variable. *)
       let vfg_components = VFG_SCC.scc_list vf_graph in
-      let vfg_map = List.foldi vfg_components ~init:VFG_Map.empty ~f:(fun idx map component ->
+      let vfg_map = List.foldi vfg_components ~init:VFG.Map.empty ~f:(fun idx map component ->
         let pvar_name = Mangled.from_string ("var_" ^ string_of_int idx) in
         let aux_norm = Exp.Lvar (Pvar.mk pvar_name proc_name) in
         List.fold component ~init:map ~f:(fun map (node : VFG.Node.t) ->
-          let key = node.dcp_node, node.norm in
+          (* let key = node.dcp_node, node.norm in *)
           processed_norms := Exp.Set.add aux_norm !processed_norms;
-          VFG_Map.add key aux_norm map
+          VFG.Map.add node aux_norm map
         )
       )
       in
       log "[VFG Mapping]\n";
-      VFG_Map.iter (fun (dcp_node, norm) aux_norm -> 
+      VFG.Map.iter (fun (norm, dcp_node) aux_norm -> 
         log "  (%a, %a) --> %a\n" DCP.Node.pp dcp_node Exp.pp norm Exp.pp aux_norm;
       ) vfg_map;
 
       (* Apply VFG mapping and rename DCP variables to ensure acyclic reset DAG *)
-      DCP.EdgeSet.iter (fun (src, edge_data, dst) -> 
+      DCP.EdgeSet.iter (fun (dcp_src, edge_data, dcp_dst) -> 
         let constraints = DC.Map.fold (fun lhs_norm (rhs_norm, const) map -> 
-          match VFG_Map.find_opt (dst, lhs_norm) vfg_map with
-          | Some lhs_norm -> (
-            let rhs_norm = if norm_is_variable rhs_norm formals then (
-              match VFG_Map.find_opt (src, rhs_norm) vfg_map with
-              | Some aux_norm -> aux_norm
-              | None -> rhs_norm
-            ) else rhs_norm
-            in
-            DC.Map.add lhs_norm (rhs_norm, const) map
-          )
-          | None -> DC.Map.add lhs_norm (rhs_norm, const) map
+          let lhs_norm = match VFG.Map.find_opt (lhs_norm, dcp_dst) vfg_map with
+          | Some norm -> norm
+          | None -> lhs_norm
+          in
+          let rhs_norm = match VFG.Map.find_opt (rhs_norm, dcp_src) vfg_map with
+          | Some norm -> norm
+          | None -> rhs_norm
+          in
+          DC.Map.add lhs_norm (rhs_norm, const) map
         ) edge_data.constraints DC.Map.empty
         in
         edge_data.constraints <- constraints;
       ) post.graph_edges;
 
-      let file = Out_channel.create "DCP.dot" in
+      let file = Out_channel.create "DCP_renamed.dot" in
       DCPDot.output_graph file dcp;
       Out_channel.close file;
 
@@ -1101,33 +1096,6 @@ module Analyzer = AbstractInterpreter.MakeWTO (TransferFunctions (CFG))
           )
         )
       in
-
-      (* let fold_aux (final_bound, cache) (edge : DCP.edge) =
-        let open Base.Continue_or_stop in
-        let _, edge_data, _ = edge in
-        if edge_data.backedge then (
-          let edge_bound, cache = transition_bound edge cache in
-          match edge_bound with
-          | Bound.Top -> Stop (Some edge_bound, cache)
-          | _ -> (
-            log "PARTIAL BOUND: %a\n" Bound.pp edge_bound;
-            if Bound.is_zero edge_bound then Continue (final_bound, cache) else (
-              let final_bound = match final_bound with
-              | Some sum -> Bound.BinOp (Binop.PlusA None, sum, edge_bound)
-              | None -> edge_bound
-              in
-              Continue (Some final_bound, cache)
-            )
-          )
-        ) else (
-          Continue (final_bound, cache)
-        )
-      in
-      let dcp_edges = DCP.EdgeSet.elements post.graph_edges in
-      let final_bound, _ = List.fold_until dcp_edges 
-      ~init:(None, empty_cache) 
-      ~f:fold_aux ~finish:(fun acc -> acc) 
-      in *)
 
       (* Calculate bound for all backedeges and sum them to get the total bound *)
       let final_bound, _ =  try

@@ -326,6 +326,10 @@ module DCP = struct
 
     let equal = [%compare.equal: t]
 
+    let is_reset edge norm = match DC.Map.get_dc norm edge.constraints with
+      | Some dc -> not (DC.same_norms dc)
+      | None -> false
+
     let active_guards edge = Exp.Set.fold (fun guard acc ->
       match DC.Map.get_dc guard edge.constraints with
       | Some dc ->
@@ -703,32 +707,28 @@ module DCPDot = Graph.Graphviz.Dot(DCPConfig)
 (* Variable flow graph *)
 module VFG = struct
   module Node = struct
-    type t = {
-      norm: Exp.t;
-      dcp_node: DCP.Node.t;
-    } [@@deriving compare]
+    type t = Exp.t * DCP.Node.t [@@deriving compare]
     let hash = Hashtbl.hash
     let equal = [%compare.equal: t]
-    let make : Exp.t -> DCP.Node.t -> t = fun norm dcp_node -> { norm; dcp_node }
   end
   
   module Edge = struct
-    type t = {
-      dcp_edge : DCP.E.t option;
-    } [@@deriving compare]
+    type t = unit [@@deriving compare]
     let hash = Hashtbl.hash
     let equal = [%compare.equal : t]
-    let default = { dcp_edge = None }
+    let default = ()
     end
   include Graph.Imperative.Digraph.ConcreteBidirectionalLabeled(Node)(Edge)
   include DefaultDot
 
   let edge_attributes : E.t -> 'a list = fun _ -> [`Label ""; `Color 4711]
-  let vertex_attributes : V.t -> 'a list = fun node -> (
-    let label = F.asprintf "%a, %a" Exp.pp node.norm DCP.Node.pp node.dcp_node in
+  let vertex_attributes : V.t -> 'a list = fun (norm, dcp_node) -> (
+    let label = F.asprintf "%a, %a" Exp.pp norm DCP.Node.pp dcp_node in
     [ `Shape `Box; `Label label ]
   )
   let vertex_name : V.t -> string = fun vertex -> string_of_int (Node.hash vertex)
+
+  module Map = Caml.Map.Make(Node)
 end
 
 module VFG_Dot = Graph.Graphviz.Dot(VFG)
@@ -876,70 +876,49 @@ module RG = struct
       | Some (_, _, dcp_dst) -> dcp_dst
       | None -> assert(false)
       in
-      (* F.printf "[UNOPTIMIZED CHAIN] %a\n" Chain.pp chain; *)
       let optimize_chain optimal_chain (src, (edge_data : Edge.t), dst) =
         match edge_data.dcp_edge with
         | Some (_, _, path_end) -> (
-          (* F.printf "[PATH END] %a\n" DCP.Node.pp path_end; *)
           (* Find all paths from origin to end and check if they reset the end norm *)
           let current_norm = dst in
-          let rec checkPaths origin visited_nodes norm_reset acc =
-            if DCP.Node.equal origin path_end then (
+          let rec checkPaths origin current visited_nodes norm_reset =
+            if DCP.Node.equal current path_end && not (DCP.NodeSet.is_empty visited_nodes) then (
               (* Found path, return info if norm was reset along the path *)
-              (* F.printf "[PATH FOUND] Reset: %B\n" norm_reset; *)
-              Some norm_reset
+              match norm_reset with 
+              | Some reset -> norm_reset 
+              | None -> Some false
             ) else (
-              let next = DCP.succ_e dcp origin in
+              let next = DCP.succ_e dcp current in
               if List.is_empty next then (
                 (* Not a path *)
                 None
               ) else (
-                let visited_nodes = DCP.NodeSet.add origin visited_nodes in
-                List.fold_until next ~init:acc ~f:(fun acc (dcp_edge : DCP.E.t) ->
-                  let _, dcp_data, dcp_dst = dcp_edge in
-                  if DCP.NodeSet.mem dcp_dst visited_nodes then (
-                    Continue acc
+                let visited_nodes = if DCP.Node.equal origin current then (
+                  visited_nodes
+                ) else (DCP.NodeSet.add current visited_nodes)
+                in
+                List.fold_until next ~init:norm_reset ~f:(fun norm_reset (dcp_edge : DCP.E.t) ->
+                  let dcp_src, dcp_data, dcp_dst = dcp_edge in
+                  if DCP.NodeSet.mem dcp_dst visited_nodes || DCP.Node.equal dcp_src dcp_dst then (
+                    Continue norm_reset
                   ) else (
-                    let norm_reset = if norm_reset then norm_reset else (
-                      let dc = DC.Map.get_dc current_norm dcp_data.constraints in
-                      match dc with
-                      | Some dc -> not (DC.same_norms dc)
-                      | None -> norm_reset
-                    )
+                    let norm_reset = match norm_reset with
+                    | Some _ -> norm_reset
+                    | None -> if DCP.EdgeData.is_reset dcp_data current_norm then Some true else None
                     in
-                    let norm_reset = checkPaths dcp_dst visited_nodes norm_reset acc in
-                    match norm_reset with
-                    | Some norm_reset -> if norm_reset then Continue (Some true) else Stop (Some false)
-                    | None -> Continue acc
+                    match checkPaths origin dcp_dst visited_nodes norm_reset with
+                    | Some already_reset -> if already_reset then Continue (Some true) else Stop None
+                    | None -> Continue norm_reset
                   )
                 ) ~finish:(fun acc -> acc)
               )
             )
           in
-          let next = (DCP.succ_e dcp path_origin) in
-          let all_paths_reset = List.fold_until next ~init:None ~f:(fun acc (dcp_edge : DCP.E.t) ->
-            let src, data, dst = dcp_edge in
-            if DCP.Node.equal src dst then (
-              (* Ignore direct backedge, hotfix for now, have to confirm this *)
-              Continue acc
-            ) else (
-              let dc = DC.Map.get_dc current_norm data.constraints in
-              let norm_reset = match dc with
-              | Some dc -> not (DC.same_norms dc)
-              | None -> false
-              in
-              let norm_reset = checkPaths dst DCP.NodeSet.empty norm_reset None in
-              match norm_reset with
-              | Some norm_reset -> if norm_reset then Continue (Some true) else Stop None
-              | None -> Continue acc
-            )
-          ) ~finish:(fun acc -> acc)
-          in
+          let all_paths_reset = checkPaths path_origin path_origin DCP.NodeSet.empty None in
           let optimal_chain = [(src, edge_data, dst)] @ optimal_chain in
           match all_paths_reset with
           | Some _ -> Continue optimal_chain
           | _ -> (
-            F.printf "[NORM NOT RESET] %a\n" Exp.pp current_norm;
             Stop optimal_chain
           )
         )
@@ -949,7 +928,6 @@ module RG = struct
       ~f:optimize_chain ~finish:(fun acc -> acc) 
       in
       let chain = { chain with data = chain_data} in
-      (* F.printf "[OPTIMIZED CHAIN]   %a\n" Chain.pp chain; *)
       chain
     ) reset_chains
 end
