@@ -6,9 +6,9 @@ module Domain = LoopusDomain
 
 
 module Payload = SummaryPayload.Make (struct
-  type t = Domain.t
+  type t = Domain.summary
 
-  let update_payloads astate (payloads : Payloads.t) = {payloads with looper= Some astate}
+  let update_payloads summary (payloads : Payloads.t) = {payloads with looper= Some summary}
 
   let of_payloads (payloads : Payloads.t) = payloads.looper
 end)
@@ -19,7 +19,7 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
   module CFG = ProcCFG
   module Domain = Domain
 
-  type nonrec extras = (Typ.t Domain.PvarMap.t * Typ.t Domain.PvarMap.t)
+  type nonrec extras = (Typ.t Domain.PvarMap.t * Typ.t Domain.PvarMap.t * Typ.t Domain.PvarMap.t)
 
   let pp_session_name node fmt = F.fprintf fmt "looper %a" CFG.Node.pp_id (CFG.Node.id node)
 
@@ -29,7 +29,7 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
 
     let open Domain in
 
-    let locals, formals = extras in
+    let locals, formals, type_map = extras in
 
     let is_exit_node = match ProcCFG.Node.kind node with
       | Procdesc.Node.Exit_node -> true
@@ -79,6 +79,7 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
     | _ -> acc
     in
 
+    let equal_if_kind x y = Int.equal 0 (Sil.compare_if_kind x y) in
 
     let astate = match instr with
     | Prune (cond, loc, branch, kind) -> (
@@ -88,12 +89,22 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
       let location_cmp : Location.t -> Location.t -> bool = fun loc_a loc_b ->
         loc_a.line > loc_b.line
       in
-
+      
       let prune_node = DCP.Node.Prune (kind, loc) in
       (* let prune_node = DCP.Node.make lts_prune_loc in *)
       let loop_prune = is_loop_prune kind in
 
-      let astate = match astate.last_node with
+      let process_prune astate = 
+        let path_end = List.last astate.path in
+        let graph_nodes = DCP.NodeSet.add prune_node astate.graph_nodes in
+        let edge_data = DCP.EdgeData.add_invariants astate.edge_data (get_unmodified_pvars astate) in
+        let edge_data = DCP.EdgeData.set_path_end edge_data path_end in
+        let new_lts_edge = DCP.E.create astate.last_node edge_data prune_node in
+        let graph_edges = DCP.EdgeSet.add new_lts_edge astate.graph_edges in
+        { astate with graph_edges = graph_edges; graph_nodes = graph_nodes; }
+      in
+
+      let astate, consec_prune = match astate.last_node with
       | DCP.Node.Join (lhs, rhs) -> (
         let edge_data = DCP.EdgeData.add_invariants astate.edge_data (get_unmodified_pvars astate) in
         let graph_nodes = DCP.NodeSet.add prune_node astate.graph_nodes in
@@ -110,7 +121,7 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
           let backedge = DCP.E.create src edge_data prune_node in
           let graph_edges = DCP.EdgeSet.add backedge astate.graph_edges in
           let graph_nodes = DCP.NodeSet.remove astate.last_node graph_nodes in
-          { astate with graph_edges = graph_edges; graph_nodes = graph_nodes }
+          { astate with graph_edges = graph_edges; graph_nodes = graph_nodes; }, false
         ) else (
           let is_backedge = match lhs, rhs with
           | DCP.Node.Prune (_, lhs), DCP.Node.Prune (_, rhs) -> (
@@ -136,7 +147,7 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
             in
             let graph_nodes = DCP.NodeSet.remove astate.last_node graph_nodes in
             let graph_edges = (DCP.EdgeSet.union astate.graph_edges graph_edges) in
-            { astate with graph_edges = graph_edges; graph_nodes = graph_nodes }
+            { astate with graph_edges = graph_edges; graph_nodes = graph_nodes; }, false
           ) else if Int.equal edge_count 1 then (
             (* JOIN node with single incoming edge (useless node).
               * Redirect incoming edge to prune node and delete join node *)
@@ -147,38 +158,55 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
             in
             let graph_nodes = DCP.NodeSet.remove astate.last_node graph_nodes in
             let graph_edges = (DCP.EdgeSet.union astate.graph_edges graph_edges) in
-            { astate with graph_edges = graph_edges; graph_nodes = graph_nodes }
+            { astate with graph_edges = graph_edges; graph_nodes = graph_nodes; }, false
           ) else (
-            log "IS BACKEDGE %B\n" is_backedge;
+            (* log "IS BACKEDGE %B\n" is_backedge; *)
             let path_end = List.last astate.path in
             let edge_data = DCP.EdgeData.set_path_end edge_data path_end in
             let edge_data = if is_backedge then DCP.EdgeData.set_backedge edge_data else edge_data in
             let new_lts_edge = DCP.E.create astate.last_node edge_data prune_node in
             let graph_edges = DCP.EdgeSet.add new_lts_edge astate.graph_edges in
             let graph_edges = DCP.EdgeSet.union astate.incoming_edges graph_edges in
-            { astate with graph_edges = graph_edges; graph_nodes = graph_nodes }
+            { astate with graph_edges = graph_edges; graph_nodes = graph_nodes; }, false
           )
         )
       )
-      | DCP.Node.Prune (_, last_loc) | DCP.Node.Start last_loc -> (
+      | DCP.Node.Prune (last_prune_kind, last_loc) -> (
         if not loop_prune && location_cmp last_loc loc then (
           (* ----Does not seem to occur in current version of Infer----
            * Do not create a backedge from single branch of "if" and 
            * wait for backedge from joined node *)
           assert(false)
+        ) else if (equal_if_kind last_prune_kind kind) && PvarSet.is_empty astate.edge_modified then (
+          log "PRUNE COND && DETECTED\n";
+          (* astate, true *)
+          process_prune astate, false
         ) else (
-          let path_end = List.last astate.path in
-          let graph_nodes = DCP.NodeSet.add prune_node astate.graph_nodes in
-          let edge_data = DCP.EdgeData.add_invariants astate.edge_data (get_unmodified_pvars astate) in
-          let edge_data = DCP.EdgeData.set_path_end edge_data path_end in
-          let new_lts_edge = DCP.E.create astate.last_node edge_data prune_node in
-          let graph_edges = DCP.EdgeSet.add new_lts_edge astate.graph_edges in
-          { astate with graph_edges = graph_edges; graph_nodes = graph_nodes } 
+          (* log "---------------------------------TEST\n";
+          log "ASSIGNMENTS: ";
+          PvarMap.iter (fun pvar exp -> log "%a -> %a  " Pvar.pp_value pvar Exp.pp exp) astate.edge_data.assignments;
+          log "\n";
+          let astate = process_prune astate in
+          {astate with edge_data = DCP.EdgeData.empty; edge_modified = PvarSet.empty}, false *)
+          process_prune astate, false
         )
+      )
+      | DCP.Node.Start _ -> (
+        process_prune astate, false
       )
       | DCP.Node.Exit -> (
         assert(false)
       )
+      in
+
+      let rec is_int_exp exp = match exp with
+      | Exp.Lvar pvar -> (match PvarMap.find_opt pvar type_map with
+        | Some pvar -> Typ.is_int pvar
+        | None -> false (* [TODO] How the hell can I get the type of a global?! *)
+      )
+      | Exp.Const Const.Cint _ -> true
+      | Exp.BinOp (_, lexp, rexp) -> is_int_exp lexp && is_int_exp rexp
+      | _ -> false
       in
 
       let normalize_condition exp = match exp with
@@ -190,6 +218,7 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
       )
       | _ -> exp
       in
+
       let normalized_cond = match pvar_condition with
       | Exp.BinOp _ -> normalize_condition pvar_condition
       | Exp.UnOp (LNot, exp, _) -> (
@@ -215,53 +244,63 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
       | _ -> L.(die InternalError)"Unsupported prune condition type!"
       in
 
-      let astate = if branch && (loop_prune || Path.in_loop astate.path) then (
-        (* Derive norm from prune condition.
-         * [x > y] -> [x - y] > 0
-         * [x >= y] -> [x - y + 1] > 0 *)
-        match normalized_cond with
-        | Exp.BinOp (op, lexp, rexp) -> (
-          let process_gt lhs rhs =
-            let lhs_is_zero = Exp.is_zero lhs in
-            let rhs_is_zero = Exp.is_zero rhs in
-            if lhs_is_zero && rhs_is_zero then Exp.zero
-            else if lhs_is_zero then Exp.UnOp (Unop.Neg, rhs, None)
-            else if rhs_is_zero then lhs
-            else Exp.BinOp (Binop.MinusA None, lhs, rhs)
-          in
-
-          let process_op op = match op with
-            | Binop.Gt -> Some (process_gt lexp rexp)
-            | Binop.Ge -> Some (Exp.BinOp (Binop.PlusA None, (process_gt lexp rexp), Exp.one))
-            | _ -> None
-          in
-          match process_op op with
-          | Some new_norm -> (
-            let is_modified = match new_norm with
-            | Exp.Lvar pvar -> PvarSet.mem pvar astate.loop_modified
-            | _ -> false
+      let astate = if is_int_exp normalized_cond then (
+        let astate = if branch && (loop_prune || Path.in_loop astate.path) then (
+          (* Derive norm from prune condition.
+          * [x > y] -> [x - y] > 0
+          * [x >= y] -> [x - y + 1] > 0 *)
+          match normalized_cond with
+          | Exp.BinOp (op, lexp, rexp) -> (
+            let process_gt lhs rhs =
+              let lhs_is_zero = Exp.is_zero lhs in
+              let rhs_is_zero = Exp.is_zero rhs in
+              if lhs_is_zero && rhs_is_zero then Exp.zero
+              else if lhs_is_zero then Exp.UnOp (Unop.Neg, rhs, None)
+              else if rhs_is_zero then lhs
+              else Exp.BinOp (Binop.MinusA None, lhs, rhs)
             in
-            if not loop_prune && not is_modified then (
-              (* Prune on loop path but not loop head. Norm is only potential,
-              * must be confirmed by increment/decrement on this loop path *)
-              { astate with potential_norms = Exp.Set.add new_norm astate.potential_norms; }
-            ) else (
-              { astate with initial_norms = Exp.Set.add new_norm astate.initial_norms; }
-            )
-          ) 
-          | None -> astate
+
+            let process_op op = match op with
+              | Binop.Gt -> Some (process_gt lexp rexp)
+              | Binop.Ge -> Some (Exp.BinOp (Binop.PlusA None, (process_gt lexp rexp), Exp.one))
+              | _ -> None
+            in
+            match process_op op with
+            | Some new_norm -> (
+              let is_modified = match new_norm with
+              | Exp.Lvar pvar -> PvarSet.mem pvar astate.loop_modified
+              | _ -> false
+              in
+              if not loop_prune && not is_modified then (
+                (* Prune on loop path but not loop head. Norm is only potential,
+                * must be confirmed by increment/decrement on this loop path *)
+                { astate with potential_norms = Exp.Set.add new_norm astate.potential_norms; }
+              ) else (
+                { astate with initial_norms = Exp.Set.add new_norm astate.initial_norms; }
+              )
+            ) 
+            | None -> astate
+          )
+          | _ -> L.(die InternalError)"Unsupported PRUNE expression!"
+        ) else (
+          astate
         )
-        | _ -> L.(die InternalError)"Unsupported PRUNE expression!"
+        in
+        let edge_data = if consec_prune then (
+          DCP.EdgeData.add_condition astate.edge_data normalized_cond
+        ) else DCP.EdgeData.add_condition DCP.EdgeData.empty normalized_cond
+        in
+        { astate with edge_data = edge_data }
+        
       ) else (
-        astate
+        { astate with edge_data = DCP.EdgeData.add_condition DCP.EdgeData.empty normalized_cond }
       )
       in
-      let edge_data = DCP.EdgeData.add_condition DCP.EdgeData.empty normalized_cond in
       { astate with
-        path = astate.path @ [(kind, branch, loc)];
+        path = if consec_prune then astate.path else astate.path @ [(kind, branch, loc)];
         edge_modified = PvarSet.empty;
-        edge_data = edge_data;
-        last_node = prune_node;
+        (* edge_data = edge_data; *)
+        last_node = if consec_prune then astate.last_node else prune_node;
         incoming_edges = DCP.EdgeSet.empty;
       }
     )
@@ -429,16 +468,14 @@ module Analyzer = AbstractInterpreter.MakeWTO (TransferFunctions (CFG))
 
     let beginLoc = Procdesc.get_loc proc_desc in
     let proc_name = Procdesc.get_proc_name proc_desc in
+    let proc_name_str = Typ.Procname.to_simplified_string proc_name in
     log "\n\n---------------------------------";
-    log "\n- ANALYZING %s" (Typ.Procname.to_simplified_string proc_name);
+    log "\n- ANALYZING %s" proc_name_str;
     log "\n---------------------------------\n";
     log " Begin location: %a\n" Location.pp beginLoc;
-
-    let proc_name = Procdesc.get_proc_name proc_desc in
-    let formals_mangled = Procdesc.get_formals proc_desc in
-    let formals = List.fold formals_mangled ~init:PvarMap.empty ~f:(fun acc (name, typ) ->
-      let formal_pvar = Pvar.mk name proc_name in
-      PvarMap.add formal_pvar typ acc
+    let formals = Procdesc.get_pvar_formals proc_desc in
+    let formals = List.fold formals ~init:PvarMap.empty ~f:(fun acc (pvar, typ) ->
+      PvarMap.add pvar typ acc
     )
     in
     let locals = Procdesc.get_locals proc_desc in
@@ -448,11 +485,13 @@ module Analyzer = AbstractInterpreter.MakeWTO (TransferFunctions (CFG))
       PvarMap.add pvar local.typ acc
     )
     in
+    List.iter (Procdesc.get_captured proc_desc) ~f:(fun (name, typ) -> log "CAPTURED: %s\n" (Mangled.to_string_full name));
+
     let type_map = PvarMap.union (fun _ ->
       L.(die InternalError)"Type map pvar clash!"
     ) locals formals
     in
-    let extras = (locals, formals) in
+    let extras = (locals, formals, type_map) in
     let proc_data = ProcData.make proc_desc tenv extras in
     (* let begin_loc = DCP.Node.Start beginLoc in *)
     let entry_point = DCP.Node.Start beginLoc in
@@ -474,7 +513,10 @@ module Analyzer = AbstractInterpreter.MakeWTO (TransferFunctions (CFG))
         DCP.add_edge_e lts edge;
       ) post.graph_edges;
 
-      let file = Out_channel.create "LTS.dot" in
+      let out_folder = "./Graphs/" in
+      (try Unix.mkdir out_folder with _ -> ());
+
+      let file = Out_channel.create (out_folder ^ "LTS_" ^ proc_name_str ^ ".dot") in
       LTSDot.output_graph file lts;
       Out_channel.close file;
 
@@ -484,6 +526,8 @@ module Analyzer = AbstractInterpreter.MakeWTO (TransferFunctions (CFG))
       DCP.NodeSet.iter (fun node ->
         DCP.add_vertex dcp node;
       ) post.graph_nodes;
+
+      (* L.(die InternalError)"BLABLA"; *)
 
 
       (* Much easier to implement and more readable in imperative style.
@@ -538,7 +582,7 @@ module Analyzer = AbstractInterpreter.MakeWTO (TransferFunctions (CFG))
       ) post.graph_edges;
 
       let guarded_nodes = DCP.fold_edges_e (fun (_, edge_data, dst) acc ->
-        if Exp.Set.is_empty edge_data.guards then acc else DCP.NodeSet.add dst acc
+        if Exp.Set.is_empty edge_data.guards then acc else (log "GUARDED NODE: %a\n" DCP.Node.pp dst; DCP.NodeSet.add dst acc)
       ) dcp DCP.NodeSet.empty
       in
 
@@ -600,7 +644,7 @@ module Analyzer = AbstractInterpreter.MakeWTO (TransferFunctions (CFG))
       propagate_guards guarded_nodes;
 
       (* Output Guarded DCP over integers *)
-      let file = Out_channel.create "DCP_guarded.dot" in
+      let file = Out_channel.create (out_folder ^ "DCP_guarded_" ^ proc_name_str ^ ".dot") in
       GuardedDCPDot.output_graph file dcp;
       Out_channel.close file;
 
@@ -629,7 +673,7 @@ module Analyzer = AbstractInterpreter.MakeWTO (TransferFunctions (CFG))
       in
       to_natural_numbers post.graph_edges;
 
-      let file = Out_channel.create "DCP.dot" in
+      let file = Out_channel.create (out_folder ^ "DCP_" ^ proc_name_str ^ ".dot") in
       DCPDot.output_graph file dcp;
       Out_channel.close file;
 
@@ -654,7 +698,7 @@ module Analyzer = AbstractInterpreter.MakeWTO (TransferFunctions (CFG))
         ) edge_data.constraints;
       ) post.graph_edges;
 
-      let file = Out_channel.create "VariableFlowGraph.dot" in
+      let file = Out_channel.create (out_folder ^ "VFG_" ^ proc_name_str ^ ".dot") in
       VFG_Dot.output_graph file vf_graph;
       Out_channel.close file;
 
@@ -690,10 +734,24 @@ module Analyzer = AbstractInterpreter.MakeWTO (TransferFunctions (CFG))
           DC.Map.add lhs_norm (rhs_norm, const) map
         ) edge_data.constraints DC.Map.empty
         in
+        (* let constraints = DC.Map.fold (fun lhs_norm (rhs_norm, const) map -> 
+          match VFG.Map.find_opt (lhs_norm, dcp_dst) vfg_map with
+          | Some lhs_norm -> (
+            let rhs_norm = if norm_is_variable rhs_norm formals then (
+              match VFG.Map.find_opt (rhs_norm, dcp_src) vfg_map with
+              | Some aux_norm -> aux_norm
+              | None -> rhs_norm
+            ) else rhs_norm
+            in
+            DC.Map.add lhs_norm (rhs_norm, const) map
+          )
+          | None -> DC.Map.add lhs_norm (rhs_norm, const) map
+        ) edge_data.constraints DC.Map.empty
+        in *)
         edge_data.constraints <- constraints;
       ) post.graph_edges;
 
-      let file = Out_channel.create "DCP_renamed.dot" in
+      let file = Out_channel.create (out_folder ^ "DCP_renamed_" ^ proc_name_str ^ ".dot") in
       DCPDot.output_graph file dcp;
       Out_channel.close file;
 
@@ -713,7 +771,7 @@ module Analyzer = AbstractInterpreter.MakeWTO (TransferFunctions (CFG))
         ) edge_data.constraints;
       ) post.graph_edges;
 
-      let file = Out_channel.create "ResetGraph.dot" in
+      let file = Out_channel.create (out_folder ^ "RG_" ^ proc_name_str ^ ".dot") in
       RG_Dot.output_graph file reset_graph;
       Out_channel.close file;
 
@@ -819,18 +877,6 @@ module Analyzer = AbstractInterpreter.MakeWTO (TransferFunctions (CFG))
         )
       ) norm_edge_sets (DCP.EdgeSet.diff scc_edges processed_edges)
       in
-      if not (DCP.EdgeSet.is_empty remaining_edges) then (
-        L.(die InternalError)"[Local bound mapping] Local bounds could not be determined for all edges"
-      );
-
-      log "[Local bounds]\n";
-      DCP.EdgeSet.iter (fun (src, edge_data, dst) ->
-        let local_bound = match edge_data.bound_norm with
-        | Some bound -> bound
-        | None -> L.(die InternalError)""
-        in
-        log "  %a -- %a -- %a\n" DCP.Node.pp src Exp.pp local_bound DCP.Node.pp dst
-      ) post.graph_edges;
 
       let get_update_map norm edges cache =
         if Exp.Map.mem norm cache.updates then (
@@ -1097,37 +1143,59 @@ module Analyzer = AbstractInterpreter.MakeWTO (TransferFunctions (CFG))
         )
       in
 
-      (* Calculate bound for all backedeges and sum them to get the total bound *)
-      let final_bound, _ =  try
-        DCP.EdgeSet.fold (fun edge (final_bound, cache) ->
-          let _, edge_data, _ = edge in
-          if edge_data.backedge then (
-            let edge_bound, cache = transition_bound edge cache in
-            if Bound.is_zero edge_bound then final_bound, cache else (
-              let final_bound = match final_bound with
-              | Some sum -> Bound.BinOp (Binop.PlusA None, sum, edge_bound)
-              | None -> edge_bound
-              in
-              Some final_bound, cache
+      let bound = if not (DCP.EdgeSet.is_empty remaining_edges) then (
+        L.internal_error "[Looper] Local bounds could not be determined for all edges. \
+        Returning [Infinity]\n";
+        Bound.Inf
+      ) else (
+        log "[Local bounds]\n";
+        DCP.EdgeSet.iter (fun (src, edge_data, dst) ->
+          let local_bound = match edge_data.bound_norm with
+          | Some bound -> bound
+          | None -> L.(die InternalError)""
+          in
+          log "  %a -- %a -- %a\n" DCP.Node.pp src Exp.pp local_bound DCP.Node.pp dst
+        ) post.graph_edges;
+
+        (* Calculate bound for all backedeges and sum them to get the total bound *)
+        let final_bound, _ =  try
+          DCP.EdgeSet.fold (fun edge (final_bound, cache) ->
+            let _, edge_data, _ = edge in
+            if edge_data.backedge then (
+              let edge_bound, cache = transition_bound edge cache in
+              if Bound.is_zero edge_bound then final_bound, cache else (
+                let final_bound = match final_bound with
+                | Some sum -> Bound.BinOp (Binop.PlusA None, sum, edge_bound)
+                | None -> edge_bound
+                in
+                Some final_bound, cache
+              )
+            ) else (
+              final_bound, cache
             )
-          ) else (
-            final_bound, cache
-          )
-        ) post.graph_edges (None, empty_cache)
-      with Exit -> (Some Bound.Inf, empty_cache)
+          ) post.graph_edges (None, empty_cache)
+        with Exit -> (Some Bound.Inf, empty_cache)
+        in
+        match final_bound with
+        | Some bound -> (
+          (* let bound_expr = Z3.Expr.simplify (Bound.to_z3_expr bound ctx) None in
+          let bound_ast = Z3.Expr.ast_of_expr bound_expr in *)
+          bound
+        )
+        | None -> Bound.Value Exp.zero
+      )
       in
       log "\n[Final bound]\n";
-      (match final_bound with
-      | Some bound -> (
-        (* let bound_expr = Z3.Expr.simplify (Bound.to_z3_expr bound ctx) None in
-        let bound_ast = Z3.Expr.ast_of_expr bound_expr in *)
-        log "  %a\n" Bound.pp bound;
-      )
-      | None -> ());
+      log "  %a\n" Bound.pp bound;
       log "Description:\n  signed x: max(x, 0) == [x]\n";
-      Payload.update_summary post summary
+      let payload = {
+        globals = PvarMap.empty;
+        bound = bound;
+      }
+      in
+      Payload.update_summary payload summary
     )
     | None ->
       L.(die InternalError)
-      "Analyzer failed to compute post for %a" Typ.Procname.pp
+      "[Looper] Failed to compute post for %a" Typ.Procname.pp
       (Procdesc.get_proc_name proc_data.pdesc)

@@ -417,6 +417,11 @@ module DCP = struct
           | Binop.Le -> List.append [Z3.Arithmetic.mk_le smt_ctx lexp_const rexp_const] acc
           | Binop.Gt -> List.append [Z3.Arithmetic.mk_gt smt_ctx lexp_const rexp_const] acc
           | Binop.Ge -> List.append [Z3.Arithmetic.mk_ge smt_ctx lexp_const rexp_const] acc
+          | Binop.Eq -> List.append [Z3.Boolean.mk_eq smt_ctx lexp_const rexp_const] acc
+          | Binop.Ne -> (
+            let eq = Z3.Boolean.mk_eq smt_ctx lexp_const rexp_const in
+            List.append [Z3.Boolean.mk_not smt_ctx eq] acc
+          )
           | _ -> L.(die InternalError)"[Guards] Condition binop [%a] is not supported!" Exp.pp cond
         )
         | _ -> L.(die InternalError)"[Guards] Condition type is not supported by guard!"
@@ -503,121 +508,190 @@ module DCP = struct
           )
           | None -> dc_map, norm_set
       )
-      | Exp.BinOp (Binop.MinusA _, Exp.Lvar x_pvar, Exp.Lvar y_pvar) -> (
-        (* Most common form of norm, obtained from condition of form [x > y] -> norm [x - y] *)
-        let lexp_assignment_rhs = match PvarMap.find_opt x_pvar edge.assignments with
-        | Some x_rhs -> Some x_rhs
-        | None -> if PvarMap.mem x_pvar formals then Some (Exp.Lvar x_pvar) else None
-        in
-        let rexp_assignment_rhs = match PvarMap.find_opt y_pvar edge.assignments with
-        | Some y_rhs -> Some y_rhs
-        | None -> if PvarMap.mem y_pvar formals then Some (Exp.Lvar y_pvar) else None
-        in
+      | Exp.BinOp (Binop.MinusA _, x, y) -> (
+        match x, y with
+        | Exp.Lvar x_pvar, Exp.Lvar y_pvar -> (
+          (* Most common form of norm, obtained from condition of form [x > y] -> norm [x - y] *)
+          let lexp_assignment_rhs = match PvarMap.find_opt x_pvar edge.assignments with
+          | Some x_rhs -> Some x_rhs
+          | None -> if PvarMap.mem x_pvar formals then Some (Exp.Lvar x_pvar) else None
+          in
+          let rexp_assignment_rhs = match PvarMap.find_opt y_pvar edge.assignments with
+          | Some y_rhs -> Some y_rhs
+          | None -> if PvarMap.mem y_pvar formals then Some (Exp.Lvar y_pvar) else None
+          in
 
-        match lexp_assignment_rhs, rexp_assignment_rhs with
-        | Some x_rhs, Some y_rhs -> (
-          let norm_lexp = Exp.Lvar x_pvar in
-          let norm_rexp = Exp.Lvar y_pvar in
+          match lexp_assignment_rhs, rexp_assignment_rhs with
+          | Some x_rhs, Some y_rhs -> (
+            let norm_lexp = Exp.Lvar x_pvar in
+            let norm_rexp = Exp.Lvar y_pvar in
 
-          let x_not_changed = Exp.equal norm_lexp x_rhs in
-          let y_not_changed = Exp.equal norm_rexp y_rhs in
-          if x_not_changed && y_not_changed then (
-            (* assignments [x = x] and [y = y] *)
-            DC.Map.add_dc norm (DC.make_rhs norm) dc_map, norm_set
-          ) 
-          else if x_not_changed then (
-            (* assignments [x = x] and [y = expr] *)
-            match y_rhs with
-            | Exp.BinOp (op, Exp.Lvar rhs_pvar, Exp.Const Const.Cint increment) -> (
-              assert(not (Pvar.equal rhs_pvar x_pvar));
-              assert(Pvar.equal rhs_pvar y_pvar);
-              match op with
-              | Binop.PlusA _ -> (
-                (* norm [x - y], assignment [y = y + const] -> [(x - y) - const] *)
-                let dc_rhs = DC.make_rhs ~const:(IntLit.neg increment) norm in
-                DC.Map.add_dc norm dc_rhs dc_map, norm_set
+            let x_not_changed = Exp.equal norm_lexp x_rhs in
+            let y_not_changed = Exp.equal norm_rexp y_rhs in
+            if x_not_changed && y_not_changed then (
+              (* assignments [x = x] and [y = y] *)
+              DC.Map.add_dc norm (DC.make_rhs norm) dc_map, norm_set
+            ) 
+            else if x_not_changed then (
+              (* assignments [x = x] and [y = expr] *)
+              match y_rhs with
+              | Exp.BinOp (op, Exp.Lvar rhs_pvar, Exp.Const Const.Cint increment) -> (
+                assert(not (Pvar.equal rhs_pvar x_pvar));
+                assert(Pvar.equal rhs_pvar y_pvar);
+                match op with
+                | Binop.PlusA _ -> (
+                  (* norm [x - y], assignment [y = y + const] -> [(x - y) - const] *)
+                  let dc_rhs = DC.make_rhs ~const:(IntLit.neg increment) norm in
+                  DC.Map.add_dc norm dc_rhs dc_map, norm_set
+                )
+                | Binop.MinusA _ -> (
+                  (* norm [x - y], assignment [y = y - const] -> [(x - y) + const] *)
+                  let dc_rhs = DC.make_rhs ~const:increment norm in
+                  DC.Map.add_dc norm dc_rhs dc_map, norm_set
+                )
+                | _ -> (
+                  L.(die InternalError)"[TODO] currently unsupported binop operator!"
+                )
               )
-              | Binop.MinusA _ -> (
-                (* norm [x - y], assignment [y = y - const] -> [(x - y) + const] *)
-                let dc_rhs = DC.make_rhs ~const:increment norm in
-                DC.Map.add_dc norm dc_rhs dc_map, norm_set
+              | Exp.Lvar rhs_pvar -> (
+                if Pvar.equal rhs_pvar x_pvar then (
+                  (* norm [x - y], assignment [y = x], zero interval *)
+                  DC.Map.add_dc norm (DC.make_rhs Exp.zero) dc_map, Exp.Set.add Exp.zero norm_set
+                ) else (
+                  (* norm [x - y], assignment [y = z] -> [x - z] *)
+                  let new_norm = Exp.BinOp (Binop.MinusA None, norm_lexp, y_rhs) in
+                  DC.Map.add_dc norm (DC.make_rhs new_norm) dc_map, Exp.Set.add new_norm norm_set
+                )
               )
-              | _ -> (
-                L.(die InternalError)"[TODO] currently unsupported binop operator!"
+              | Exp.Const (Const.Cint const) when IntLit.iszero const -> (
+                (* norm [x - y], assignment [y = 0] -> [x] *)
+                DC.Map.add_dc norm (DC.make_rhs norm_lexp) dc_map, Exp.Set.add norm_lexp norm_set
               )
-            )
-            | Exp.Lvar rhs_pvar -> (
-              if Pvar.equal rhs_pvar x_pvar then (
-                (* norm [x - y], assignment [y = x], zero interval *)
-                DC.Map.add_dc norm (DC.make_rhs Exp.zero) dc_map, Exp.Set.add Exp.zero norm_set
-              ) else (
-                (* norm [x - y], assignment [y = z] -> [x - z] *)
-                let new_norm = Exp.BinOp (Binop.MinusA None, norm_lexp, y_rhs) in
+              | _ -> L.(die InternalError)"[TODO] currently unsupported assignment expression!"
+            ) 
+            else if y_not_changed then (
+              (* assignments [y = y] and [x = expr] *)
+              match x_rhs with
+              | Exp.BinOp (op, Exp.Lvar rhs_pvar, Exp.Const Const.Cint increment) -> (
+                assert(not (Pvar.equal rhs_pvar y_pvar));
+                assert(Pvar.equal rhs_pvar x_pvar);
+                match op with
+                | Binop.PlusA _ -> (
+                  (* norm [x - y], assignment [x = x + const] -> [(x - y) + const] *)
+                  let dc_rhs = DC.make_rhs ~const:increment norm in
+                  DC.Map.add_dc norm dc_rhs dc_map, norm_set
+                )
+                | Binop.MinusA _ -> (
+                  (* norm [x - y], assignment [x = x - const] -> [(x - y) - const] *)
+                  let dc_rhs = DC.make_rhs ~const:(IntLit.neg increment) norm in
+                  DC.Map.add_dc norm dc_rhs dc_map, norm_set
+                )
+                | _ -> (
+                  L.(die InternalError)"[TODO] currently unsupported binop operator!"
+                )
+              )
+              | Exp.Lvar rhs_pvar -> (
+                if Pvar.equal rhs_pvar x_pvar then (
+                  (* norm [x - y], assignment [x = y], zero interval *)
+                  DC.Map.add_dc norm (DC.make_rhs Exp.zero) dc_map, Exp.Set.add Exp.zero norm_set
+                ) else (
+                  (* norm [x - y], assignment [x = z] -> [z - y] *)
+                  let new_norm = Exp.BinOp (Binop.MinusA None, x_rhs, norm_rexp) in
+                  DC.Map.add_dc norm (DC.make_rhs new_norm) dc_map, Exp.Set.add new_norm norm_set
+                )
+              )
+              | Exp.Const (Const.Cint const) when IntLit.iszero const -> (
+                (* norm [x - y], assignment [x = 0] -> [-y] *)
+                let new_norm = Exp.UnOp (Unop.Neg, norm_rexp, None) in
                 DC.Map.add_dc norm (DC.make_rhs new_norm) dc_map, Exp.Set.add new_norm norm_set
               )
-            )
-            | Exp.Const (Const.Cint const) when IntLit.iszero const -> (
-              (* norm [x - y], assignment [y = 0] -> [x] *)
-              DC.Map.add_dc norm (DC.make_rhs norm_lexp) dc_map, Exp.Set.add norm_lexp norm_set
-            )
-            | _ -> L.(die InternalError)"[TODO] currently unsupported assignment expression!"
-          ) 
-          else if y_not_changed then (
-            (* assignments [y = y] and [x = expr] *)
-            match x_rhs with
-            | Exp.BinOp (op, Exp.Lvar rhs_pvar, Exp.Const Const.Cint increment) -> (
-              assert(not (Pvar.equal rhs_pvar y_pvar));
-              assert(Pvar.equal rhs_pvar x_pvar);
-              match op with
-              | Binop.PlusA _ -> (
-                (* norm [x - y], assignment [x = x + const] -> [(x - y) + const] *)
-                let dc_rhs = DC.make_rhs ~const:increment norm in
-                DC.Map.add_dc norm dc_rhs dc_map, norm_set
-              )
-              | Binop.MinusA _ -> (
-                (* norm [x - y], assignment [x = x - const] -> [(x - y) - const] *)
-                let dc_rhs = DC.make_rhs ~const:(IntLit.neg increment) norm in
-                DC.Map.add_dc norm dc_rhs dc_map, norm_set
-              )
-              | _ -> (
-                L.(die InternalError)"[TODO] currently unsupported binop operator!"
-              )
-            )
-            | Exp.Lvar rhs_pvar -> (
-              if Pvar.equal rhs_pvar x_pvar then (
-                (* norm [x - y], assignment [x = y], zero interval *)
-                DC.Map.add_dc norm (DC.make_rhs Exp.zero) dc_map, Exp.Set.add Exp.zero norm_set
-              ) else (
-                (* norm [x - y], assignment [x = z] -> [z - y] *)
-                let new_norm = Exp.BinOp (Binop.MinusA None, x_rhs, norm_rexp) in
-                DC.Map.add_dc norm (DC.make_rhs new_norm) dc_map, Exp.Set.add new_norm norm_set
-              )
-            )
-            | Exp.Const (Const.Cint const) when IntLit.iszero const -> (
-              (* norm [x - y], assignment [x = 0] -> [-y] *)
-              let new_norm = Exp.UnOp (Unop.Neg, norm_rexp, None) in
-              DC.Map.add_dc norm (DC.make_rhs new_norm) dc_map, Exp.Set.add new_norm norm_set
-            )
-            | _ -> L.(die InternalError)"[TODO] currently unsupported assignment expression!"
-          ) 
-          else (
-            if Exp.equal x_rhs y_rhs then (
-              (* norm [x - y], assignments [x = expr] and [y = expr] -> 0 *)  
-              DC.Map.add_dc norm (DC.make_rhs Exp.zero) dc_map, Exp.Set.add Exp.zero norm_set
-            )
+              | _ -> L.(die InternalError)"[TODO] currently unsupported assignment expression!"
+            ) 
             else (
-              (* TODO: [x = e1] && [y = e2] -> [e1 - e2] *)
-              L.(die InternalError)"[TODO] currently unsupported assignment expression!"
+              if Exp.equal x_rhs y_rhs then (
+                (* norm [x - y], assignments [x = expr] and [y = expr] -> 0 *)  
+                DC.Map.add_dc norm (DC.make_rhs Exp.zero) dc_map, Exp.Set.add Exp.zero norm_set
+              )
+              else (
+                (* TODO: [x = e1] && [y = e2] -> [e1 - e2] *)
+                match x_rhs, y_rhs with
+                | Exp.Const Const.Cint x_const, Exp.Lvar y_pvar -> (
+                  let new_norm = Exp.UnOp (Unop.Neg, y_rhs, None) in
+                  if IntLit.iszero x_const then (
+                    DC.Map.add_dc norm (DC.make_rhs new_norm) dc_map, Exp.Set.add new_norm norm_set
+                  ) else (
+                    let dc_rhs = DC.make_rhs ~const:x_const new_norm in
+                    DC.Map.add_dc norm dc_rhs dc_map, Exp.Set.add new_norm norm_set
+                  )
+                )
+                | Exp.Lvar x_pvar, Exp.Const Const.Cint y_const -> (
+                  if IntLit.iszero y_const then (
+                    DC.Map.add_dc norm (DC.make_rhs x_rhs) dc_map, Exp.Set.add x_rhs norm_set
+                  ) else dc_map, norm_set
+                )
+                | Exp.Const Const.Cint x_const, Exp.Const Const.Cint y_const -> (
+                  let dc_rhs = DC.make_rhs (Exp.Const (Const.Cint (IntLit.sub x_const y_const))) in
+                  DC.Map.add_dc norm dc_rhs dc_map, norm_set
+                )
+                | _ -> L.(die InternalError)"[TODO] currently unsupported assignments '%a', '%a' !" Exp.pp x_rhs Exp.pp y_rhs
+              )
             )
           )
+          | _ -> (
+            (* Both variables constituting the norm must be defined on edge
+            * ie. the edge must at least contain constant assignment [var = var]
+            * for both norm variables in order to derive difference constraint
+            * for this norm *)
+            dc_map, norm_set
+          )
         )
-        | _ -> (
-          (* Both variables constituting the norm must be defined on edge
-          * ie. the edge must at least contain constant assignment [var = var]
-          * for both norm variables in order to derive difference constraint
-          * for this norm *)
-          dc_map, norm_set
+        | Exp.Const Const.Cint x_const, Exp.Lvar y_pvar -> (
+          (* [x_const - y_pvar] *)
+          let y_assignment_rhs = match PvarMap.find_opt y_pvar edge.assignments with
+          | Some y_rhs -> Some y_rhs
+          | None -> if PvarMap.mem y_pvar formals then Some (Exp.Lvar y_pvar) else None
+          in
+          match y_assignment_rhs with
+          | Some rhs -> (
+            let y_changed = not (Exp.equal (Exp.Lvar y_pvar) rhs) in
+            if y_changed then (
+              match rhs with
+              | Exp.BinOp (op, Exp.Lvar rhs_pvar, Exp.Const Const.Cint const) -> (
+                assert(Pvar.equal y_pvar rhs_pvar);
+                match op with
+                | Binop.PlusA _ -> (
+                  (* norm [x - y], assignment [y = y + const] -> [(x - y) - const] *)
+                  let dc_rhs = DC.make_rhs ~const:(IntLit.neg const) norm in
+                  DC.Map.add_dc norm dc_rhs dc_map, norm_set
+                )
+                | Binop.MinusA _ -> (
+                  (* norm [x - y], assignment [y = y - const] -> [(x - y) + const] *)
+                  let dc_rhs = DC.make_rhs ~const norm in
+                  DC.Map.add_dc norm dc_rhs dc_map, norm_set
+                )
+                | _ -> (
+                  L.(die InternalError)"[TODO] currently unsupported binop operator!"
+                )
+              )
+              | Exp.Const Const.Cint y_const -> (
+                (* norm [x_const - y], assignment [y = const] -> [x_const - const] *)
+                let new_norm = Exp.Const (Const.Cint (IntLit.sub x_const y_const)) in
+                DC.Map.add_dc norm (DC.make_rhs new_norm) dc_map, Exp.Set.add new_norm norm_set
+              )
+              | Exp.UnOp (Unop.Neg, Exp.Const Const.Cint y_const, _) -> (
+                let new_norm = Exp.Const (Const.Cint (IntLit.add x_const y_const)) in
+                DC.Map.add_dc norm (DC.make_rhs new_norm) dc_map, Exp.Set.add new_norm norm_set
+              )
+              | _ -> L.(die InternalError)"[TODO] currently unsupported assignment '%a' !" Exp.pp rhs
+            ) else (
+              DC.Map.add_dc norm (DC.make_rhs norm) dc_map, norm_set
+            )
+          )
+          | _ -> (
+            dc_map, norm_set
+          )
         )
+        | _ -> L.(die InternalError)"[TODO] currently unsupported type of norm '%a' !" Exp.pp norm
       )
       | Exp.Const Const.Cint _ -> dc_map, norm_set
       | _ -> L.(die InternalError)"[TODO] currently unsupported type of norm '%a' !" Exp.pp norm
@@ -915,10 +989,9 @@ module RG = struct
             )
           in
           let all_paths_reset = checkPaths path_origin path_origin DCP.NodeSet.empty None in
-          let optimal_chain = [(src, edge_data, dst)] @ optimal_chain in
           match all_paths_reset with
-          | Some _ -> Continue optimal_chain
-          | _ -> (
+          | Some _ -> Continue ([(src, edge_data, dst)] @ optimal_chain)
+          | None -> (
             Stop optimal_chain
           )
         )
@@ -1066,10 +1139,14 @@ let join : t -> t -> t = fun lhs rhs ->
     (* First join in a row, create new join node and join info *)
     match lhs.last_node, rhs.last_node with
     | DCP.Node.Prune (kind, _), DCP.Node.Start _ when not (is_loop_prune kind) -> (
-      { astate with last_node = lhs.last_node }
+      (* F.printf "ASSIGNMENTS: %a\n" PvarMap.pp lhs.edge_data.assignments; *)
+      (* { astate with last_node = lhs.last_node; edge_data = lhs.edge_data; edge_modified = lhs.edge_modified } *)
+      { astate with last_node = lhs.last_node; }
     )
     | DCP.Node.Start _, DCP.Node.Prune (kind, _) when not (is_loop_prune kind) -> (
-      { astate with last_node = rhs.last_node }
+      (* F.printf "ASSIGNMENTS: %a\n" PvarMap.pp rhs.edge_data.assignments; *)
+      (* { astate with last_node = rhs.last_node; edge_data = rhs.edge_data; edge_modified = rhs.edge_modified } *)
+      { astate with last_node = rhs.last_node; }
     )
     | _, _ -> (
       let add_edge incoming_edges state = 
@@ -1106,6 +1183,10 @@ let pp fmt astate =
     PvarSet.pp (DCP.EdgeData.modified_pvars edge_data)
   ) astate.graph_edges
 
-let pp_summary : F.formatter -> t -> unit =
-  fun fmt _astate ->
-    F.fprintf fmt "loopus summary placeholder\n";
+
+type summary = {
+  globals: Typ.t PvarMap.t;
+  bound: Bound.t;
+}
+
+let pp_summary fmt { globals; bound } = F.fprintf fmt "@\n Summary: %a @\n" Bound.pp bound
