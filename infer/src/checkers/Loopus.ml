@@ -94,11 +94,15 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
       (* let prune_node = DCP.Node.make lts_prune_loc in *)
       let loop_prune = is_loop_prune kind in
 
-      let process_prune astate = 
+      let process_prune astate backedge = 
         let path_end = List.last astate.path in
         let graph_nodes = DCP.NodeSet.add prune_node astate.graph_nodes in
         let edge_data = DCP.EdgeData.add_invariants astate.edge_data (get_unmodified_pvars astate) in
         let edge_data = DCP.EdgeData.set_path_end edge_data path_end in
+        let edge_data = if backedge then (
+          DCP.EdgeData.set_backedge edge_data
+        ) else edge_data
+        in
         let new_lts_edge = DCP.E.create astate.last_node edge_data prune_node in
         let graph_edges = DCP.EdgeSet.add new_lts_edge astate.graph_edges in
         { astate with graph_edges = graph_edges; graph_nodes = graph_nodes; }
@@ -177,22 +181,26 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
            * Do not create a backedge from single branch of "if" and 
            * wait for backedge from joined node *)
           assert(false)
-        ) else if (equal_if_kind last_prune_kind kind) && PvarSet.is_empty astate.edge_modified then (
+        ) else if loop_prune && (equal_if_kind last_prune_kind kind) && PvarSet.is_empty astate.edge_modified then (
           log "PRUNE COND && DETECTED\n";
           (* astate, true *)
-          process_prune astate, false
+          astate, true
         ) else (
-          (* log "---------------------------------TEST\n";
+          log "---------------------------------TEST\n";
           log "ASSIGNMENTS: ";
           PvarMap.iter (fun pvar exp -> log "%a -> %a  " Pvar.pp_value pvar Exp.pp exp) astate.edge_data.assignments;
           log "\n";
-          let astate = process_prune astate in
-          {astate with edge_data = DCP.EdgeData.empty; edge_modified = PvarSet.empty}, false *)
-          process_prune astate, false
+          let is_backedge = location_cmp last_loc loc in
+          let astate = process_prune astate is_backedge in
+          { astate with 
+            edge_data = DCP.EdgeData.empty; 
+            edge_modified = PvarSet.empty;
+          }, false
+          (* process_prune astate, false *)
         )
       )
       | DCP.Node.Start _ -> (
-        process_prune astate, false
+        process_prune astate false, false
       )
       | DCP.Node.Exit -> (
         assert(false)
@@ -287,13 +295,15 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
         )
         in
         let edge_data = if consec_prune then (
+          log "CONSEC PRUNE\n";
           DCP.EdgeData.add_condition astate.edge_data normalized_cond
         ) else DCP.EdgeData.add_condition DCP.EdgeData.empty normalized_cond
         in
         { astate with edge_data = edge_data }
         
       ) else (
-        { astate with edge_data = DCP.EdgeData.add_condition DCP.EdgeData.empty normalized_cond }
+        if consec_prune then astate 
+        else { astate with edge_data = DCP.EdgeData.empty } 
       )
       in
       { astate with
