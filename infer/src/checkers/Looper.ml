@@ -2,7 +2,7 @@ open! IStd
 
 module F = Format
 module L = Logging
-module Domain = LoopusDomain
+module Domain = LooperDomain
 
 
 module Payload = SummaryPayload.Make (struct
@@ -164,7 +164,6 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
             let graph_edges = (DCP.EdgeSet.union astate.graph_edges graph_edges) in
             { astate with graph_edges = graph_edges; graph_nodes = graph_nodes; }, false
           ) else (
-            (* log "IS BACKEDGE %B\n" is_backedge; *)
             let path_end = List.last astate.path in
             let edge_data = DCP.EdgeData.set_path_end edge_data path_end in
             let edge_data = if is_backedge then DCP.EdgeData.set_backedge edge_data else edge_data in
@@ -182,21 +181,14 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
            * wait for backedge from joined node *)
           assert(false)
         ) else if loop_prune && (equal_if_kind last_prune_kind kind) && PvarSet.is_empty astate.edge_modified then (
-          log "PRUNE COND && DETECTED\n";
-          (* astate, true *)
           astate, true
         ) else (
-          log "---------------------------------TEST\n";
-          log "ASSIGNMENTS: ";
-          PvarMap.iter (fun pvar exp -> log "%a -> %a  " Pvar.pp_value pvar Exp.pp exp) astate.edge_data.assignments;
-          log "\n";
           let is_backedge = location_cmp last_loc loc in
           let astate = process_prune astate is_backedge in
           { astate with 
             edge_data = DCP.EdgeData.empty; 
             edge_modified = PvarSet.empty;
           }, false
-          (* process_prune astate, false *)
         )
       )
       | DCP.Node.Start _ -> (
@@ -295,7 +287,6 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
         )
         in
         let edge_data = if consec_prune then (
-          log "CONSEC PRUNE\n";
           DCP.EdgeData.add_condition astate.edge_data normalized_cond
         ) else DCP.EdgeData.add_condition DCP.EdgeData.empty normalized_cond
         in
@@ -527,7 +518,7 @@ module Analyzer = AbstractInterpreter.MakeWTO (TransferFunctions (CFG))
       (try Unix.mkdir out_folder with _ -> ());
 
       let file = Out_channel.create (out_folder ^ "LTS_" ^ proc_name_str ^ ".dot") in
-      LTSDot.output_graph file lts;
+      DCPDot.output_graph file lts;
       Out_channel.close file;
 
       log "[INITIAL NORMS]\n";
@@ -537,12 +528,9 @@ module Analyzer = AbstractInterpreter.MakeWTO (TransferFunctions (CFG))
         DCP.add_vertex dcp node;
       ) post.graph_nodes;
 
-      (* L.(die InternalError)"BLABLA"; *)
-
-
       (* Much easier to implement and more readable in imperative style.
-        * Derive difference constraints for each edge for each norm and
-        * add newly created norms unprocessed_norms set during the process *)
+       * Derive difference constraints for each edge for each norm and
+       * add newly created norms unprocessed_norms set during the process *)
       let unprocessed_norms = ref post.initial_norms in
       let processed_norms = ref Exp.Set.empty in
       while not (Exp.Set.is_empty !unprocessed_norms) do (
@@ -584,8 +572,6 @@ module Analyzer = AbstractInterpreter.MakeWTO (TransferFunctions (CFG))
         )
       ) !processed_norms []
       in
-
-
       DCP.EdgeSet.iter (fun (src, edge_data, dst) ->
         DCP.EdgeData.derive_guards edge_data !processed_norms solver ctx;
         DCP.add_edge_e dcp (src, edge_data, dst);
@@ -655,7 +641,8 @@ module Analyzer = AbstractInterpreter.MakeWTO (TransferFunctions (CFG))
 
       (* Output Guarded DCP over integers *)
       let file = Out_channel.create (out_folder ^ "DCP_guarded_" ^ proc_name_str ^ ".dot") in
-      GuardedDCPDot.output_graph file dcp;
+      active_graph_type := GuardedDCP;
+      DCPDot.output_graph file dcp;
       Out_channel.close file;
 
       (* Convert DCP with guards to DCP without guards over natural numbers *)
@@ -684,6 +671,7 @@ module Analyzer = AbstractInterpreter.MakeWTO (TransferFunctions (CFG))
       to_natural_numbers post.graph_edges;
 
       let file = Out_channel.create (out_folder ^ "DCP_" ^ proc_name_str ^ ".dot") in
+      active_graph_type := DCP;
       DCPDot.output_graph file dcp;
       Out_channel.close file;
 
@@ -719,7 +707,6 @@ module Analyzer = AbstractInterpreter.MakeWTO (TransferFunctions (CFG))
         let pvar_name = Mangled.from_string ("var_" ^ string_of_int idx) in
         let aux_norm = Exp.Lvar (Pvar.mk pvar_name proc_name) in
         List.fold component ~init:map ~f:(fun map (node : VFG.Node.t) ->
-          (* let key = node.dcp_node, node.norm in *)
           processed_norms := Exp.Set.add aux_norm !processed_norms;
           VFG.Map.add node aux_norm map
         )
@@ -744,24 +731,11 @@ module Analyzer = AbstractInterpreter.MakeWTO (TransferFunctions (CFG))
           DC.Map.add lhs_norm (rhs_norm, const) map
         ) edge_data.constraints DC.Map.empty
         in
-        (* let constraints = DC.Map.fold (fun lhs_norm (rhs_norm, const) map -> 
-          match VFG.Map.find_opt (lhs_norm, dcp_dst) vfg_map with
-          | Some lhs_norm -> (
-            let rhs_norm = if norm_is_variable rhs_norm formals then (
-              match VFG.Map.find_opt (rhs_norm, dcp_src) vfg_map with
-              | Some aux_norm -> aux_norm
-              | None -> rhs_norm
-            ) else rhs_norm
-            in
-            DC.Map.add lhs_norm (rhs_norm, const) map
-          )
-          | None -> DC.Map.add lhs_norm (rhs_norm, const) map
-        ) edge_data.constraints DC.Map.empty
-        in *)
         edge_data.constraints <- constraints;
       ) post.graph_edges;
 
       let file = Out_channel.create (out_folder ^ "DCP_renamed_" ^ proc_name_str ^ ".dot") in
+      active_graph_type := DCP;
       DCPDot.output_graph file dcp;
       Out_channel.close file;
 
@@ -789,7 +763,7 @@ module Analyzer = AbstractInterpreter.MakeWTO (TransferFunctions (CFG))
        * reason does not have a function that returns edges of SCCs.  *)
       let get_scc_edges dcp =
         let components = DCP_SCC.scc_list dcp in
-        let scc_edges = List.fold components ~init:DCP.EdgeSet.empty ~f:(fun acc component ->
+        List.fold components ~init:DCP.EdgeSet.empty ~f:(fun acc component ->
           (* Iterate over all combinations of SCC nodes and check if there
           * are edges between them in both directions *)
           List.fold component ~init:acc ~f:(fun acc node ->
@@ -799,12 +773,6 @@ module Analyzer = AbstractInterpreter.MakeWTO (TransferFunctions (CFG))
             )
           )
         )
-        in
-        (* log "[SCC]\n"; *)
-        DCP.EdgeSet.iter (fun (src, _, dst) -> 
-          (* log "  %a --- %a\n" GraphNode.pp src GraphNode.pp dst; *) ()
-        ) scc_edges;
-        scc_edges
       in
 
       (* Edges that are not part of any SCC can be executed only once,
@@ -963,7 +931,6 @@ module Analyzer = AbstractInterpreter.MakeWTO (TransferFunctions (CFG))
         let norm = RG.Chain.origin chain in
         let chain_value = RG.Chain.value chain in
         let var_bound, cache = variable_bound norm cache in
-        (* log "   [ResetSum MAX VB(%a)] %a\n" Exp.pp norm Bound.pp var_bound; *)
         let max_exp, cache = if IntLit.isnegative chain_value then (
           (* result can be negative, wrap bound expression in the max function *)
           let const_bound = Bound.Value (Exp.Const (Const.Cint (IntLit.neg chain_value))) in
@@ -984,8 +951,6 @@ module Analyzer = AbstractInterpreter.MakeWTO (TransferFunctions (CFG))
           binop_bound, cache
         )
         in
-        (* log "   [ResetSum MAX] %a\n" Bound.pp max_exp; *)
-
         (* Creates a list of arguments for min(args) function. Arguments are
          * transition bounds of each transition of a reset chain. Zero TB stops
          * the fold as we cannot get smaller value. *)
@@ -1187,11 +1152,7 @@ module Analyzer = AbstractInterpreter.MakeWTO (TransferFunctions (CFG))
         with Exit -> (Some Bound.Inf, empty_cache)
         in
         match final_bound with
-        | Some bound -> (
-          (* let bound_expr = Z3.Expr.simplify (Bound.to_z3_expr bound ctx) None in
-          let bound_ast = Z3.Expr.ast_of_expr bound_expr in *)
-          bound
-        )
+        | Some bound -> bound
         | None -> Bound.Value Exp.zero
       )
       in

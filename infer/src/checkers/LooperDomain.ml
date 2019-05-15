@@ -25,15 +25,15 @@ end
 module PvarMap = struct
   include Caml.Map.Make(Pvar)
 
-  let pp fmt set =
+  let pp fmt map =
     iter (fun pvar _ ->
       F.fprintf fmt " %s " (Pvar.to_string pvar)
-    ) set
+    ) map
 
-  let to_string set =
+  let to_string map =
     let tmp = fold (fun pvar _ acc ->
       acc ^ Pvar.to_string pvar ^ " "
-    ) set ""
+    ) map ""
     in
     "[" ^ (String.rstrip tmp) ^ "]"
 end
@@ -65,7 +65,7 @@ module DC = struct
   type rhs = (Exp.t * IntLit.t)
   [@@deriving compare]
 
-  let make ?(const = IntLit.zero) lhs rhs_norm = (lhs, rhs_norm, const)
+  let make ?(const = IntLit.zero) (lhs : Exp.t) (rhs_norm : Exp.t) = (lhs, rhs_norm, const)
 
   let make_rhs ?(const = IntLit.zero) (rhs_norm: Exp.t) = (rhs_norm, const)
 
@@ -97,10 +97,7 @@ module DC = struct
     F.fprintf fmt "%s" (to_string dc false)
 
   module Map = struct
-    include Caml.Map.Make (struct 
-      type nonrec t = Exp.t
-      let compare = Exp.compare
-    end)
+    include Exp.Map
 
     let get_dc : Exp.t -> rhs t -> dc option = fun key map ->
       match find_opt key map with
@@ -245,37 +242,18 @@ module Bound = struct
   let is_one bound = match bound with
   | Value (Exp.Const (Const.Cint const)) -> IntLit.isone const
   | _ -> false
-
-  (* let to_z3_expr bound smt_ctx = 
-    let int_sort = Z3.Arithmetic.Integer.mk_sort smt_ctx in
-    let zero_const = Z3.Arithmetic.Integer.mk_numeral_i smt_ctx 0 in
-    let rec aux bound = match bound with
-    | BinOp (op, lexp, rexp) -> (
-      let lexp = aux lexp in
-      let rexp = aux rexp in
-      match op with
-      | Binop.MinusA -> Z3.Arithmetic.mk_sub smt_ctx [lexp; rexp]
-      | Binop.PlusA -> Z3.Arithmetic.mk_add smt_ctx [lexp; rexp]
-      | Binop.Mult -> Z3.Arithmetic.mk_mul smt_ctx [lexp; rexp]
-      | _ -> L.(die InternalError)"[Z3 expr] Expression contains invalid binary operator!"
-    )
-    | Value exp -> exp_to_z3_expr smt_ctx exp
-    | Max args -> (
-      let types, z3_args = List.fold args ~init:([], []) ~f:(fun (types, z3_args) arg -> 
-        types @ [int_sort], z3_args @ [aux arg]
-      ) 
-      in
-      let max_func = Z3.FuncDecl.mk_func_decl_s smt_ctx "max" types int_sort in
-      if List.length args < 2 then (
-        Z3.Expr.mk_app smt_ctx max_func (z3_args @ [zero_const])
-      ) else (
-        Z3.Expr.mk_app smt_ctx max_func z3_args
-      )
-    )
-    in
-    aux bound *)
 end
 
+type graph_type = | LTS | GuardedDCP | DCP
+
+let active_graph_type = ref LTS
+
+module DefaultDot = struct
+  let default_edge_attributes _ = []
+  let get_subgraph _ = None
+  let default_vertex_attributes _ = []
+  let graph_attributes _ = []
+end
 
 (* Difference Constraint Program *)
 module DCP = struct
@@ -299,8 +277,6 @@ module DCP = struct
       | Exit -> F.sprintf "Exit"
 
     let pp fmt loc = F.fprintf fmt "%s" (to_string loc)
-
-    let equal = [%compare.equal: t]
 
     module Map = Caml.Map.Make(struct
       type nonrec t = t
@@ -432,17 +408,12 @@ module DCP = struct
             Z3.Goal.add goal [formula];
             Z3.Solver.reset solver;
             Z3.Solver.add solver (Z3.Goal.get_formulas goal);
-            (* F.printf "%s\n" ("Goal: " ^ (Z3.Goal.to_string goal)); *)
             let solve_status = Z3.Solver.check solver [] in
             if phys_equal solve_status Z3.Solver.UNSATISFIABLE then (
-              (* F.printf "[STATUS] Not satisfiable\n"; *)
               (* Implication [conditions] => [norm > 0] always holds *)
               Exp.Set.add norm acc
             )
-            else (
-              (* F.printf "[STATUS] Satisfiable\n"; *)
-              acc
-            )
+            else acc
           in
           match norm with
           | Exp.BinOp _ | Exp.Lvar _ -> (
@@ -636,10 +607,8 @@ module DCP = struct
            * increases/decreases. Current approach is hideous. *)
           match get_assignment x_pvar, get_assignment y_pvar with
           | Some x_rhs, Some y_rhs -> (
-            F.printf "X_RHS: %a\nY_RHS: %a\n" Exp.pp x_rhs Exp.pp y_rhs;
             let x_changed = not (Exp.equal (Exp.Lvar x_pvar) x_rhs) in
             let y_changed = not (Exp.equal y y_rhs) in
-            F.printf "X_CHANGED: %B\nY_CHANGED: %B\n" x_changed y_changed;
             if not x_changed && y_changed then (
               match y_rhs with
               | Exp.BinOp (op, Exp.Lvar rhs_pvar, Exp.Const Const.Cint const) -> (
@@ -724,17 +693,7 @@ module DCP = struct
   include Graph.Imperative.Digraph.ConcreteBidirectionalLabeled(Node)(EdgeData)
   module NodeSet = Caml.Set.Make(V)
   module EdgeSet = Caml.Set.Make(E)
-end
 
-module DefaultDot = struct
-  let default_edge_attributes _ = []
-  let get_subgraph _ = None
-  let default_vertex_attributes _ = []
-  let graph_attributes _ = []
-end
-
-module DotConfig = struct
-  include DCP
   include DefaultDot
   let edge_label : EdgeData.t -> string = fun edge_data ->
     match edge_data.path_prefix_end with
@@ -745,57 +704,45 @@ module DotConfig = struct
     [ `Shape `Box; `Label (Node.to_string node) ]
   )
   let vertex_name : Node.t -> string = fun vertex -> string_of_int (Node.hash vertex)
-end
 
-module LTSConfig = struct
-  include DotConfig
-  let edge_attributes : DCP.E.t -> 'a list = fun (_, edge_data, _) -> (
-    let label = (edge_label edge_data) in
-    let label = if edge_data.backedge then label ^ "[backedge]\n" else label in
-    let label = Exp.Set.fold (fun condition acc ->
-      acc ^ exp_to_str condition ^ "\n"
-    ) edge_data.conditions label
-    in
-    let label = PvarMap.fold (fun lhs rhs acc -> 
-      let str = F.sprintf "%s = %s\n" (Pvar.to_string lhs) (exp_to_str rhs) in
-      acc ^ str
-    ) edge_data.assignments label
-    in
-    [`Label label; `Color 4711]
-  )
-end
-
-module GuardedDCPConfig = struct
-  include DotConfig
-  let edge_attributes : DCP.E.t -> 'a list = fun (_, edge_data, _) -> (
+  let edge_attributes : E.t -> 'a list = fun (_, edge_data, _) -> (
     let label = edge_label edge_data in
-    let label = Exp.Set.fold (fun guard acc -> 
-      acc ^ exp_to_str guard ^ " > 0\n"
-    ) edge_data.guards label
-    in
-    let label = DC.Map.fold (fun lhs (norm, const) acc -> 
-      acc ^ (DC.to_string (lhs, norm, const) true) ^ "\n"
-    ) edge_data.constraints label
-    in
-    [`Label label; `Color 4711]
+    match !active_graph_type with
+    | LTS -> (
+      let label = if edge_data.backedge then label ^ "[backedge]\n" else label in
+      let label = Exp.Set.fold (fun condition acc ->
+        acc ^ exp_to_str condition ^ "\n"
+      ) edge_data.conditions label
+      in
+      let label = PvarMap.fold (fun lhs rhs acc -> 
+        let str = F.sprintf "%s = %s\n" (Pvar.to_string lhs) (exp_to_str rhs) in
+        acc ^ str
+      ) edge_data.assignments label
+      in
+      [`Label label; `Color 4711]
+    )
+    | GuardedDCP -> (
+      let label = Exp.Set.fold (fun guard acc -> 
+        acc ^ exp_to_str guard ^ " > 0\n"
+      ) edge_data.guards label
+      in
+      let label = DC.Map.fold (fun lhs (norm, const) acc -> 
+        acc ^ (DC.to_string (lhs, norm, const) true) ^ "\n"
+      ) edge_data.constraints label
+      in
+      [`Label label; `Color 4711]
+    )
+    | DCP -> (
+      let label = DC.Map.fold (fun lhs (norm, const) acc -> 
+        acc ^ (DC.to_string (lhs, norm, const) false) ^ "\n"
+      ) edge_data.constraints label
+      in
+      [`Label label; `Color 4711]
+    )
   )
 end
 
-module DCPConfig = struct
-  include DotConfig
-  let edge_attributes : DCP.E.t -> 'a list = fun (_, edge_data, _) -> (
-    let label = edge_label edge_data in
-    let label = DC.Map.fold (fun lhs (norm, const) acc -> 
-      acc ^ (DC.to_string (lhs, norm, const) false) ^ "\n"
-    ) edge_data.constraints label
-    in
-    [`Label label; `Color 4711]
-  )
-end
-
-module LTSDot = Graph.Graphviz.Dot(LTSConfig)
-module GuardedDCPDot = Graph.Graphviz.Dot(GuardedDCPConfig)
-module DCPDot = Graph.Graphviz.Dot(DCPConfig)
+module DCPDot = Graph.Graphviz.Dot(DCP)
 
 
 (* Variable flow graph *)
@@ -1074,8 +1021,6 @@ let get_unmodified_pvars : t -> PvarSet.t = fun astate ->
   PvarSet.diff astate.locals astate.edge_modified
 
 let ( <= ) ~lhs ~rhs =
-  (* F.printf "[Partial order <= ]\n"; *)
-  (* F.printf "  [LHS]\n"; *)
   DCP.EdgeSet.equal lhs.graph_edges rhs.graph_edges || 
   DCP.EdgeSet.cardinal lhs.graph_edges < DCP.EdgeSet.cardinal rhs.graph_edges
 
@@ -1098,7 +1043,6 @@ let join : t -> t -> t = fun lhs rhs ->
     PvarSet.union lhs.loop_modified rhs.loop_modified,
     Exp.Set.union lhs.potential_norms rhs.potential_norms
   ) else (
-    F.printf "LOOP MODIFIED: %a\n" PvarSet.pp (PvarSet.union lhs.loop_modified rhs.loop_modified);
     PvarSet.empty, Exp.Set.empty
   )
   in
@@ -1123,7 +1067,6 @@ let join : t -> t -> t = fun lhs rhs ->
    || (DCP.Node.is_join rhs.last_node && not (Path.equal path_prefix rhs.path)) in
 
   let astate = if is_consecutive_join then (
-    F.printf "-----------------------FAIL\n";
     (* Consecutive join, merge join nodes and possibly add new edge to aggregated join node *)
     let other_state, join_state = if DCP.Node.is_join lhs.last_node then rhs, lhs else lhs, rhs in
     let incoming_edges, last_node = match other_state.last_node with
@@ -1135,11 +1078,9 @@ let join : t -> t -> t = fun lhs rhs ->
       if Path.equal path_prefix other_state.path then (
         (* Heuristic: ignore edge from previous location if this is a "backedge" join which 
          * joins state from inside of the loop with outside state denoted by prune location before loop prune *)
-        F.printf "-----------------------BACKEDGE\n";
         join_state.incoming_edges, join_state.last_node
       ) else (
         (* Add edge from non-join node to current set of edges pointing to aggregated join node *)
-        F.printf "-----------------------ADD EDGE\n";
         let unmodified = get_unmodified_pvars other_state in
         let edge_data = DCP.EdgeData.add_invariants other_state.edge_data unmodified in
         let edge_data = DCP.EdgeData.set_path_end edge_data (List.last other_state.path) in
@@ -1153,20 +1094,15 @@ let join : t -> t -> t = fun lhs rhs ->
       edge_data = join_state.edge_data;
       last_node = join_state.last_node;
       incoming_edges = incoming_edges;
-      (* last_node = last_node;  *)
     }
   ) else (
     (* First join in a row, create new join node and join info *)
     match lhs.last_node, rhs.last_node with
     | DCP.Node.Prune (kind, _), DCP.Node.Start _ when not (is_loop_prune kind) -> (
-      (* F.printf "ASSIGNMENTS: %a\n" PvarMap.pp lhs.edge_data.assignments; *)
       { astate with last_node = lhs.last_node; edge_data = lhs.edge_data; edge_modified = lhs.edge_modified }
-      (* { astate with last_node = lhs.last_node; } *)
     )
     | DCP.Node.Start _, DCP.Node.Prune (kind, _) when not (is_loop_prune kind) -> (
-      (* F.printf "ASSIGNMENTS: %a\n" PvarMap.pp rhs.edge_data.assignments; *)
       { astate with last_node = rhs.last_node; edge_data = rhs.edge_data; edge_modified = rhs.edge_modified }
-      (* { astate with last_node = rhs.last_node; } *)
     )
     | _, _ -> (
       let add_edge incoming_edges state = 
