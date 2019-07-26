@@ -8,7 +8,7 @@
 open! IStd
 module F = Format
 
-type t = int AccessPath.BaseMap.t
+type t = int AccessPath.BaseMap.t [@@deriving compare]
 
 let make pdesc =
   let pname = Procdesc.get_proc_name pdesc in

@@ -9,7 +9,7 @@ open! IStd
 module F = Format
 
 (** a map from a formal to its positional index *)
-type t
+type t [@@deriving compare]
 
 val make : Procdesc.t -> t
 (** create a formal map for the given procdesc *)

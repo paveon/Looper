@@ -26,16 +26,87 @@ module PvarMap : sig
   val to_string : 'a t -> string
 end
 
+
+module EdgeExp : sig
+   type t =
+   | BinOp of Binop.t * t * t
+   | UnOp of Unop.t * t * Typ.t option
+   | Var of Pvar.t
+   | Const of Const.t
+   | Call of Typ.t * Typ.Procname.t * call_arg list * summary
+   | Max of t list
+   | Min of t list
+   | Inf
+   [@@deriving compare]
+   
+   and call_arg = (t * Typ.t) [@@deriving compare]
+
+   and summary = {
+      formal_map: FormalMap.t;
+      globals: Typ.t PvarMap.t;
+      bound: t;
+      return_bound: t option;
+   }
+   [@@deriving compare]
+
+   val equal : t -> t -> bool
+
+   val one : t
+
+   val zero : t
+
+   val is_zero : t -> bool
+
+   val is_one : t -> bool
+
+   val is_int : t -> Typ.t PvarMap.t -> bool
+
+   val replace_idents : Exp.t -> t Ident.Map.t -> t
+
+   val subst : t -> call_arg list -> FormalMap.t -> t
+
+   val normalize_condition : t -> t
+
+   val to_string : ?braces:bool -> t -> string
+
+   val pp : F.formatter -> t -> unit
+
+   module Set : Caml.Set.S with type elt = t
+
+   module Map : Caml.Map.S with type key = t
+end
+
+val pp_summary : F.formatter -> EdgeExp.summary -> unit
+
+(* module Bound : sig
+   type t =
+   | BinOp of Binop.t * t * t
+   | Value of EdgeExp.t
+   | Max of t list
+   | Min of t list
+   | Inf
+   [@@deriving compare]
+
+   val to_string : t -> string
+
+   val pp : F.formatter -> t -> unit
+
+   val is_zero : t -> bool
+
+   val is_one : t -> bool
+end *)
+
+
 (* Difference Constraint of form "x <= y + c"
  * Example: "(len - i) <= (len - i) + 1" *)
 module DC : sig
-   type t = (Exp.t * Exp.t * IntLit.t) [@@deriving compare]
+   type t = (EdgeExp.t * EdgeExp.t * IntLit.t) [@@deriving compare]
    type dc = t
-   type rhs = (Exp.t * IntLit.t) [@@deriving compare]
+   type rhs = (EdgeExp.t * IntLit.t) [@@deriving compare]
 
-   val make : ?const:IntLit.t -> Exp.t -> Exp.t -> t
+   val make : ?const:IntLit.t -> EdgeExp.t -> EdgeExp.t -> t
 
-   val make_rhs : ?const:IntLit.t -> Exp.t -> rhs
+   val make_rhs : ?const:IntLit.t -> EdgeExp.t -> rhs
 
    val is_constant : t -> bool
 
@@ -50,13 +121,14 @@ module DC : sig
    val pp : F.formatter -> dc -> unit
 
    module Map : sig
-      include module type of Exp.Map
+      include module type of EdgeExp.Map
 
-      val get_dc : Exp.t -> rhs t -> dc option
+      val get_dc : EdgeExp.t -> rhs t -> dc option
 
-      val add_dc : Exp.t -> rhs -> rhs t -> rhs t
+      val add_dc : EdgeExp.t -> rhs -> rhs t -> rhs t
    end
 end
+
 
 module Path : sig
    type element = (Sil.if_kind * bool * Location.t) [@@deriving compare]
@@ -78,24 +150,6 @@ module Path : sig
    val path_to_string : t -> string
 end
 
-module Bound : sig
-   type t =
-   | BinOp of Binop.t * t * t
-   | Value of Exp.t
-   | Max of t list
-   | Min of t list
-   | Inf
-   [@@deriving compare]
-
-   val to_string : t -> string
-
-   val pp : F.formatter -> t -> unit
-
-   val is_zero : t -> bool
-
-   val is_one : t -> bool
-end
-
 type graph_type = | LTS | GuardedDCP | DCP
 
 val active_graph_type : graph_type ref 
@@ -106,6 +160,10 @@ module DefaultDot : sig
    val default_vertex_attributes : 'a -> 'b list
    val graph_attributes : 'a -> 'b list
 end
+
+type call_site = EdgeExp.t * Location.t
+
+module CallSiteSet : Caml.Set.S with type elt = call_site
 
 (* Difference Constraint Program *)
 module DCP : sig
@@ -131,12 +189,14 @@ module DCP : sig
    module EdgeData : sig
       type t = {
       backedge: bool;
-      conditions: Exp.Set.t;
-      assignments: Exp.t PvarMap.t;
+      conditions: EdgeExp.Set.t;
+      assignments: EdgeExp.t PvarMap.t;
+      calls: CallSiteSet.t;
       mutable constraints: DC.rhs DC.Map.t;
-      mutable guards: Exp.Set.t;
-      mutable bound_cache: Bound.t option;
-      mutable bound_norm: Exp.t option;
+      mutable guards: EdgeExp.Set.t;
+      mutable bound_cache: EdgeExp.t option;
+      mutable bound_norm: EdgeExp.t option;
+      mutable exit_edge: bool;
       mutable computing: bool;
 
       (* Last element of common path prefix *)
@@ -146,15 +206,17 @@ module DCP : sig
 
       val equal : t -> t -> bool
 
-      val is_reset : t -> Exp.t -> bool
+      val is_reset : t -> EdgeExp.t -> bool
 
-      val active_guards : t -> Exp.Set.t
+      val is_exit_edge : t -> bool
+
+      val active_guards : t -> EdgeExp.Set.t
 
       val modified_pvars : t -> PvarSet.t
 
       module Set : Caml.Set.S with type elt = t
 
-      val make : Exp.t PvarMap.t -> Path.element option -> t
+      val make : EdgeExp.t PvarMap.t -> Path.element option -> t
 
       val empty : t
 
@@ -163,20 +225,20 @@ module DCP : sig
 
       val set_backedge : t -> t
 
-      val add_condition : t -> Exp.t -> t
+      val add_condition : t -> EdgeExp.t -> t
 
-      val add_assignment : t -> Pvar.t -> Exp.t -> t
+      val add_assignment : t -> Pvar.t -> EdgeExp.t -> t
 
       val add_invariants : t -> PvarSet.t -> t
 
       val set_path_end : t -> Path.element option -> t
 
-      val get_assignment_rhs : t -> Pvar.t -> Exp.t
+      val get_assignment_rhs : t -> Pvar.t -> EdgeExp.t
 
-      val derive_guards : t -> Exp.Set.t -> Z3.Solver.solver -> Z3.context -> unit
+      val derive_guards : t -> EdgeExp.Set.t -> Z3.Solver.solver -> Z3.context -> unit
       
       (* Derive difference constraints "x <= y + c" based on edge assignments *)
-      val derive_constraint : t -> Exp.t -> Typ.t PvarMap.t -> Exp.Set.t
+      val derive_constraint : t -> EdgeExp.t -> Typ.t PvarMap.t -> EdgeExp.Set.t
    end
 
    include module type of Graph.Imperative.Digraph.ConcreteBidirectionalLabeled(Node)(EdgeData)
@@ -195,7 +257,7 @@ module DCPDot : module type of Graph.Graphviz.Dot(DCP)
 (* Variable flow graph *)
 module VFG : sig
    module Node : sig
-      type t = Exp.t * DCP.Node.t [@@deriving compare]
+      type t = EdgeExp.t * DCP.Node.t [@@deriving compare]
       val hash : 'a -> int
       val equal : t -> t -> bool
    end
@@ -222,7 +284,7 @@ module VFG_Dot : module type of Graph.Graphviz.Dot(VFG)
 (* Reset graph *)
 module RG : sig
    module Node : sig
-      type t = Exp.t [@@deriving compare]
+      type t = EdgeExp.t [@@deriving compare]
       val hash : 'a -> int
       val equal : t -> t -> bool
    end
@@ -254,19 +316,19 @@ module RG : sig
    module Chain : sig
       type t = {
       data : E.t list;
-      mutable norms : (Exp.Set.t * Exp.Set.t) option;
+      mutable norms : (EdgeExp.Set.t * EdgeExp.Set.t) option;
       }
       [@@deriving compare]
 
       val empty : t
       
-      val origin : t -> Exp.t
+      val origin : t -> EdgeExp.t
 
       val value : t -> IntLit.t
 
       val transitions : t -> DCP.EdgeSet.t
 
-      val norms : t -> graph -> Exp.Set.t * Exp.Set.t
+      val norms : t -> graph -> EdgeExp.Set.t * EdgeExp.Set.t
 
       val pp : F.formatter -> t -> unit
 
@@ -279,19 +341,19 @@ end
 
 module RG_Dot : module type of Graph.Graphviz.Dot(RG)
 
-val exp_to_z3_expr : Z3.context -> Exp.t -> Z3.Expr.expr
+val exp_to_z3_expr : Z3.context -> EdgeExp.t -> Z3.Expr.expr
 
-val exp_to_str : ?braces:bool -> Exp.t -> string
+(* val exp_to_str : ?braces:bool -> Exp.t -> string *)
 
 val is_loop_prune : Sil.if_kind -> bool
 
 type t = {
   path: Path.t;
   last_node: DCP.Node.t;
-  potential_norms: Exp.Set.t;
-  initial_norms: Exp.Set.t;
+  potential_norms: EdgeExp.Set.t;
+  initial_norms: EdgeExp.Set.t;
   locals: PvarSet.t;
-  ident_map: Pvar.t Ident.Map.t;
+  ident_map: EdgeExp.t Ident.Map.t;
   edge_modified: PvarSet.t;
   loop_modified: PvarSet.t;
   edge_data: DCP.EdgeData.t;
@@ -302,7 +364,7 @@ type t = {
 
 val initial : DCP.Node.t -> t
 
-val norm_is_variable : Exp.t -> Typ.t PvarMap.t -> bool
+val norm_is_variable : EdgeExp.t -> Typ.t PvarMap.t -> bool
 
 val get_unmodified_pvars : t -> PvarSet.t
 
@@ -313,10 +375,3 @@ val join : t -> t -> t
 val widen : prev:t -> next:t -> num_iters:int -> t
 
 val pp : F.formatter -> t -> unit
-
-type summary = {
-  globals: Typ.t PvarMap.t;
-  bound: Bound.t;
-}
-
-val pp_summary : F.formatter -> summary -> unit

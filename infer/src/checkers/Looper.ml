@@ -6,7 +6,7 @@ module Domain = LooperDomain
 
 
 module Payload = SummaryPayload.Make (struct
-  type t = Domain.summary
+  type t = Domain.EdgeExp.summary
 
   let update_payloads summary (payloads : Payloads.t) = {payloads with looper= Some summary}
 
@@ -46,26 +46,6 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
     | _ -> false
     in
 
-    let rec substitute_pvars exp ident_map = match exp with
-    | Exp.BinOp (op, lexp, rexp) -> (
-      let lexp = substitute_pvars lexp ident_map in
-      let rexp = substitute_pvars rexp ident_map in
-      Exp.BinOp (op, lexp, rexp)
-    )
-    | Exp.UnOp (op, sub_exp, typ) -> (
-      let sub_exp = substitute_pvars sub_exp ident_map in
-      Exp.UnOp (op, sub_exp, typ)
-    )
-    | Exp.Var ident -> (
-      let referenced_pvar = Ident.Map.find ident ident_map in
-      Exp.Lvar referenced_pvar
-    )
-    | Exp.Cast (_, exp) -> (
-      substitute_pvars exp ident_map
-    )
-    | _ -> exp
-    in
-
     (* Extracts all formals as pvars from expression *)
     let rec extract_formals pvar_exp acc = match pvar_exp with
     | Exp.BinOp (op, lexp, rexp) -> (
@@ -83,9 +63,9 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
 
     let astate = match instr with
     | Prune (cond, loc, branch, kind) -> (
-      let pvar_condition = substitute_pvars cond astate.ident_map in
+      let pvar_condition = EdgeExp.replace_idents cond astate.ident_map in
 
-      log "[PRUNE] (%a) | %a\n" Location.pp loc Exp.pp pvar_condition;
+      log "[PRUNE] (%a) | %a\n" Location.pp loc EdgeExp.pp pvar_condition;
       let location_cmp : Location.t -> Location.t -> bool = fun loc_a loc_b ->
         loc_a.line > loc_b.line
       in
@@ -199,84 +179,41 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
       )
       in
 
-      let rec is_int_exp exp = match exp with
-      | Exp.Lvar pvar -> (match PvarMap.find_opt pvar type_map with
-        | Some pvar -> Typ.is_int pvar
-        | None -> false (* [TODO] How the hell can I get the type of a global?! *)
-      )
-      | Exp.Const Const.Cint _ -> true
-      | Exp.BinOp (_, lexp, rexp) -> is_int_exp lexp && is_int_exp rexp
-      | _ -> false
-      in
+      let normalized_cond = EdgeExp.normalize_condition pvar_condition in
 
-      let normalize_condition exp = match exp with
-      | Exp.BinOp (op, lexp, rexp) -> (
-        match op with
-        | Binop.Lt -> Exp.BinOp (Binop.Gt, rexp, lexp)
-        | Binop.Le -> Exp.BinOp (Binop.Ge, rexp, lexp)
-        | _ -> Exp.BinOp (op, lexp, rexp)
-      )
-      | _ -> exp
-      in
-
-      let normalized_cond = match pvar_condition with
-      | Exp.BinOp _ -> normalize_condition pvar_condition
-      | Exp.UnOp (LNot, exp, _) -> (
-        (* Currently handles only "!exp" *)
-        match exp with
-        | Exp.BinOp (op, lexp, rexp) -> (
-          (* Handles "!(lexp BINOP rexp)" *)
-          let negate_binop = match op with
-          | Binop.Lt -> Binop.Ge
-          | Binop.Gt -> Binop.Le
-          | Binop.Le -> Binop.Gt
-          | Binop.Ge -> Binop.Lt
-          | Binop.Eq -> Binop.Ne
-          | Binop.Ne -> Binop.Eq
-          | _ -> L.(die InternalError)"Unsupported prune condition type!"
-          in
-          normalize_condition (Exp.BinOp (negate_binop, lexp, rexp))
-        )
-        | Exp.Const const -> Exp.BinOp (Binop.Eq, Exp.Const const, Exp.zero)
-        | _ -> L.(die InternalError)"Unsupported prune condition type!"
-      )
-      | Exp.Const const -> Exp.BinOp (Binop.Ne, Exp.Const const, Exp.zero)
-      | _ -> L.(die InternalError)"Unsupported prune condition type!"
-      in
-
-      let astate = if is_int_exp normalized_cond then (
+      let astate = if EdgeExp.is_int normalized_cond type_map then (
         let astate = if branch && (loop_prune || Path.in_loop astate.path) then (
           (* Derive norm from prune condition.
           * [x > y] -> [x - y] > 0
           * [x >= y] -> [x - y + 1] > 0 *)
           match normalized_cond with
-          | Exp.BinOp (op, lexp, rexp) -> (
+          | EdgeExp.BinOp (op, lexp, rexp) -> (
             let process_gt lhs rhs =
-              let lhs_is_zero = Exp.is_zero lhs in
-              let rhs_is_zero = Exp.is_zero rhs in
-              if lhs_is_zero && rhs_is_zero then Exp.zero
-              else if lhs_is_zero then Exp.UnOp (Unop.Neg, rhs, None)
+              let lhs_is_zero = EdgeExp.is_zero lhs in
+              let rhs_is_zero = EdgeExp.is_zero rhs in
+              if lhs_is_zero && rhs_is_zero then EdgeExp.zero
+              else if lhs_is_zero then EdgeExp.UnOp (Unop.Neg, rhs, None)
               else if rhs_is_zero then lhs
-              else Exp.BinOp (Binop.MinusA None, lhs, rhs)
+              else EdgeExp.BinOp (Binop.MinusA None, lhs, rhs)
             in
 
             let process_op op = match op with
               | Binop.Gt -> Some (process_gt lexp rexp)
-              | Binop.Ge -> Some (Exp.BinOp (Binop.PlusA None, (process_gt lexp rexp), Exp.one))
+              | Binop.Ge -> Some (EdgeExp.BinOp (Binop.PlusA None, (process_gt lexp rexp), EdgeExp.one))
               | _ -> None
             in
             match process_op op with
             | Some new_norm -> (
               let is_modified = match new_norm with
-              | Exp.Lvar pvar -> PvarSet.mem pvar astate.loop_modified
+              | EdgeExp.Var pvar -> PvarSet.mem pvar astate.loop_modified
               | _ -> false
               in
               if not loop_prune && not is_modified then (
                 (* Prune on loop path but not loop head. Norm is only potential,
                 * must be confirmed by increment/decrement on this loop path *)
-                { astate with potential_norms = Exp.Set.add new_norm astate.potential_norms; }
+                { astate with potential_norms = EdgeExp.Set.add new_norm astate.potential_norms; }
               ) else (
-                { astate with initial_norms = Exp.Set.add new_norm astate.initial_norms; }
+                { astate with initial_norms = EdgeExp.Set.add new_norm astate.initial_norms; }
               )
             ) 
             | None -> astate
@@ -306,24 +243,32 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
       }
     )
     | Store (Exp.Lvar assigned, _, rexp, loc) -> (
-      let pvar_rexp = substitute_pvars rexp astate.ident_map in
-      log "[STORE] (%a) | %a = %a | %B\n" Location.pp loc Pvar.pp_value assigned 
-      Exp.pp pvar_rexp is_decl_node;
-  
+      let pvar_rexp = EdgeExp.replace_idents rexp astate.ident_map in
+      let pvar_rexp = match pvar_rexp with
+      | EdgeExp.Call (_, _, _, summary) -> (
+        match summary.return_bound with
+        | Some ret_bound -> ret_bound
+        | None -> pvar_rexp
+      )
+      | _ -> pvar_rexp
+      in
+      log "[STORE] (%a) | %a = %a | %B\n" Location.pp loc Pvar.pp_value assigned
+      EdgeExp.pp pvar_rexp is_decl_node;
+
       (* Substitute rexp based on previous assignments,
        * eg. [beg = i; end = beg;] becomes [beg = i; end = i] *)
       let pvar_rexp = match pvar_rexp with
-      | Exp.BinOp (Binop.PlusA _, Exp.Lvar lexp, Exp.Const (Const.Cint c1)) -> (
+      | EdgeExp.BinOp (Binop.PlusA _, EdgeExp.Var lexp, EdgeExp.Const (Const.Cint c1)) -> (
         (* [BINOP] PVAR + CONST *)
         match (DCP.EdgeData.get_assignment_rhs astate.edge_data lexp) with
-        | Exp.BinOp (Binop.PlusA _, lexp, Exp.Const (Const.Cint c2)) -> (
+        | EdgeExp.BinOp (Binop.PlusA _, lexp, EdgeExp.Const (Const.Cint c2)) -> (
           (* [BINOP] (PVAR + C1) + C2 -> PVAR + (C1 + C2) *)
-          let const = Exp.Const (Const.Cint (IntLit.add c1 c2)) in
-          Exp.BinOp (Binop.PlusA None, lexp, const)
+          let const = EdgeExp.Const (Const.Cint (IntLit.add c1 c2)) in
+          EdgeExp.BinOp (Binop.PlusA None, lexp, const)
         )
         | _ -> pvar_rexp
       )
-      | Exp.Lvar rhs_pvar -> (
+      | EdgeExp.Var rhs_pvar -> (
         DCP.EdgeData.get_assignment_rhs astate.edge_data rhs_pvar
       )
       | _ -> pvar_rexp
@@ -333,12 +278,12 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
       in
 
       let astate = match pvar_rexp with 
-      | Exp.BinOp (op, Exp.Lvar pvar, Exp.Const (Const.Cint _)) when Pvar.equal assigned pvar -> (
-        let assigned_exp = Exp.Lvar assigned in
-        if is_plus_minus_op op && Exp.Set.mem assigned_exp astate.potential_norms then (
+      | EdgeExp.BinOp (op, EdgeExp.Var pvar, EdgeExp.Const (Const.Cint _)) when Pvar.equal assigned pvar -> (
+        let assigned_exp = EdgeExp.Var assigned in
+        if is_plus_minus_op op && EdgeExp.Set.mem assigned_exp astate.potential_norms then (
           { astate with
-            potential_norms = Exp.Set.remove assigned_exp astate.potential_norms;
-            initial_norms = Exp.Set.add assigned_exp astate.potential_norms;
+            potential_norms = EdgeExp.Set.remove assigned_exp astate.potential_norms;
+            initial_norms = EdgeExp.Set.add assigned_exp astate.potential_norms;
           }
         ) else (
           astate
@@ -351,6 +296,14 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
       ) else astate.loop_modified 
       in
       let edge_data = DCP.EdgeData.add_assignment astate.edge_data assigned pvar_rexp in
+      let astate = if Pvar.is_return assigned then (
+        edge_data.exit_edge <- true;
+        { astate with 
+          initial_norms = EdgeExp.Set.add (EdgeExp.Var assigned) astate.potential_norms;
+          edge_data = edge_data;
+        }
+      ) else astate
+      in
       let locals = if is_decl_node then PvarSet.add assigned astate.locals
       else astate.locals in
       { astate with
@@ -363,7 +316,7 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
     | Load (ident, lexp, _typ, loc) -> (
       log "[LOAD] (%a) | %a = %a\n" Location.pp loc Ident.pp ident Exp.pp lexp;
       let ident_map = match lexp with
-      | Exp.Lvar pvar -> Ident.Map.add ident pvar astate.ident_map
+      | Exp.Lvar pvar -> Ident.Map.add ident (EdgeExp.Var pvar) astate.ident_map
       | Exp.Var id -> (
         let pvar = Ident.Map.find id astate.ident_map in
         Ident.Map.add ident pvar astate.ident_map
@@ -372,10 +325,38 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
       in
       { astate with ident_map = ident_map }
     )
-    | Call (_, callee_pname, _, loc, _) -> (
-      (* let _fun_name = Typ.Procname.to_simplified_string callee_pname in *)
-      log "[CALL] (%a) | %a\n" Location.pp loc Exp.pp callee_pname;
-      astate
+    | Call ((ret_id, ret_type), Exp.Const (Const.Cfun callee_pname), args, loc, _) -> (
+      log "[CALL] (%a) | %a\n" Location.pp loc Typ.Procname.pp callee_pname;
+      
+      let summary = match Payload.read pdesc callee_pname with
+      | Some summary -> summary
+      | None -> L.(die InternalError)"Missing summary!"
+      in
+      let args = List.map args ~f:(fun (arg, typ) ->
+        (EdgeExp.replace_idents arg astate.ident_map, typ)) 
+      in
+      log "   FormalMap: %a\n" FormalMap.pp summary.formal_map;
+      log "   Formal Bound: %a\n" EdgeExp.pp summary.bound;
+      let subst_bound = EdgeExp.subst summary.bound args summary.formal_map in
+      let subst_ret_bound = match summary.return_bound with
+      | Some ret_bound -> Some (EdgeExp.subst ret_bound args summary.formal_map)
+      | None -> None
+      in
+      log "   Instantiated Bound: %a\n" EdgeExp.pp subst_bound;
+      let summary = { summary with 
+        bound = subst_bound;
+        return_bound = subst_ret_bound;
+      } 
+      in
+      let call = EdgeExp.Call (ret_type, callee_pname, args, summary) in
+      let edge_data = { astate.edge_data with 
+        calls = CallSiteSet.add (call, loc) astate.edge_data.calls
+      }
+      in
+      { astate with 
+        ident_map = Ident.Map.add ret_id call astate.ident_map;
+        edge_data = edge_data;
+      }
     )
     | Metadata metadata -> (
       log "[METADATA]\n";
@@ -448,20 +429,20 @@ module Analyzer = AbstractInterpreter.MakeWTO (TransferFunctions (CFG))
   end)
   
   module Resets = Caml.Set.Make(struct
-    type nonrec t = Domain.DCP.E.t * Exp.t * IntLit.t
+    type nonrec t = Domain.DCP.E.t * Domain.EdgeExp.t * IntLit.t
     [@@deriving compare]
   end)
 
   type cache = {
-    updates: (Increments.t * Resets.t) Exp.Map.t;
-    variable_bounds: Domain.Bound.t Exp.Map.t;
-    reset_chains: Domain.RG.Chain.Set.t Exp.Map.t;
+    updates: (Increments.t * Resets.t) Domain.EdgeExp.Map.t;
+    variable_bounds: Domain.EdgeExp.t Domain.EdgeExp.Map.t;
+    reset_chains: Domain.RG.Chain.Set.t Domain.EdgeExp.Map.t;
   }
 
   let empty_cache = { 
-    updates = Exp.Map.empty; 
-    variable_bounds = Exp.Map.empty;
-    reset_chains = Exp.Map.empty;
+    updates = Domain.EdgeExp.Map.empty; 
+    variable_bounds = Domain.EdgeExp.Map.empty;
+    reset_chains = Domain.EdgeExp.Map.empty;
   }
 
   let checker {Callbacks.tenv; proc_desc; summary} : Summary.t =
@@ -486,7 +467,6 @@ module Analyzer = AbstractInterpreter.MakeWTO (TransferFunctions (CFG))
       PvarMap.add pvar local.typ acc
     )
     in
-    List.iter (Procdesc.get_captured proc_desc) ~f:(fun (name, typ) -> log "CAPTURED: %s\n" (Mangled.to_string_full name));
 
     let type_map = PvarMap.union (fun _ ->
       L.(die InternalError)"Type map pvar clash!"
@@ -514,15 +494,19 @@ module Analyzer = AbstractInterpreter.MakeWTO (TransferFunctions (CFG))
         DCP.add_edge_e lts edge;
       ) post.graph_edges;
 
-      let out_folder = "./Graphs/" in
+      (* let out_folder = "./Graphs/" in
+      (try Unix.mkdir out_folder with _ -> ()); *)
+
+      let out_folder = "./Graphs/" ^ proc_name_str ^ "/" in
       (try Unix.mkdir out_folder with _ -> ());
 
-      let file = Out_channel.create (out_folder ^ "LTS_" ^ proc_name_str ^ ".dot") in
+      let file = Out_channel.create (out_folder ^ "LTS.dot") in
+      active_graph_type := LTS;
       DCPDot.output_graph file lts;
       Out_channel.close file;
 
       log "[INITIAL NORMS]\n";
-      Exp.Set.iter (fun norm -> log "  %a\n" Exp.pp norm) post.initial_norms;
+      EdgeExp.Set.iter (fun norm -> log "  %a\n" EdgeExp.pp norm) post.initial_norms;
       let dcp = DCP.create () in
       DCP.NodeSet.iter (fun node ->
         DCP.add_vertex dcp node;
@@ -532,22 +516,22 @@ module Analyzer = AbstractInterpreter.MakeWTO (TransferFunctions (CFG))
        * Derive difference constraints for each edge for each norm and
        * add newly created norms unprocessed_norms set during the process *)
       let unprocessed_norms = ref post.initial_norms in
-      let processed_norms = ref Exp.Set.empty in
-      while not (Exp.Set.is_empty !unprocessed_norms) do (
-        let norm = Exp.Set.min_elt !unprocessed_norms in
-        unprocessed_norms := Exp.Set.remove norm !unprocessed_norms;
-        processed_norms := Exp.Set.add norm !processed_norms;
+      let processed_norms = ref EdgeExp.Set.empty in
+      while not (EdgeExp.Set.is_empty !unprocessed_norms) do (
+        let norm = EdgeExp.Set.min_elt !unprocessed_norms in
+        unprocessed_norms := EdgeExp.Set.remove norm !unprocessed_norms;
+        processed_norms := EdgeExp.Set.add norm !processed_norms;
         DCP.EdgeSet.iter (fun (_, edge_data, _) ->
           let new_norms = DCP.EdgeData.derive_constraint edge_data norm formals in
 
           (* Remove already processed norms and add new norms to unprocessed set *)
-          let new_norms = Exp.Set.diff new_norms !processed_norms in
-          unprocessed_norms := Exp.Set.union new_norms !unprocessed_norms;
+          let new_norms = EdgeExp.Set.diff new_norms !processed_norms in
+          unprocessed_norms := EdgeExp.Set.union new_norms !unprocessed_norms;
         ) post.graph_edges;
       ) done;
 
       log "[FINAL NORMS]\n";
-      Exp.Set.iter (fun norm -> log "  %a\n" Exp.pp norm) !processed_norms;
+      EdgeExp.Set.iter (fun norm -> log "  %a\n" EdgeExp.pp norm) !processed_norms;
 
       (* All DCs and norms are derived, now derive guards.
         * Use Z3 SMT solver to check which norms on which
@@ -560,15 +544,15 @@ module Analyzer = AbstractInterpreter.MakeWTO (TransferFunctions (CFG))
       let ctx = (Z3.mk_context cfg) in
       let solver = (Z3.Solver.mk_solver ctx None) in
       let zero_const = Z3.Arithmetic.Integer.mk_numeral_i ctx 0 in
-      let possible_guards = Exp.Set.fold (fun norm acc -> match norm with
-        | Exp.BinOp _ | Exp.Lvar _ -> (
+      let possible_guards = EdgeExp.Set.fold (fun norm acc -> match norm with
+        | EdgeExp.BinOp _ | EdgeExp.Var _ -> (
           let z3_norm = exp_to_z3_expr ctx norm in
           let guard_expr = Z3.Arithmetic.mk_gt ctx z3_norm zero_const in
           acc @ [guard_expr]
         )
-        | Exp.Const Const.Cint _ -> acc
+        | EdgeExp.Const Const.Cint _ -> acc
         | _ -> (
-          L.(die InternalError)"[Guards] Norm expression %a is not supported!" Exp.pp norm
+          L.(die InternalError)"[Guards] Norm expression %a is not supported!" EdgeExp.pp norm
         )
       ) !processed_norms []
       in
@@ -578,7 +562,8 @@ module Analyzer = AbstractInterpreter.MakeWTO (TransferFunctions (CFG))
       ) post.graph_edges;
 
       let guarded_nodes = DCP.fold_edges_e (fun (_, edge_data, dst) acc ->
-        if Exp.Set.is_empty edge_data.guards then acc else (log "GUARDED NODE: %a\n" DCP.Node.pp dst; DCP.NodeSet.add dst acc)
+        if EdgeExp.Set.is_empty edge_data.guards then acc 
+        else (log "GUARDED NODE: %a\n" DCP.Node.pp dst; DCP.NodeSet.add dst acc)
       ) dcp DCP.NodeSet.empty
       in
 
@@ -587,7 +572,7 @@ module Analyzer = AbstractInterpreter.MakeWTO (TransferFunctions (CFG))
         * on any of those incoming edges (guard is a norm) *)
       let rec propagate_guards : DCP.NodeSet.t -> unit = fun nodes -> (
         if not (DCP.NodeSet.is_empty nodes) then (
-          let rec get_shared_guards : Exp.Set.t -> DCP.edge list -> Exp.Set.t =
+          let rec get_shared_guards : EdgeExp.Set.t -> DCP.edge list -> EdgeExp.Set.t =
           fun guards edges -> match edges with
           | (_, edge_data, _) :: edges -> (
             if edge_data.backedge then (
@@ -595,7 +580,7 @@ module Analyzer = AbstractInterpreter.MakeWTO (TransferFunctions (CFG))
             ) else (
               (* Get edge guards that are not decreased on this edge *)
               let guards = DCP.EdgeData.active_guards edge_data in
-              Exp.Set.inter guards (get_shared_guards guards edges)
+              EdgeExp.Set.inter guards (get_shared_guards guards edges)
             )
           )
           | [] -> guards
@@ -604,7 +589,7 @@ module Analyzer = AbstractInterpreter.MakeWTO (TransferFunctions (CFG))
           let node = DCP.NodeSet.min_elt nodes in
           let nodes = DCP.NodeSet.remove node nodes in
           let incoming_edges = DCP.pred_e dcp node in
-          let guards = get_shared_guards Exp.Set.empty incoming_edges in
+          let guards = get_shared_guards EdgeExp.Set.empty incoming_edges in
           let out_edges = DCP.succ_e dcp node in
           let guards, out_edges = match node with
           | DCP.Node.Prune (kind, _) when is_loop_prune kind -> (
@@ -615,20 +600,20 @@ module Analyzer = AbstractInterpreter.MakeWTO (TransferFunctions (CFG))
             )
             in
             let (src, true_branch, dst) = List.hd_exn true_branch in
-            true_branch.guards <- Exp.Set.union guards true_branch.guards;
+            true_branch.guards <- EdgeExp.Set.union guards true_branch.guards;
             if not (DCP.Node.equal src dst) then propagate_guards (DCP.NodeSet.add dst nodes);
             let (_, backedge, _) = List.find_exn incoming_edges ~f:(fun (_, edge_data, _) -> edge_data.backedge) in
             let backedge_guards = DCP.EdgeData.active_guards backedge in
-            let guards = Exp.Set.inter guards backedge_guards in
+            let guards = EdgeExp.Set.inter guards backedge_guards in
             guards, out_edges
           )
           | _ -> guards, out_edges
           in
-          let nodes = if Exp.Set.is_empty guards then nodes else (
+          let nodes = if EdgeExp.Set.is_empty guards then nodes else (
             (* Propagate guards to all outgoing edges and add
               * destination nodes of those edges to the processing queue *)
             List.fold out_edges ~init:nodes ~f:(fun acc (_, (edge_data : DCP.EdgeData.t), dst) ->
-              edge_data.guards <- Exp.Set.union guards edge_data.guards;
+              edge_data.guards <- EdgeExp.Set.union guards edge_data.guards;
               if edge_data.backedge then acc else DCP.NodeSet.add dst acc
             )
           )
@@ -640,7 +625,7 @@ module Analyzer = AbstractInterpreter.MakeWTO (TransferFunctions (CFG))
       propagate_guards guarded_nodes;
 
       (* Output Guarded DCP over integers *)
-      let file = Out_channel.create (out_folder ^ "DCP_guarded_" ^ proc_name_str ^ ".dot") in
+      let file = Out_channel.create (out_folder ^ "DCP_guarded.dot") in
       active_graph_type := GuardedDCP;
       DCPDot.output_graph file dcp;
       Out_channel.close file;
@@ -654,7 +639,7 @@ module Analyzer = AbstractInterpreter.MakeWTO (TransferFunctions (CFG))
                * doesn't add up in the example 'SingleLinkSimple' where they have [i]' <= [n]-1
                * which is indeed right if we want to get valid bound but their abstraction algorithm
                * leads to [i]' <= [n] because there's no guard for n on the transition *)
-              let const = if Exp.Set.mem rhs edge_data.guards || not (Exp.equal lhs rhs) then IntLit.minus_one 
+              let const = if EdgeExp.Set.mem rhs edge_data.guards || not (EdgeExp.equal lhs rhs) then IntLit.minus_one 
               else IntLit.zero in
               rhs, const
             ) else (
@@ -670,7 +655,7 @@ module Analyzer = AbstractInterpreter.MakeWTO (TransferFunctions (CFG))
       in
       to_natural_numbers post.graph_edges;
 
-      let file = Out_channel.create (out_folder ^ "DCP_" ^ proc_name_str ^ ".dot") in
+      let file = Out_channel.create (out_folder ^ "DCP.dot") in
       active_graph_type := DCP;
       DCPDot.output_graph file dcp;
       Out_channel.close file;
@@ -696,7 +681,7 @@ module Analyzer = AbstractInterpreter.MakeWTO (TransferFunctions (CFG))
         ) edge_data.constraints;
       ) post.graph_edges;
 
-      let file = Out_channel.create (out_folder ^ "VFG_" ^ proc_name_str ^ ".dot") in
+      let file = Out_channel.create (out_folder ^ "VFG.dot") in
       VFG_Dot.output_graph file vf_graph;
       Out_channel.close file;
 
@@ -705,16 +690,20 @@ module Analyzer = AbstractInterpreter.MakeWTO (TransferFunctions (CFG))
       let vfg_components = VFG_SCC.scc_list vf_graph in
       let vfg_map = List.foldi vfg_components ~init:VFG.Map.empty ~f:(fun idx map component ->
         let pvar_name = Mangled.from_string ("var_" ^ string_of_int idx) in
-        let aux_norm = Exp.Lvar (Pvar.mk pvar_name proc_name) in
-        List.fold component ~init:map ~f:(fun map (node : VFG.Node.t) ->
-          processed_norms := Exp.Set.add aux_norm !processed_norms;
+        let aux_norm = EdgeExp.Var (Pvar.mk pvar_name proc_name) in
+        List.fold component ~init:map ~f:(fun map ((exp, dcp_node as node) : VFG.Node.t) ->
+          let aux_norm = match exp with
+          | EdgeExp.Var pvar when Pvar.is_return pvar -> exp
+          | _ -> aux_norm
+          in
+          processed_norms := EdgeExp.Set.add aux_norm !processed_norms;
           VFG.Map.add node aux_norm map
         )
       )
       in
       log "[VFG Mapping]\n";
       VFG.Map.iter (fun (norm, dcp_node) aux_norm -> 
-        log "  (%a, %a) --> %a\n" DCP.Node.pp dcp_node Exp.pp norm Exp.pp aux_norm;
+        log "  (%a, %a) --> %a\n" DCP.Node.pp dcp_node EdgeExp.pp norm EdgeExp.pp aux_norm;
       ) vfg_map;
 
       (* Apply VFG mapping and rename DCP variables to ensure acyclic reset DAG *)
@@ -734,7 +723,7 @@ module Analyzer = AbstractInterpreter.MakeWTO (TransferFunctions (CFG))
         edge_data.constraints <- constraints;
       ) post.graph_edges;
 
-      let file = Out_channel.create (out_folder ^ "DCP_renamed_" ^ proc_name_str ^ ".dot") in
+      let file = Out_channel.create (out_folder ^ "DCP_renamed.dot") in
       active_graph_type := DCP;
       DCPDot.output_graph file dcp;
       Out_channel.close file;
@@ -743,7 +732,7 @@ module Analyzer = AbstractInterpreter.MakeWTO (TransferFunctions (CFG))
       DCP.EdgeSet.iter (fun (src, edge_data, dst) -> 
         (* Search for resets *)
         DC.Map.iter (fun lhs_norm (rhs_norm, const) ->
-          if not (Exp.equal lhs_norm rhs_norm) then (
+          if not (EdgeExp.equal lhs_norm rhs_norm) then (
             let rg_add_node node = if not (RG.mem_vertex reset_graph node) then (
               RG.add_vertex reset_graph node;
             )
@@ -755,7 +744,7 @@ module Analyzer = AbstractInterpreter.MakeWTO (TransferFunctions (CFG))
         ) edge_data.constraints;
       ) post.graph_edges;
 
-      let file = Out_channel.create (out_folder ^ "RG_" ^ proc_name_str ^ ".dot") in
+      let file = Out_channel.create (out_folder ^ "RG.dot") in
       RG_Dot.output_graph file reset_graph;
       Out_channel.close file;
 
@@ -781,12 +770,12 @@ module Analyzer = AbstractInterpreter.MakeWTO (TransferFunctions (CFG))
       let scc_edges = get_scc_edges dcp in
       let non_scc_edges = DCP.EdgeSet.diff post.graph_edges scc_edges in
       DCP.EdgeSet.iter (fun (_, edge_data, _) ->
-        edge_data.bound_norm <- Some Exp.one;
+        edge_data.bound_norm <- Some EdgeExp.one;
       ) non_scc_edges;
 
       (* For each variable norm construct a E(v) set of edges where it is decreased
        * and assign each edge from this set local bound of v *)
-      let norm_edge_sets, processed_edges = Exp.Set.fold (fun norm (sets, processed_edges) ->
+      let norm_edge_sets, processed_edges = EdgeExp.Set.fold (fun norm (sets, processed_edges) ->
         let get_edge_set norm = DCP.EdgeSet.filter (fun (_, edge_data, _) ->
           match DC.Map.get_dc norm edge_data.constraints with
           | Some dc when DC.same_norms dc && DC.is_decreasing dc-> (
@@ -797,32 +786,32 @@ module Analyzer = AbstractInterpreter.MakeWTO (TransferFunctions (CFG))
         ) scc_edges
         in
         match norm with
-        | Exp.Lvar pvar -> (
+        | EdgeExp.Var pvar -> (
           if PvarMap.mem pvar formals then sets, processed_edges
           else (
             let bounded_edges = get_edge_set norm in
-            let sets = Exp.Map.add norm bounded_edges sets in
+            let sets = EdgeExp.Map.add norm bounded_edges sets in
             sets, DCP.EdgeSet.union processed_edges bounded_edges
           )
         )
-        | Exp.BinOp _ -> (
+        | EdgeExp.BinOp _ -> (
           (* [TODO] Validate that norm is not purely built over symbolic constants *)
           let bounded_edges = get_edge_set norm in
-          let sets = Exp.Map.add norm bounded_edges sets in
+          let sets = EdgeExp.Map.add norm bounded_edges sets in
           sets, DCP.EdgeSet.union processed_edges bounded_edges
         )
-        | Exp.Const _ -> sets, processed_edges
+        | EdgeExp.Const _ -> sets, processed_edges
         | _ -> L.(die InternalError)"[Norm edge sets] Invalid norm expression!"
-        ) !processed_norms (Exp.Map.empty, DCP.EdgeSet.empty)
+      ) !processed_norms (EdgeExp.Map.empty, DCP.EdgeSet.empty)
       in
-      Exp.Map.iter (fun norm edge_set ->
-        log "E(%a):\n" Exp.pp norm;
+      EdgeExp.Map.iter (fun norm edge_set ->
+        log "E(%a):\n" EdgeExp.pp norm;
         DCP.EdgeSet.iter (fun (src, edge_data, dst) ->
           let local_bound = match edge_data.bound_norm with
           | Some bound -> bound
           | None -> L.(die InternalError)""
           in
-          log "  %a -- %a -- %a\n" DCP.Node.pp src Exp.pp local_bound DCP.Node.pp dst;
+          log "  %a -- %a -- %a\n" DCP.Node.pp src EdgeExp.pp local_bound DCP.Node.pp dst;
         ) edge_set
       ) norm_edge_sets;
 
@@ -831,7 +820,7 @@ module Analyzer = AbstractInterpreter.MakeWTO (TransferFunctions (CFG))
        * and for each set try to remove edges from the DCP graph. If some
        * unprocessed edges cease to be part of any SCC after the removal,
        * assign variable v as local bound of those edges *)
-      let remaining_edges = Exp.Map.fold (fun norm edges remaining_edges ->
+      let remaining_edges = EdgeExp.Map.fold (fun norm edges remaining_edges ->
         if DCP.EdgeSet.is_empty remaining_edges then (
           remaining_edges
         ) else (
@@ -857,7 +846,7 @@ module Analyzer = AbstractInterpreter.MakeWTO (TransferFunctions (CFG))
       in
 
       let get_update_map norm edges cache =
-        if Exp.Map.mem norm cache.updates then (
+        if EdgeExp.Map.mem norm cache.updates then (
           cache
         ) else (
           (* Create missing increments and resets sets for this variable norm *)
@@ -880,33 +869,33 @@ module Analyzer = AbstractInterpreter.MakeWTO (TransferFunctions (CFG))
             | None -> (increments, resets)
           ) edges (Increments.empty, Resets.empty)
           in
-          { cache with updates = Exp.Map.add norm updates cache.updates }
+          { cache with updates = EdgeExp.Map.add norm updates cache.updates }
         )
       in
 
-      let rec calculate_increment_sum norms cache = Exp.Set.fold (fun norm (total_sum, cache) -> 
+      let rec calculate_increment_sum norms cache = EdgeExp.Set.fold (fun norm (total_sum, cache) -> 
         (* Calculates increment sum based on increments of variable norm:
          * SUM(TB(t) * const) for all edges where norm is incremented, 0 if nowhere *)
         let cache = get_update_map norm post.graph_edges cache in
-        let increments, _ = Exp.Map.find norm cache.updates in
+        let increments, _ = EdgeExp.Map.find norm cache.updates in
         let sum, cache = Increments.fold (fun (dcp_edge, const) (sum, cache) ->
           let edge_bound, cache = transition_bound dcp_edge cache in
-          let increment_exp = if Bound.is_zero edge_bound then (
+          let increment_exp = if EdgeExp.is_zero edge_bound then (
             None
           ) else (
             if IntLit.isone const then (
               Some edge_bound
             ) else (
-              let const_exp = Exp.Const (Const.Cint const) in
-              if Bound.is_one edge_bound then Some (Bound.Value const_exp)
-              else Some (Bound.BinOp (Binop.Mult None, edge_bound, Bound.Value const_exp))
+              let const_exp = EdgeExp.Const (Const.Cint const) in
+              if EdgeExp.is_one edge_bound then Some const_exp
+              else Some (EdgeExp.BinOp (Binop.Mult None, edge_bound, const_exp))
             )
           )
           in
           let sum = match sum with
           | Some sum -> (
             match increment_exp with
-            | Some exp -> Some (Bound.BinOp (Binop.PlusA None, sum, exp))
+            | Some exp -> Some (EdgeExp.BinOp (Binop.PlusA None, sum, exp))
             | None -> Some sum
           )
           | None -> increment_exp
@@ -915,7 +904,7 @@ module Analyzer = AbstractInterpreter.MakeWTO (TransferFunctions (CFG))
         ) increments (None, cache)
         in
         let total_sum = match total_sum, sum with
-        | Some total_sum, Some sum -> Some (Bound.BinOp (Binop.PlusA None, total_sum, sum))
+        | Some total_sum, Some sum -> Some (EdgeExp.BinOp (Binop.PlusA None, total_sum, sum))
         | Some sum, None | None, Some sum -> Some sum
         | None, None -> None
         in
@@ -933,21 +922,21 @@ module Analyzer = AbstractInterpreter.MakeWTO (TransferFunctions (CFG))
         let var_bound, cache = variable_bound norm cache in
         let max_exp, cache = if IntLit.isnegative chain_value then (
           (* result can be negative, wrap bound expression in the max function *)
-          let const_bound = Bound.Value (Exp.Const (Const.Cint (IntLit.neg chain_value))) in
+          let const_bound = EdgeExp.Const (Const.Cint (IntLit.neg chain_value)) in
           let binop_bound = match var_bound with
-          | Bound.Max args -> (
+          | EdgeExp.Max args -> (
             (* max(max(x, 0) - 1, 0) == max(x - 1, 0) *)
-            Bound.BinOp (Binop.MinusA None, (List.hd_exn args), const_bound)
+            EdgeExp.BinOp (Binop.MinusA None, (List.hd_exn args), const_bound)
           )
-          | _ -> Bound.BinOp (Binop.MinusA None, var_bound, const_bound)
+          | _ -> EdgeExp.BinOp (Binop.MinusA None, var_bound, const_bound)
           in
-          Bound.Max [binop_bound], cache
+          EdgeExp.Max [binop_bound], cache
         ) else if IntLit.iszero chain_value then (
           var_bound, cache
         ) else (
           (* const > 0 => result must be positive, max function is useless *)
-          let const_bound = Bound.Value (Exp.Const (Const.Cint chain_value)) in
-          let binop_bound = Bound.BinOp (Binop.PlusA None, var_bound, const_bound) in
+          let const_bound = EdgeExp.Const (Const.Cint chain_value) in
+          let binop_bound = EdgeExp.BinOp (Binop.PlusA None, var_bound, const_bound) in
           binop_bound, cache
         )
         in
@@ -957,29 +946,29 @@ module Analyzer = AbstractInterpreter.MakeWTO (TransferFunctions (CFG))
         let fold_aux (args, cache) (dcp_edge : DCP.E.t) =
           let open Base.Continue_or_stop in
           let edge_bound, cache = transition_bound dcp_edge cache in
-          if Bound.is_zero edge_bound then Stop ([Bound.Value (Exp.zero)], cache) 
+          if EdgeExp.is_zero edge_bound then Stop ([EdgeExp.zero], cache) 
           else (
             match List.hd args with
-            | Some arg when Bound.is_one arg -> Continue (args, cache)
+            | Some arg when EdgeExp.is_one arg -> Continue (args, cache)
             | _ -> (
-              if Bound.is_one edge_bound then Continue ([edge_bound], cache) 
+              if EdgeExp.is_one edge_bound then Continue ([edge_bound], cache) 
               else Continue (args @ [edge_bound], cache)
             )
           )
         in
-        let reset_exp, cache = if Bound.is_zero max_exp then (
+        let reset_exp, cache = if EdgeExp.is_zero max_exp then (
             None, cache
           ) else (
             let chain_transitions = DCP.EdgeSet.elements (RG.Chain.transitions chain) in
             let args, cache = List.fold_until chain_transitions ~init:([], cache) ~f:fold_aux ~finish:(fun acc -> acc) in
-            let args = List.dedup_and_sort ~compare:Bound.compare args in
-            let edge_bound = if Int.equal (List.length args) 1 then List.hd_exn args else Bound.Min (args) in
-            if Bound.is_one edge_bound then Some max_exp, cache
-            else Some (Bound.BinOp (Binop.Mult None, edge_bound, max_exp)), cache
+            let args = List.dedup_and_sort ~compare:EdgeExp.compare args in
+            let edge_bound = if Int.equal (List.length args) 1 then List.hd_exn args else EdgeExp.Min (args) in
+            if EdgeExp.is_one edge_bound then Some max_exp, cache
+            else Some (EdgeExp.BinOp (Binop.Mult None, edge_bound, max_exp)), cache
           )
         in
         let calculate_sum e1 e2 = match e1, e2 with
-        | Some e1, Some e2 -> Some (Bound.BinOp (Binop.PlusA None, e1, e2))
+        | Some e1, Some e2 -> Some (EdgeExp.BinOp (Binop.PlusA None, e1, e2))
         | Some e, None | None, Some e -> Some e
         | None, None -> None
         in
@@ -990,12 +979,12 @@ module Analyzer = AbstractInterpreter.MakeWTO (TransferFunctions (CFG))
       ) chains (None, cache)
 
       and variable_bound norm cache =
-        let bound, cache = match Exp.Map.find_opt norm cache.variable_bounds with
+        let bound, cache = match EdgeExp.Map.find_opt norm cache.variable_bounds with
         | Some bound -> bound, cache
         | None -> (
-          let norm_bound = Bound.Value norm in
+          let norm_bound = norm in
           let var_bound, cache = match norm with
-          | Exp.Lvar pvar -> (
+          | EdgeExp.Var pvar -> (
             if PvarMap.mem pvar formals then (
               match PvarMap.find_opt pvar type_map with
               | Some typ -> (match typ.desc with
@@ -1004,56 +993,56 @@ module Analyzer = AbstractInterpreter.MakeWTO (TransferFunctions (CFG))
                     norm_bound, cache
                   ) else (
                     (* for signed x: max(x, 0) *)
-                    Bound.Max [norm_bound], cache
+                    EdgeExp.Max [norm_bound], cache
                   )
                 | _ -> L.(die InternalError)"[VB] Unexpected Lvar type!"
               )
               | None -> L.(die InternalError)"[VB] Lvar [%a] is not a local variable!" Pvar.pp_value pvar
             ) else (
               let cache = get_update_map norm post.graph_edges cache in
-              let _, resets = Exp.Map.find norm cache.updates in
-              let increment_sum, cache = calculate_increment_sum (Exp.Set.singleton norm) cache in
+              let _, resets = EdgeExp.Map.find norm cache.updates in
+              let increment_sum, cache = calculate_increment_sum (EdgeExp.Set.singleton norm) cache in
               let max_args, cache = Resets.fold (fun (_, norm, const) (args, cache) -> 
                 let var_bound, cache = variable_bound norm cache in
                 let max_arg = if IntLit.isnegative const then (
-                  let const = Bound.Value (Exp.Const (Const.Cint (IntLit.neg const))) in
-                  [Bound.BinOp (Binop.MinusA None, var_bound, const)]
+                  let const = EdgeExp.Const (Const.Cint (IntLit.neg const)) in
+                  [EdgeExp.BinOp (Binop.MinusA None, var_bound, const)]
                 ) else if IntLit.iszero const then (
                   [var_bound]
                 ) else (
-                  let const = Bound.Value (Exp.Const (Const.Cint const)) in
-                  [Bound.BinOp (Binop.PlusA None, var_bound, const)]
+                  let const = EdgeExp.Const (Const.Cint const) in
+                  [EdgeExp.BinOp (Binop.PlusA None, var_bound, const)]
                 )
                 in
                 args @ max_arg, cache
               ) resets ([], cache)
               in
-              let max_args = List.dedup_and_sort ~compare:Bound.compare max_args in
+              let max_args = List.dedup_and_sort ~compare:EdgeExp.compare max_args in
               let max = if Int.equal (List.length max_args) 1 
               then List.hd_exn max_args
-              else Bound.Max max_args
+              else EdgeExp.Max max_args
               in
               let var_bound = match increment_sum with
-              | Some increments -> if Bound.is_zero max then (
+              | Some increments -> if EdgeExp.is_zero max then (
                 increments
-              ) else Bound.BinOp (Binop.PlusA None, increments, max)
+              ) else EdgeExp.BinOp (Binop.PlusA None, increments, max)
               | None -> max
               in
               var_bound, cache
             )
           )
-          | Exp.Const Const.Cint const_norm -> (
-            if IntLit.isnegative const_norm then Bound.Max [norm_bound], cache
+          | EdgeExp.Const Const.Cint const_norm -> (
+            if IntLit.isnegative const_norm then EdgeExp.Max [norm_bound], cache
             else norm_bound, cache
           )
-          | _ -> L.(die InternalError)"[VB] Unsupported norm expression [%a]!" Exp.pp norm
+          | _ -> L.(die InternalError)"[VB] Unsupported norm expression [%a]!" EdgeExp.pp norm
           in
-          let vb_cache = Exp.Map.add norm var_bound cache.variable_bounds in
+          let vb_cache = EdgeExp.Map.add norm var_bound cache.variable_bounds in
           let cache = { cache with variable_bounds = vb_cache } in
           var_bound, cache
         )
         in
-        log "   [VB(%a)] %a\n" Exp.pp norm Bound.pp bound;
+        log "   [VB(%a)] %a\n" EdgeExp.pp norm EdgeExp.pp bound;
         bound, cache
 
       and transition_bound (src, (edge_data : DCP.EdgeData.t), dst) cache =
@@ -1071,16 +1060,16 @@ module Analyzer = AbstractInterpreter.MakeWTO (TransferFunctions (CFG))
 
             match edge_data.bound_norm with
             | Some norm -> (
-              log "   [Local bound] %a\n" Exp.pp norm;
+              log "   [Local bound] %a\n" EdgeExp.pp norm;
               let bound, cache = match norm with
-              | Exp.Lvar pvar when not (PvarMap.mem pvar formals) -> (
+              | EdgeExp.Var pvar when not (PvarMap.mem pvar formals) -> (
 
                 (* Get reset chains for local bound *)
-                let reset_chains, cache = match Exp.Map.find_opt norm cache.reset_chains with
+                let reset_chains, cache = match EdgeExp.Map.find_opt norm cache.reset_chains with
                 | Some chains -> chains, cache
                 | None -> (
                   let chains = RG.get_reset_chains norm reset_graph dcp in
-                  let cache = { cache with reset_chains = Exp.Map.add norm chains cache.reset_chains } in
+                  let cache = { cache with reset_chains = EdgeExp.Map.add norm chains cache.reset_chains } in
                   chains, cache
                 )
                 in
@@ -1090,26 +1079,26 @@ module Analyzer = AbstractInterpreter.MakeWTO (TransferFunctions (CFG))
 
                 let norms = RG.Chain.Set.fold (fun chain acc ->
                   let norms, _ = RG.Chain.norms chain reset_graph in
-                  Exp.Set.union acc norms
-                ) reset_chains Exp.Set.empty
+                  EdgeExp.Set.union acc norms
+                ) reset_chains EdgeExp.Set.empty
                 in
                 let increment_sum, cache = calculate_increment_sum norms cache in
                 let reset_sum, cache = calculate_reset_sum reset_chains cache in
 
                 let edge_bound = match increment_sum, reset_sum with
-                | Some increments, Some resets -> Bound.BinOp (Binop.PlusA None, increments, resets)
+                | Some increments, Some resets -> EdgeExp.BinOp (Binop.PlusA None, increments, resets)
                 | Some bound, None | None, Some bound -> bound
-                | None, None -> Bound.Value (Exp.zero)
+                | None, None -> EdgeExp.zero
                 in
                 edge_bound, cache
               )
-              | Exp.Const (Const.Cint _) -> (
+              | EdgeExp.Const (Const.Cint _) -> (
                 (* Non-loop edge, can be executed only once, const is always 1 *)
-                Bound.Value norm, cache
+                norm, cache
               )
-              | _ -> L.(die InternalError)"[Bound] Unsupported norm expression [%a]!" Exp.pp norm
+              | _ -> L.(die InternalError)"[Bound] Unsupported norm expression [%a]!" EdgeExp.pp norm
               in
-              log "[Edge bound (%a)] %a\n" Exp.pp norm Bound.pp bound;
+              log "[Edge bound (%a)] %a\n" EdgeExp.pp norm EdgeExp.pp bound;
               edge_data.bound_cache <- Some bound;
               bound, cache
             )
@@ -1118,10 +1107,10 @@ module Analyzer = AbstractInterpreter.MakeWTO (TransferFunctions (CFG))
         )
       in
 
-      let bound = if not (DCP.EdgeSet.is_empty remaining_edges) then (
+      let bound, cache = if not (DCP.EdgeSet.is_empty remaining_edges) then (
         L.internal_error "[Looper] Local bounds could not be determined for all edges. \
         Returning [Infinity]\n";
-        Bound.Inf
+        EdgeExp.Inf, empty_cache
       ) else (
         log "[Local bounds]\n";
         DCP.EdgeSet.iter (fun (src, edge_data, dst) ->
@@ -1129,18 +1118,18 @@ module Analyzer = AbstractInterpreter.MakeWTO (TransferFunctions (CFG))
           | Some bound -> bound
           | None -> L.(die InternalError)""
           in
-          log "  %a -- %a -- %a\n" DCP.Node.pp src Exp.pp local_bound DCP.Node.pp dst
+          log "  %a -- %a -- %a\n" DCP.Node.pp src EdgeExp.pp local_bound DCP.Node.pp dst
         ) post.graph_edges;
 
         (* Calculate bound for all backedeges and sum them to get the total bound *)
-        let final_bound, _ =  try
+        let final_bound, cache =  try
           DCP.EdgeSet.fold (fun edge (final_bound, cache) ->
             let _, edge_data, _ = edge in
             if edge_data.backedge then (
               let edge_bound, cache = transition_bound edge cache in
-              if Bound.is_zero edge_bound then final_bound, cache else (
+              if EdgeExp.is_zero edge_bound then final_bound, cache else (
                 let final_bound = match final_bound with
-                | Some sum -> Bound.BinOp (Binop.PlusA None, sum, edge_bound)
+                | Some sum -> EdgeExp.BinOp (Binop.PlusA None, sum, edge_bound)
                 | None -> edge_bound
                 in
                 Some final_bound, cache
@@ -1149,19 +1138,36 @@ module Analyzer = AbstractInterpreter.MakeWTO (TransferFunctions (CFG))
               final_bound, cache
             )
           ) post.graph_edges (None, empty_cache)
-        with Exit -> (Some Bound.Inf, empty_cache)
+        with Exit -> (Some EdgeExp.Inf, empty_cache)
         in
         match final_bound with
-        | Some bound -> bound
-        | None -> Bound.Value Exp.zero
+        | Some bound -> bound, cache
+        | None -> EdgeExp.zero, cache
       )
       in
-      log "\n[Final bound]\n";
-      log "  %a\n" Bound.pp bound;
+      log "\n[Final bound] %a\n" EdgeExp.pp bound;
+      
+      let ret_type = Procdesc.get_ret_type proc_desc in
+      let return_bound = match ret_type.desc with
+      | Tint _ -> (
+        log "[Return type] %a\n" Typ.(pp Pp.text) ret_type;
+        let edge_list = DCP.EdgeSet.elements post.graph_edges in
+        let _, return_edge, _ = List.find_exn edge_list ~f:(fun (_, edge, _) -> DCP.EdgeData.is_exit_edge edge) in
+        let ret_pvar = Procdesc.get_ret_var proc_desc in
+        let norm, _ = DC.Map.find (EdgeExp.Var ret_pvar) return_edge.constraints in
+        let return_bound, _ = variable_bound norm cache in
+        log "[Return bound] %a\n" EdgeExp.pp return_bound;
+        Some return_bound
+      )
+      | _ -> None
+      in
+
       log "Description:\n  signed x: max(x, 0) == [x]\n";
-      let payload = {
+      let payload : EdgeExp.summary = {
+        formal_map = FormalMap.make proc_desc;
         globals = PvarMap.empty;
         bound = bound;
+        return_bound = return_bound;
       }
       in
       Payload.update_summary payload summary
