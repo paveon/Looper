@@ -200,8 +200,8 @@ OPTIONS
            Activates: Enable --loop-hoisting and disable all other checkers
            (Conversely: --no-loop-hoisting-only)
 
-       --looper
-           Activates: loop complexity analysis (Conversely: --no-looper)
+       --no-looper
+           Deactivates: loop complexity analyzer (Conversely: --looper)
 
        --looper-only
            Activates: Enable --looper and disable all other checkers

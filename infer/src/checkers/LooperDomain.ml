@@ -347,7 +347,7 @@ module Path = struct
     F.fprintf fmt "%s[%s](%B)" kind (Location.to_string loc) branch
 
   type t = element list
-  let equal x y = List.equal x y ~equal:element_equal
+  let equal x y = List.equal element_equal x y
 
   let empty = []
 

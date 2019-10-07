@@ -5,12 +5,18 @@ module L = Logging
 module Domain = LooperDomain
 
 
-module Payload = SummaryPayload.Make (struct
+(* module Payload = SummaryPayload.Make (struct
   type t = Domain.EdgeExp.summary
 
   let update_payloads summary (payloads : Payloads.t) = {payloads with looper= Some summary}
 
   let of_payloads (payloads : Payloads.t) = payloads.looper
+end) *)
+
+module Payload = SummaryPayload.Make (struct
+  type t = Domain.EdgeExp.summary
+
+  let field = Payloads.Fields.looper
 end)
 
 let log : ('a, Format.formatter, unit) format -> 'a = fun fmt -> F.printf fmt
@@ -25,7 +31,7 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
 
   (* Take an abstract state and instruction, produce a new abstract state *)
   let exec_instr : Domain.t -> extras ProcData.t -> CFG.Node.t -> Sil.instr -> Domain.t =
-    fun astate {pdesc; tenv; extras} node instr ->
+    fun astate {summary; tenv; extras} node instr ->
 
     let open Domain in
 
@@ -242,7 +248,7 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
         incoming_edges = DCP.EdgeSet.empty;
       }
     )
-    | Store (Exp.Lvar assigned, _, rexp, loc) -> (
+    | Store {e1=Exp.Lvar assigned; e2=rexp; loc} -> (
       let pvar_rexp = EdgeExp.replace_idents rexp astate.ident_map in
       let pvar_rexp = match pvar_rexp with
       | EdgeExp.Call (_, _, _, summary) -> (
@@ -313,7 +319,7 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
         loop_modified = loop_modified;
       }
     )
-    | Load (ident, lexp, _typ, loc) -> (
+    | Load {id=ident; e=lexp; loc} -> (
       log "[LOAD] (%a) | %a = %a\n" Location.pp loc Ident.pp ident Exp.pp lexp;
       let ident_map = match lexp with
       | Exp.Lvar pvar -> Ident.Map.add ident (EdgeExp.Var pvar) astate.ident_map
@@ -327,28 +333,27 @@ module TransferFunctions (ProcCFG : ProcCfg.S) = struct
     )
     | Call ((ret_id, ret_type), Exp.Const (Const.Cfun callee_pname), args, loc, _) -> (
       log "[CALL] (%a) | %a\n" Location.pp loc Typ.Procname.pp callee_pname;
-      
-      let summary = match Payload.read pdesc callee_pname with
-      | Some summary -> summary
+      let new_summary = match Payload.read ~caller_summary:summary ~callee_pname:callee_pname with
+      | Some new_summary -> new_summary
       | None -> L.(die InternalError)"Missing summary!"
       in
       let args = List.map args ~f:(fun (arg, typ) ->
         (EdgeExp.replace_idents arg astate.ident_map, typ)) 
       in
-      log "   FormalMap: %a\n" FormalMap.pp summary.formal_map;
-      log "   Formal Bound: %a\n" EdgeExp.pp summary.bound;
-      let subst_bound = EdgeExp.subst summary.bound args summary.formal_map in
-      let subst_ret_bound = match summary.return_bound with
-      | Some ret_bound -> Some (EdgeExp.subst ret_bound args summary.formal_map)
+      log "   FormalMap: %a\n" FormalMap.pp new_summary.formal_map;
+      log "   Formal Bound: %a\n" EdgeExp.pp new_summary.bound;
+      let subst_bound = EdgeExp.subst new_summary.bound args new_summary.formal_map in
+      let subst_ret_bound = match new_summary.return_bound with
+      | Some ret_bound -> Some (EdgeExp.subst ret_bound args new_summary.formal_map)
       | None -> None
       in
       log "   Instantiated Bound: %a\n" EdgeExp.pp subst_bound;
-      let summary = { summary with 
+      let new_summary = { new_summary with 
         bound = subst_bound;
         return_bound = subst_ret_bound;
       } 
       in
-      let call = EdgeExp.Call (ret_type, callee_pname, args, summary) in
+      let call = EdgeExp.Call (ret_type, callee_pname, args, new_summary) in
       let edge_data = { astate.edge_data with 
         calls = CallSiteSet.add (call, loc) astate.edge_data.calls
       }
@@ -445,11 +450,13 @@ module Analyzer = AbstractInterpreter.MakeWTO (TransferFunctions (CFG))
     reset_chains = Domain.EdgeExp.Map.empty;
   }
 
-  let checker {Callbacks.tenv; proc_desc; summary} : Summary.t =
+  let checker {Callbacks.exe_env; summary; get_procs_in_file} : Summary.t =
     let open Domain in
+    let proc_desc = Summary.get_proc_desc summary in
 
     let beginLoc = Procdesc.get_loc proc_desc in
     let proc_name = Procdesc.get_proc_name proc_desc in
+    let tenv = Exe_env.get_tenv exe_env proc_name in
     let proc_name_str = Typ.Procname.to_simplified_string proc_name in
     log "\n\n---------------------------------";
     log "\n- ANALYZING %s" proc_name_str;
@@ -473,7 +480,7 @@ module Analyzer = AbstractInterpreter.MakeWTO (TransferFunctions (CFG))
     ) locals formals
     in
     let extras = (locals, formals, type_map) in
-    let proc_data = ProcData.make proc_desc tenv extras in
+    let proc_data = ProcData.make summary tenv extras in
     (* let begin_loc = DCP.Node.Start beginLoc in *)
     let entry_point = DCP.Node.Start beginLoc in
     let initial_state = initial entry_point in
@@ -1049,6 +1056,13 @@ module Analyzer = AbstractInterpreter.MakeWTO (TransferFunctions (CFG))
         (* For variable norms: TB(t) = IncrementSum + ResetSum 
          * For constant norms: TB(t) = constant *)
         log "[TB] %a -- %a\n" DCP.Node.pp src DCP.Node.pp dst;
+        let function_calls = edge_data.calls in
+        CallSiteSet.iter (fun (call_exp, loc) -> match call_exp with
+          | EdgeExp.Call (_, proc_name, _, call_summary) -> (
+            log "   [Call] %a : %a | %a\n" Typ.Procname.pp proc_name Domain.pp_summary call_summary Location.pp loc;
+          )
+          | _ -> assert(false)
+        ) function_calls;
         match edge_data.bound_cache with
         | Some bound_cache -> bound_cache, cache 
         | None -> (
@@ -1175,4 +1189,4 @@ module Analyzer = AbstractInterpreter.MakeWTO (TransferFunctions (CFG))
     | None ->
       L.(die InternalError)
       "[Looper] Failed to compute post for %a" Typ.Procname.pp
-      (Procdesc.get_proc_name proc_data.pdesc)
+      (Procdesc.get_proc_name proc_desc)

@@ -761,8 +761,8 @@ OPTIONS
            Activates: Enable --loop-hoisting and disable all other checkers
            (Conversely: --no-loop-hoisting-only)           See also infer-analyze(1).
 
-       --looper
-           Activates: loop complexity analysis (Conversely: --no-looper)       
+       --no-looper
+           Deactivates: loop complexity analyzer (Conversely: --looper)       
     See also infer-analyze(1).
 
        --looper-only

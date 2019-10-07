@@ -145,6 +145,10 @@ let all_checkers =
     ; active= Config.(is_checker_enabled Purity || is_checker_enabled LoopHoisting)
     ; callbacks=
         [(Procedure Purity.checker, Language.Java); (Procedure Purity.checker, Language.Clang)] }
+  ; { name= "Looper"
+    ; active= Config.looper
+    ; callbacks= 
+        [(Procedure Looper.checker, Language.Clang)]}
   ; { name= "Class loading analysis"
     ; active= Config.is_checker_enabled ClassLoads
     ; callbacks= [(Procedure ClassLoads.analyze_procedure, Language.Java)] }

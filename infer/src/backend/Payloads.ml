@@ -24,6 +24,7 @@ type t =
   ; siof: SiofDomain.Summary.t option
   ; starvation: StarvationDomain.summary option
   ; nullsafe: NullsafeSummary.t option
+  ; looper: LooperDomain.EdgeExp.summary option
   ; uninit: UninitDomain.Summary.t option }
 [@@deriving fields]
 
@@ -50,6 +51,7 @@ let fields =
     ~siof:(fun f -> mk f "Siof" SiofDomain.Summary.pp)
     ~starvation:(fun f -> mk f "Starvation" StarvationDomain.pp_summary)
     ~nullsafe:(fun f -> mk f "Nullsafe" NullsafeSummary.pp)
+    ~looper:(fun f -> mk f "Looper" LooperDomain.pp_summary)
     ~uninit:(fun f -> mk f "Uninitialised" UninitDomain.Summary.pp)
 
 
