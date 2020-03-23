@@ -17,6 +17,7 @@ type t =
   ; cost: CostDomain.summary option
   ; lab_resource_leaks: ResourceLeakDomain.summary option
   ; litho_required_props: LithoDomain.summary option
+  ; looper: LooperDomain.EdgeExp.summary option
   ; pulse: PulseSummary.t option
   ; purity: PurityDomain.summary option
   ; quandary: QuandarySummary.t option
@@ -24,7 +25,6 @@ type t =
   ; siof: SiofDomain.Summary.t option
   ; starvation: StarvationDomain.summary option
   ; nullsafe: NullsafeSummary.t option
-  ; looper: LooperDomain.EdgeExp.summary option
   ; uninit: UninitDomain.Summary.t option }
 [@@deriving fields]
 
@@ -43,6 +43,7 @@ let fields =
     ~class_loads:(fun f -> mk f "ClassLoads" ClassLoadsDomain.pp_summary)
     ~cost:(fun f -> mk f "Cost" CostDomain.pp_summary)
     ~litho_required_props:(fun f -> mk f "Litho Required Props" LithoDomain.pp_summary)
+    ~looper:(fun f -> mk f "Looper" LooperDomain.pp_summary)
     ~pulse:(fun f -> mk f "Pulse" PulseSummary.pp)
     ~purity:(fun f -> mk f "Purity" PurityDomain.pp_summary)
     ~quandary:(fun f -> mk f "Quandary" QuandarySummary.pp)
@@ -51,7 +52,6 @@ let fields =
     ~siof:(fun f -> mk f "Siof" SiofDomain.Summary.pp)
     ~starvation:(fun f -> mk f "Starvation" StarvationDomain.pp_summary)
     ~nullsafe:(fun f -> mk f "Nullsafe" NullsafeSummary.pp)
-    ~looper:(fun f -> mk f "Looper" LooperDomain.pp_summary)
     ~uninit:(fun f -> mk f "Uninitialised" UninitDomain.Summary.pp)
 
 
@@ -70,6 +70,7 @@ let empty =
   ; cost= None
   ; lab_resource_leaks= None
   ; litho_required_props= None
+  ; looper= None
   ; pulse= None
   ; purity= None
   ; quandary= None

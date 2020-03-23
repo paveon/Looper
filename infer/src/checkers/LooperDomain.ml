@@ -45,7 +45,7 @@ module EdgeExp = struct
   | UnOp of Unop.t * t * Typ.t option
   | Var of Pvar.t
   | Const of Const.t
-  | Call of Typ.t * Typ.Procname.t * call_arg list * summary 
+  | Call of Typ.t * Procname.t * call_arg list * summary 
   | Max of t list
   | Min of t list
   | Inf
@@ -60,6 +60,16 @@ module EdgeExp = struct
     return_bound: t option;
   }
   [@@deriving compare]
+
+  module Set = Caml.Set.Make(struct
+    type nonrec t = t
+    let compare = compare
+  end)
+
+  module Map = Caml.Map.Make(struct
+    type nonrec t = t
+    let compare = compare
+  end)
 
   let equal = [%compare.equal: t]
 
@@ -98,6 +108,56 @@ module EdgeExp = struct
     | Exp.Lvar pvar -> Var pvar
     | Exp.Const const -> Const const
     | _ -> assert(false)
+
+  let get_vars exp =
+    let rec aux exp set = match exp with
+    | Var var -> PvarSet.add var set
+    | BinOp (_, lexp, rexp) -> aux rexp (aux lexp set)
+    | UnOp (_, exp, _) -> aux exp set
+    | Max args -> List.fold args ~init:set ~f:(fun acc arg -> aux arg acc)
+    | Min args -> List.fold args ~init:set ~f:(fun acc arg -> aux arg acc)
+    | _ -> set
+    in
+    aux exp PvarSet.empty
+
+  let get_exp_vars exp =
+    let vars = get_vars exp in
+    PvarSet.fold (fun pvar acc -> Set.add (Var pvar) acc) vars Set.empty
+
+  let iter_vars bound ~f:f = PvarSet.iter f (get_vars bound)
+
+
+  let map_vars bound ~f:f acc =
+    let rec aux bound acc = match bound with
+    | Var var -> f var acc
+    | BinOp (op, lexp, rexp) -> (
+      let lexp, acc = aux lexp acc in
+      let rexp, acc = aux rexp acc in
+      BinOp (op, lexp, rexp), acc
+    )
+    | UnOp (op, exp, typ) -> (
+      let exp, acc = aux exp acc in
+      UnOp (op, exp, typ), acc
+    )
+    | Max args -> (
+      let args, acc = List.fold args ~init:([], acc) ~f:(fun (args, acc) arg ->
+        let arg, acc = aux arg acc in
+        args @ [arg], acc
+      )
+      in
+      Max args, acc
+    )
+    | Min args -> (
+      let args, acc = List.fold args ~init:([], acc) ~f:(fun (args, acc) arg ->
+        let arg, acc = aux arg acc in
+        args @ [arg], acc
+      )
+      in
+      Min args, acc
+    )
+    | _ -> bound, acc
+    in
+    aux bound acc
 
 
   let subst bound args formal_map =
@@ -152,17 +212,44 @@ module EdgeExp = struct
     | Const _ -> BinOp (Binop.Ne, exp, zero)
     | _ -> L.(die InternalError)"Unsupported condition type!"
 
-  
+
+  let add e1 e2 = match is_zero e1, is_zero e2 with
+  | false, false -> BinOp (Binop.PlusA None, e1, e2)
+  | true, false -> e2
+  | false, true -> e1
+  | _ -> zero
+
+
+  let sub e1 e2 = match is_zero e1, is_zero e2 with
+  | false, false -> BinOp (Binop.MinusA None, e1, e2)
+  | true, false -> e2
+  | false, true -> e1
+  | _ -> zero
+
+
+  let mult e1 e2 = if is_zero e1 || is_zero e2 then zero
+  else (
+    match is_one e1, is_one e2 with
+    | true, true -> one
+    | true, false -> e2
+    | false, true -> e1
+    | _ -> BinOp (Binop.Mult None, e1, e2)
+  )
+
+
   let rec to_string ?(braces = false) = function
   | BinOp (op, lhs, rhs) -> (
-    if braces then F.sprintf "(%s %s %s)" (to_string lhs) (Binop.str Pp.text op) (to_string rhs)
-    else F.sprintf "%s %s %s" (to_string lhs) (Binop.str Pp.text op) (to_string rhs)
+    F.sprintf "(%s %s %s)" (to_string ~braces:true lhs) (Binop.str Pp.text op) (to_string ~braces:true rhs)
+    (* if braces then F.sprintf "(%s %s %s)" (to_string lhs) (Binop.str Pp.text op) (to_string rhs)
+    else (
+      F.sprintf "%s %s %s" (to_string ~braces:true lhs) (Binop.str Pp.text op) (to_string ~braces:true rhs)
+    ) *)
   )
   | UnOp (op, exp, _) -> F.sprintf "%s%s" (Unop.to_string op) (to_string exp)
   | Var pvar -> Pvar.to_string pvar
   | Const const -> Exp.to_string (Exp.Const const)
   | Call (_, callee, args, summary) -> (
-    let proc_name = Typ.Procname.to_simplified_string callee in
+    let proc_name = Procname.to_simplified_string callee in
     let proc_name = String.slice proc_name 0 (String.length proc_name - 1) in
     let str = (List.fold args ~init:(proc_name) ~f:(fun acc (arg, _) -> acc ^ (to_string arg))) ^ ")" in
     match summary.return_bound with
@@ -193,17 +280,6 @@ module EdgeExp = struct
 
 
   let pp fmt exp = F.fprintf fmt "%s" (to_string exp)
-
-
-  module Set = Caml.Set.Make(struct
-    type nonrec t = t
-    let compare = compare
-  end)
-
-  module Map = Caml.Map.Make(struct
-    type nonrec t = t
-    let compare = compare
-  end)
 end
 
 let pp_summary fmt (summary : EdgeExp.summary) = EdgeExp.pp fmt summary.bound
@@ -414,13 +490,14 @@ module CallSiteSet = Caml.Set.Make(struct
   let compare = compare_call_site
 end)
 
+
 (* Difference Constraint Program *)
 module DCP = struct
   module Node = struct
     type t = 
       | Prune of (Sil.if_kind * Location.t)
       | Start of Location.t
-      | Join of (t * t)
+      | Join of Location.t
       | Exit
     [@@deriving compare]
 
@@ -432,7 +509,8 @@ module DCP = struct
     let rec to_string loc = match loc with
       | Prune (kind, loc) -> F.sprintf "%s [%s]" (Sil.if_kind_to_string kind) (Location.to_string loc)
       | Start loc -> F.sprintf "Begin [%s]" (Location.to_string loc)
-      | Join (lhs, rhs) -> F.sprintf "Join(%s, %s)" (to_string lhs) (to_string rhs)
+      (* | Join (lhs, rhs) -> F.sprintf "Join(%s, %s)" (to_string lhs) (to_string rhs) *)
+      | Join loc -> F.sprintf "Join [%s]" (Location.to_string loc)
       | Exit -> F.sprintf "Exit"
 
     let pp fmt loc = F.fprintf fmt "%s" (to_string loc)
@@ -448,16 +526,17 @@ module DCP = struct
       backedge: bool;
       conditions: EdgeExp.Set.t;
       assignments: EdgeExp.t PvarMap.t;
-      calls: CallSiteSet.t;
+      modified: PvarSet.t;
+      branch_info: Path.element option;
+
+      mutable calls: CallSiteSet.t;
       mutable constraints: DC.rhs DC.Map.t;
       mutable guards: EdgeExp.Set.t;
-      mutable bound_cache: EdgeExp.t option;
+      mutable bound: EdgeExp.t;
+      mutable execution_cost: EdgeExp.t;
       mutable bound_norm: EdgeExp.t option;
       mutable exit_edge: bool;
-      mutable computing: bool;
-
-      (* Last element of common path prefix *)
-      path_prefix_end: Path.element option;
+      mutable computing_bound: bool;
     }
     [@@deriving compare]
 
@@ -468,6 +547,8 @@ module DCP = struct
       | None -> false
 
     let is_exit_edge edge = edge.exit_edge
+
+    let is_backedge edge = edge.backedge
 
     let active_guards edge = EdgeExp.Set.fold (fun guard acc ->
       match DC.Map.get_dc guard edge.constraints with
@@ -487,18 +568,21 @@ module DCP = struct
       let compare = compare
     end)
 
-    let make assignments prefix_end = {
+    let make assignments branch_info = {
       backedge = false;
       conditions = EdgeExp.Set.empty;
       assignments = assignments;
+      modified = PvarSet.empty;
+      branch_info = branch_info;
+
       calls = CallSiteSet.empty;
       constraints = DC.Map.empty;
       guards = EdgeExp.Set.empty;
-      bound_cache = None;
+      bound = EdgeExp.Inf;
+      execution_cost = EdgeExp.one;
       bound_norm = None;
-      computing = false;
+      computing_bound = false;
       exit_edge = false;
-      path_prefix_end = prefix_end; 
     }
 
     let empty = make PvarMap.empty None
@@ -508,13 +592,17 @@ module DCP = struct
 
     let set_backedge edge = { edge with backedge = true }
 
-    let add_condition edge cond =
+    let add_condition edge cond = if EdgeExp.is_zero cond then edge else
       { edge with conditions = EdgeExp.Set.add cond edge.conditions }
 
     let add_assignment edge lhs rhs =
-      { edge with assignments = PvarMap.add lhs rhs edge.assignments }
+      { edge with 
+        assignments = PvarMap.add lhs rhs edge.assignments;
+        modified = PvarSet.add lhs edge.modified;
+      }  
 
-    let add_invariants edge unmodified =
+    let add_invariants edge locals =
+      let unmodified = PvarSet.diff locals edge.modified in
       let with_invariants = PvarSet.fold (fun lhs acc ->
         if PvarMap.mem lhs acc then (
           F.printf "[Warning] Assignment map already contains key";
@@ -526,7 +614,7 @@ module DCP = struct
       in
       { edge with assignments = with_invariants }
 
-    let set_path_end edge path_end = { edge with path_prefix_end = path_end }
+    let set_branch_info edge info = { edge with branch_info = info }
 
     let get_assignment_rhs edge lhs =
       match PvarMap.find_opt lhs edge.assignments with
@@ -597,12 +685,12 @@ module DCP = struct
       let norm_set = EdgeExp.Set.empty in
       let get_assignment pvar = match PvarMap.find_opt pvar edge.assignments with
       | Some rhs -> Some rhs
-      | None -> if PvarMap.mem pvar formals then Some (EdgeExp.Var pvar) else None
+      | None -> if PvarSet.mem pvar formals then Some (EdgeExp.Var pvar) else None
       in
       let dc_map, norm_set = match norm with
       | EdgeExp.Var x_pvar -> (
         (* Norm [x] *)
-        if PvarMap.mem x_pvar formals then (
+        if PvarSet.mem x_pvar formals then (
           (* Ignore norms that are formal parameters *)
           dc_map, norm_set
         ) else match PvarMap.find_opt x_pvar edge.assignments with
@@ -854,7 +942,7 @@ module DCP = struct
 
   include DefaultDot
   let edge_label : EdgeData.t -> string = fun edge_data ->
-    match edge_data.path_prefix_end with
+    match edge_data.branch_info with
     | Some prune_info -> F.asprintf "%a\n" Path.pp_element prune_info
     | None -> ""
 
@@ -1131,6 +1219,29 @@ end
 module RG_Dot = Graph.Graphviz.Dot(RG)
 
 
+module Increments = Caml.Set.Make(struct
+  type nonrec t = DCP.E.t * IntLit.t
+  [@@deriving compare]
+end)
+
+module Resets = Caml.Set.Make(struct
+  type nonrec t = DCP.E.t * EdgeExp.t * IntLit.t
+  [@@deriving compare]
+end)
+
+type cache = {
+  updates: (Increments.t * Resets.t) EdgeExp.Map.t;
+  variable_bounds: EdgeExp.t EdgeExp.Map.t;
+  reset_chains: RG.Chain.Set.t EdgeExp.Map.t;
+}
+
+let empty_cache = { 
+  updates = EdgeExp.Map.empty; 
+  variable_bounds = EdgeExp.Map.empty;
+  reset_chains = EdgeExp.Map.empty;
+}
+
+
 type t = {
   path: Path.t;
   last_node: DCP.Node.t;
@@ -1165,7 +1276,7 @@ let initial : DCP.Node.t -> t = fun entry_point -> (
 
 let norm_is_variable norm formals =
   let rec traverse_exp = function
-  | EdgeExp.Var pvar when not (PvarMap.mem pvar formals) -> true
+  | EdgeExp.Var pvar when not (PvarSet.mem pvar formals) -> true
   | EdgeExp.Const _ -> false
   | EdgeExp.BinOp (_, lexp, rexp) -> (traverse_exp lexp) || (traverse_exp rexp)
   | EdgeExp.UnOp (_, exp, _) -> (traverse_exp exp)
@@ -1186,7 +1297,8 @@ let join : t -> t -> t = fun lhs rhs ->
   let path_prefix = Path.common_prefix lhs.path rhs.path in
   F.printf "  [NEW] Path prefix: %a\n" Path.pp path_prefix;
 
-  let join_node = DCP.Node.Join (lhs.last_node, rhs.last_node) in
+  (* let join_node = DCP.Node.Join (lhs.last_node, rhs.last_node) in *)
+  let join_node = DCP.Node.Join Location.dummy in
 
   let ident_map = Ident.Map.union (fun _ a b ->
     if not (EdgeExp.equal a b) then 
@@ -1239,10 +1351,11 @@ let join : t -> t -> t = fun lhs rhs ->
         (* Add edge from non-join node to current set of edges pointing to aggregated join node *)
         let unmodified = get_unmodified_pvars other_state in
         let edge_data = DCP.EdgeData.add_invariants other_state.edge_data unmodified in
-        let edge_data = DCP.EdgeData.set_path_end edge_data (List.last other_state.path) in
+        let edge_data = DCP.EdgeData.set_branch_info edge_data (List.last other_state.path) in
         let lts_edge = DCP.E.create other_state.last_node edge_data join_state.last_node in
         let edges = DCP.EdgeSet.add lts_edge join_state.incoming_edges in
-        edges, DCP.Node.Join (join_state.last_node, other_state.last_node)
+        edges, DCP.Node.Join Location.dummy
+        (* edges, DCP.Node.Join (join_state.last_node, other_state.last_node) *)
       )
     )
     in
@@ -1267,7 +1380,7 @@ let join : t -> t -> t = fun lhs rhs ->
         ) else (
           let unmodified = PvarSet.diff astate.locals state.edge_modified in
           let edge_data = DCP.EdgeData.add_invariants state.edge_data unmodified in
-          let edge_data = DCP.EdgeData.set_path_end edge_data (List.last state.path) in
+          let edge_data = DCP.EdgeData.set_branch_info edge_data (List.last state.path) in
           let lts_edge = DCP.E.create state.last_node edge_data join_node in
           DCP.EdgeSet.add lts_edge incoming_edges
         )

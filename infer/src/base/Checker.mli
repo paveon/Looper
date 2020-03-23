@@ -22,6 +22,7 @@ type t =
   | LithoRequiredProps
   | Liveness
   | LoopHoisting
+  | Looper
   | NullsafeDeprecated
   | PrintfArgs
   | Pulse

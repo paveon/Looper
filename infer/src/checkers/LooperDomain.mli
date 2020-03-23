@@ -33,7 +33,7 @@ module EdgeExp : sig
    | UnOp of Unop.t * t * Typ.t option
    | Var of Pvar.t
    | Const of Const.t
-   | Call of Typ.t * Typ.Procname.t * call_arg list * summary
+   | Call of Typ.t * Procname.t * call_arg list * summary
    | Max of t list
    | Min of t list
    | Inf
@@ -49,6 +49,10 @@ module EdgeExp : sig
    }
    [@@deriving compare]
 
+   module Set : Caml.Set.S with type elt = t
+
+   module Map : Caml.Map.S with type key = t
+
    val equal : t -> t -> bool
 
    val one : t
@@ -63,17 +67,27 @@ module EdgeExp : sig
 
    val replace_idents : Exp.t -> t Ident.Map.t -> t
 
+   val get_vars: t -> PvarSet.t
+
+   val get_exp_vars: t -> Set.t
+
+   val iter_vars: t -> f:(Pvar.t -> unit) -> unit
+
+   val map_vars: t -> f:(Pvar.t -> 'a -> t * 'a) -> 'a -> t * 'a
+
    val subst : t -> call_arg list -> FormalMap.t -> t
 
    val normalize_condition : t -> t
 
+   val add : t -> t -> t
+
+   val sub : t -> t -> t
+
+   val mult : t -> t -> t
+
    val to_string : ?braces:bool -> t -> string
 
    val pp : F.formatter -> t -> unit
-
-   module Set : Caml.Set.S with type elt = t
-
-   module Map : Caml.Map.S with type key = t
 end
 
 val pp_summary : F.formatter -> EdgeExp.summary -> unit
@@ -171,7 +185,8 @@ module DCP : sig
       type t = 
       | Prune of (Sil.if_kind * Location.t)
       | Start of Location.t
-      | Join of (t * t)
+      (* | Join of (t * t) *)
+      | Join of Location.t
       | Exit
       [@@deriving compare]
       val equal : t -> t -> bool
@@ -188,19 +203,20 @@ module DCP : sig
 
    module EdgeData : sig
       type t = {
-      backedge: bool;
-      conditions: EdgeExp.Set.t;
-      assignments: EdgeExp.t PvarMap.t;
-      calls: CallSiteSet.t;
-      mutable constraints: DC.rhs DC.Map.t;
-      mutable guards: EdgeExp.Set.t;
-      mutable bound_cache: EdgeExp.t option;
-      mutable bound_norm: EdgeExp.t option;
-      mutable exit_edge: bool;
-      mutable computing: bool;
-
-      (* Last element of common path prefix *)
-      path_prefix_end: Path.element option;
+         backedge: bool;
+         conditions: EdgeExp.Set.t;
+         assignments: EdgeExp.t PvarMap.t;
+         modified: PvarSet.t;
+         branch_info: Path.element option;
+         
+         mutable calls: CallSiteSet.t;
+         mutable constraints: DC.rhs DC.Map.t;
+         mutable guards: EdgeExp.Set.t;
+         mutable bound: EdgeExp.t;
+         mutable execution_cost: EdgeExp.t;
+         mutable bound_norm: EdgeExp.t option;
+         mutable exit_edge: bool;
+         mutable computing_bound: bool;
       }
       [@@deriving compare]
 
@@ -209,6 +225,8 @@ module DCP : sig
       val is_reset : t -> EdgeExp.t -> bool
 
       val is_exit_edge : t -> bool
+
+      val is_backedge : t -> bool
 
       val active_guards : t -> EdgeExp.Set.t
 
@@ -231,14 +249,14 @@ module DCP : sig
 
       val add_invariants : t -> PvarSet.t -> t
 
-      val set_path_end : t -> Path.element option -> t
+      val set_branch_info : t -> Path.element option -> t
 
       val get_assignment_rhs : t -> Pvar.t -> EdgeExp.t
 
       val derive_guards : t -> EdgeExp.Set.t -> Z3.Solver.solver -> Z3.context -> unit
       
       (* Derive difference constraints "x <= y + c" based on edge assignments *)
-      val derive_constraint : t -> EdgeExp.t -> Typ.t PvarMap.t -> EdgeExp.Set.t
+      val derive_constraint : t -> EdgeExp.t -> PvarSet.t -> EdgeExp.Set.t
    end
 
    include module type of Graph.Imperative.Digraph.ConcreteBidirectionalLabeled(Node)(EdgeData)
@@ -341,9 +359,19 @@ end
 
 module RG_Dot : module type of Graph.Graphviz.Dot(RG)
 
-val exp_to_z3_expr : Z3.context -> EdgeExp.t -> Z3.Expr.expr
+module Increments : Caml.Set.S with type elt = DCP.E.t * IntLit.t
 
-(* val exp_to_str : ?braces:bool -> Exp.t -> string *)
+module Resets : Caml.Set.S with type elt = DCP.E.t * EdgeExp.t * IntLit.t
+
+type cache = {
+  updates: (Increments.t * Resets.t) EdgeExp.Map.t;
+  variable_bounds: EdgeExp.t EdgeExp.Map.t;
+  reset_chains: RG.Chain.Set.t EdgeExp.Map.t;
+}
+
+val empty_cache : cache
+
+val exp_to_z3_expr : Z3.context -> EdgeExp.t -> Z3.Expr.expr
 
 val is_loop_prune : Sil.if_kind -> bool
 
@@ -364,7 +392,7 @@ type t = {
 
 val initial : DCP.Node.t -> t
 
-val norm_is_variable : EdgeExp.t -> Typ.t PvarMap.t -> bool
+val norm_is_variable : EdgeExp.t -> PvarSet.t -> bool
 
 val get_unmodified_pvars : t -> PvarSet.t
 

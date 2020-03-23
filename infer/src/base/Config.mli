@@ -598,8 +598,6 @@ val sqlite_vfs : string option
 
 val sqlite_write_daemon : bool
 
-val looper : bool
-
 val starvation_skip_analysis : Yojson.Basic.json
 
 val starvation_strict_mode : bool

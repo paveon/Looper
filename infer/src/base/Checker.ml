@@ -22,6 +22,7 @@ type t =
   | LithoRequiredProps
   | Liveness
   | LoopHoisting
+  | Looper
   | NullsafeDeprecated
   | PrintfArgs
   | Pulse
@@ -166,6 +167,13 @@ let config checker =
       ; short_documentation= "checker for loop-hoisting"
       ; show_in_help= true
       ; cli_flag= "loop-hoisting"
+      ; enabled_by_default= false
+      ; cli_deprecated_flags= [] }
+    | Looper ->
+      { support= supports_clang_and_java
+      ; short_documentation= "checker for loop cost analysis"
+      ; show_in_help= true
+      ; cli_flag= "looper"
       ; enabled_by_default= false
       ; cli_deprecated_flags= [] }
   | NullsafeDeprecated ->
