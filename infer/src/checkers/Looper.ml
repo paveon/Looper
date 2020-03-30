@@ -361,7 +361,7 @@ let checker {Callbacks.exe_env; summary; get_procs_in_file} : Summary.t =
     in
     match norm with
     | EdgeExp.Var pvar -> (
-      if PvarSet.mem pvar graph_data.formals then sets, processed_edges
+      if Pvar.Set.mem pvar graph_data.formals then sets, processed_edges
       else (
         let bounded_edges = get_edge_set norm in
         let sets = EdgeExp.Map.add norm bounded_edges sets in
@@ -526,7 +526,7 @@ let checker {Callbacks.exe_env; summary; get_procs_in_file} : Summary.t =
       let norm_bound = norm in
       let var_bound, cache = match norm with
       | EdgeExp.Var pvar -> (
-        if PvarSet.mem pvar graph_data.formals then (
+        if Pvar.Set.mem pvar graph_data.formals then (
           match PvarMap.find_opt pvar graph_data.type_map with
           | Some typ -> (match typ.desc with
             | Typ.Tint ikind -> if Typ.ikind_is_unsigned ikind then (
@@ -598,7 +598,7 @@ let checker {Callbacks.exe_env; summary; get_procs_in_file} : Summary.t =
       | Some norm -> (
         log "   [Local bound] %a\n" EdgeExp.pp norm;
         let bound, cache = match norm with
-        | EdgeExp.Var pvar when not (PvarSet.mem pvar graph_data.formals) -> (
+        | EdgeExp.Var pvar when not (Pvar.Set.mem pvar graph_data.formals) -> (
 
           (* Get reset chains for local bound *)
           let reset_chains, cache = match EdgeExp.Map.find_opt norm cache.reset_chains with

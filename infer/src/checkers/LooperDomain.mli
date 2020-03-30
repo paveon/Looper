@@ -8,16 +8,6 @@
 open! IStd
 module F = Format
 
-module LocSet : module type of Caml.Set.Make(Location)
-
-module PvarSet : sig
-   include module type of Caml.Set.Make(Pvar)
-   
-   val pp : F.formatter -> t -> unit
-
-   val to_string : t -> string
-end
-
 module PvarMap : sig
   include module type of Caml.Map.Make(Pvar)
 
@@ -31,15 +21,18 @@ module EdgeExp : sig
    type t =
    | BinOp of Binop.t * t * t
    | UnOp of Unop.t * t * Typ.t option
+   | Access of AccessPath.t
    | Var of Pvar.t
    | Const of Const.t
-   | Call of Typ.t * Procname.t * call_arg list * summary
+   | Call of call
    | Max of t list
    | Min of t list
    | Inf
    [@@deriving compare]
    
    and call_arg = (t * Typ.t) [@@deriving compare]
+
+   and call = Typ.t * Procname.t * call_arg list * summary
 
    and summary = {
       formal_map: FormalMap.t;
@@ -65,9 +58,9 @@ module EdgeExp : sig
 
    val is_int : t -> Typ.t PvarMap.t -> bool
 
-   val replace_idents : Exp.t -> t Ident.Map.t -> t
+   val of_exp : Exp.t -> t Ident.Map.t -> t
 
-   val get_vars: t -> PvarSet.t
+   val get_vars: t -> Pvar.Set.t
 
    val get_exp_vars: t -> Set.t
 
@@ -91,24 +84,6 @@ module EdgeExp : sig
 end
 
 val pp_summary : F.formatter -> EdgeExp.summary -> unit
-
-(* module Bound : sig
-   type t =
-   | BinOp of Binop.t * t * t
-   | Value of EdgeExp.t
-   | Max of t list
-   | Min of t list
-   | Inf
-   [@@deriving compare]
-
-   val to_string : t -> string
-
-   val pp : F.formatter -> t -> unit
-
-   val is_zero : t -> bool
-
-   val is_one : t -> bool
-end *)
 
 
 (* Difference Constraint of form "x <= y + c"
@@ -143,27 +118,6 @@ module DC : sig
    end
 end
 
-
-module Path : sig
-   type element = (Sil.if_kind * bool * Location.t) [@@deriving compare]
-   val element_equal : element -> element -> bool
-
-   val pp_element : F.formatter -> element -> unit
-
-   type t = element list
-   val equal : t -> t -> bool
-   val empty : t
-
-   (* Creates common path prefix of provided paths *)
-   val common_prefix : t -> t -> t
-
-   val in_loop : t -> bool
-
-   val pp : F.formatter -> t -> unit
-
-   val path_to_string : t -> string
-end
-
 type graph_type = | LTS | GuardedDCP | DCP
 
 val active_graph_type : graph_type ref 
@@ -175,7 +129,7 @@ module DefaultDot : sig
    val graph_attributes : 'a -> 'b list
 end
 
-type call_site = EdgeExp.t * Location.t
+type call_site = EdgeExp.call * Location.t
 
 module CallSiteSet : Caml.Set.S with type elt = call_site
 
@@ -185,7 +139,6 @@ module DCP : sig
       type t = 
       | Prune of (Sil.if_kind * Location.t)
       | Start of Location.t
-      (* | Join of (t * t) *)
       | Join of Location.t
       | Exit
       [@@deriving compare]
@@ -206,8 +159,9 @@ module DCP : sig
          backedge: bool;
          conditions: EdgeExp.Set.t;
          assignments: EdgeExp.t PvarMap.t;
-         modified: PvarSet.t;
-         branch_info: Path.element option;
+         modified: Pvar.Set.t;
+         branch_info: (Sil.if_kind * bool * Location.t) option;
+         exit_edge: bool;
          
          mutable calls: CallSiteSet.t;
          mutable constraints: DC.rhs DC.Map.t;
@@ -215,7 +169,6 @@ module DCP : sig
          mutable bound: EdgeExp.t;
          mutable execution_cost: EdgeExp.t;
          mutable bound_norm: EdgeExp.t option;
-         mutable exit_edge: bool;
          mutable computing_bound: bool;
       }
       [@@deriving compare]
@@ -230,11 +183,9 @@ module DCP : sig
 
       val active_guards : t -> EdgeExp.Set.t
 
-      val modified_pvars : t -> PvarSet.t
+      val modified_pvars : t -> Pvar.Set.t
 
-      module Set : Caml.Set.S with type elt = t
-
-      val make : EdgeExp.t PvarMap.t -> Path.element option -> t
+      val make : EdgeExp.t PvarMap.t -> (Sil.if_kind * bool * Location.t) option -> t
 
       val empty : t
 
@@ -247,16 +198,14 @@ module DCP : sig
 
       val add_assignment : t -> Pvar.t -> EdgeExp.t -> t
 
-      val add_invariants : t -> PvarSet.t -> t
-
-      val set_branch_info : t -> Path.element option -> t
+      val add_invariants : t -> Pvar.Set.t -> t
 
       val get_assignment_rhs : t -> Pvar.t -> EdgeExp.t
 
       val derive_guards : t -> EdgeExp.Set.t -> Z3.Solver.solver -> Z3.context -> unit
       
       (* Derive difference constraints "x <= y + c" based on edge assignments *)
-      val derive_constraint : t -> EdgeExp.t -> PvarSet.t -> EdgeExp.Set.t
+      val derive_constraint : t -> EdgeExp.t -> Pvar.Set.t -> EdgeExp.Set.t
    end
 
    include module type of Graph.Imperative.Digraph.ConcreteBidirectionalLabeled(Node)(EdgeData)
@@ -375,31 +324,4 @@ val exp_to_z3_expr : Z3.context -> EdgeExp.t -> Z3.Expr.expr
 
 val is_loop_prune : Sil.if_kind -> bool
 
-type t = {
-  path: Path.t;
-  last_node: DCP.Node.t;
-  potential_norms: EdgeExp.Set.t;
-  initial_norms: EdgeExp.Set.t;
-  locals: PvarSet.t;
-  ident_map: EdgeExp.t Ident.Map.t;
-  edge_modified: PvarSet.t;
-  loop_modified: PvarSet.t;
-  edge_data: DCP.EdgeData.t;
-  graph_nodes: DCP.NodeSet.t;
-  graph_edges: DCP.EdgeSet.t;
-  incoming_edges: DCP.EdgeSet.t;
-}
-
-val initial : DCP.Node.t -> t
-
-val norm_is_variable : EdgeExp.t -> PvarSet.t -> bool
-
-val get_unmodified_pvars : t -> PvarSet.t
-
-val ( <= ) : lhs:t -> rhs:t -> bool
-
-val join : t -> t -> t
-
-val widen : prev:t -> next:t -> num_iters:int -> t
-
-val pp : F.formatter -> t -> unit
+val norm_is_variable : EdgeExp.t -> Pvar.Set.t -> bool

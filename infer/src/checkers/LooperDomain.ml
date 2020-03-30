@@ -3,25 +3,6 @@ module F = Format
 module L = Logging
 
 
-module LocSet = Caml.Set.Make(Location)
-
-module PvarSet = struct
-  include Caml.Set.Make(Pvar)
-
-  let pp fmt set =
-    iter (fun pvar ->
-      F.fprintf fmt " %s " (Pvar.to_string pvar)
-    ) set
-
-  let to_string set =
-    let tmp = fold (fun pvar acc ->
-      acc ^ Pvar.to_string pvar ^ " "
-    ) set ""
-    in
-    "[" ^ (String.rstrip tmp) ^ "]"
-end
-
-
 module PvarMap = struct
   include Caml.Map.Make(Pvar)
 
@@ -43,6 +24,7 @@ module EdgeExp = struct
   type t =
   | BinOp of Binop.t * t * t
   | UnOp of Unop.t * t * Typ.t option
+  | Access of AccessPath.t
   | Var of Pvar.t
   | Const of Const.t
   | Call of Typ.t * Procname.t * call_arg list * summary 
@@ -96,35 +78,36 @@ module EdgeExp = struct
     | _ -> false
 
 
-  let rec replace_idents exp ident_map = match exp with
+  let rec of_exp exp ident_map = match exp with
     | Exp.BinOp (op, lexp, rexp) -> (
-      let lexp = replace_idents lexp ident_map in
-      let rexp = replace_idents rexp ident_map in
+      let lexp = of_exp lexp ident_map in
+      let rexp = of_exp rexp ident_map in
       BinOp (op, lexp, rexp)
     )
-    | Exp.UnOp (op, sub_exp, typ) -> UnOp (op, replace_idents sub_exp ident_map, typ)
+    | Exp.UnOp (op, sub_exp, typ) -> UnOp (op, of_exp sub_exp ident_map, typ)
     | Exp.Var ident -> Ident.Map.find ident ident_map
-    | Exp.Cast (_, exp) -> replace_idents exp ident_map
+    | Exp.Cast (_, exp) -> of_exp exp ident_map
     | Exp.Lvar pvar -> Var pvar
     | Exp.Const const -> Const const
     | _ -> assert(false)
 
+
   let get_vars exp =
     let rec aux exp set = match exp with
-    | Var var -> PvarSet.add var set
+    | Var var -> Pvar.Set.add var set
     | BinOp (_, lexp, rexp) -> aux rexp (aux lexp set)
     | UnOp (_, exp, _) -> aux exp set
     | Max args -> List.fold args ~init:set ~f:(fun acc arg -> aux arg acc)
     | Min args -> List.fold args ~init:set ~f:(fun acc arg -> aux arg acc)
     | _ -> set
     in
-    aux exp PvarSet.empty
+    aux exp Pvar.Set.empty
 
   let get_exp_vars exp =
     let vars = get_vars exp in
-    PvarSet.fold (fun pvar acc -> Set.add (Var pvar) acc) vars Set.empty
+    Pvar.Set.fold (fun pvar acc -> Set.add (Var pvar) acc) vars Set.empty
 
-  let iter_vars bound ~f:f = PvarSet.iter f (get_vars bound)
+  let iter_vars bound ~f:f = Pvar.Set.iter f (get_vars bound)
 
 
   let map_vars bound ~f:f acc =
@@ -246,6 +229,7 @@ module EdgeExp = struct
     ) *)
   )
   | UnOp (op, exp, _) -> F.sprintf "%s%s" (Unop.to_string op) (to_string exp)
+  | Access path -> F.asprintf "%a" AccessPath.pp path
   | Var pvar -> Pvar.to_string pvar
   | Const const -> Exp.to_string (Exp.Const const)
   | Call (_, callee, args, summary) -> (
@@ -282,67 +266,8 @@ module EdgeExp = struct
   let pp fmt exp = F.fprintf fmt "%s" (to_string exp)
 end
 
+
 let pp_summary fmt (summary : EdgeExp.summary) = EdgeExp.pp fmt summary.bound
-
-(* module Bound = struct
-  type t =
-  | BinOp of Binop.t * t * t
-  | Value of EdgeExp.t
-  | Max of t list
-  | Min of t list
-  | Inf
-  [@@deriving compare]
-
-  let rec to_string bound = match bound with
-  | BinOp (op, lhs, rhs) -> (
-    match op with
-    | Binop.Mult _ -> (
-      let aux str exp = match exp with
-      | Max _ | Value _ -> str
-      | _ -> F.sprintf "(%s)" str
-      in
-      let lhs_str = aux (to_string lhs) lhs in
-      let rhs_str = aux (to_string rhs) rhs in
-      F.sprintf "%s %s %s" lhs_str (Binop.(str Pp.text) op) rhs_str
-    )
-    | _ -> F.sprintf "%s %s %s" (to_string lhs) (Binop.(str Pp.text) op) (to_string rhs)
-  )
-  | Value exp -> EdgeExp.to_string exp
-  | Max args -> if Int.equal (List.length args) 1 then (
-    let arg = List.hd_exn args in
-    let str = to_string arg in
-    match arg with 
-    | Value arg -> (match arg with
-      | EdgeExp.Var _ -> F.sprintf "[%s]" str
-      | _ -> F.sprintf "max(%s, 0)" str
-    )
-    | _ -> F.sprintf "max(%s, 0)" str
-  ) else (
-    if List.is_empty args then (
-      assert(false)
-    ) else (
-      let str = List.fold args ~init:"max(" ~f:(fun str arg -> str ^ to_string arg ^ ", ") in
-      (String.slice str 0 ((String.length str) - 2)) ^ ")"
-    )
-  )
-  | Min args -> if Int.equal (List.length args) 1 then (
-    to_string (List.hd_exn args)
-  ) else (
-    let str = List.fold args ~init:"min(" ~f:(fun str arg -> str ^ to_string arg ^ ", ") in
-    (String.slice str 0 ((String.length str) - 2)) ^ ")"
-  )
-  | Inf -> "Infinity"
-
-  let pp fmt bound = F.fprintf fmt "%s" (to_string bound)
-
-  let is_zero bound = match bound with
-  | Value exp -> EdgeExp.is_zero exp
-  | _ -> false
-
-  let is_one bound = match bound with
-  | Value (EdgeExp.Const (Const.Cint const)) -> IntLit.isone const
-  | _ -> false
-end *)
 
 
 (* Difference Constraint of form "x <= y + c"
@@ -414,43 +339,9 @@ let is_loop_prune : Sil.if_kind -> bool = function
   | Ik_dowhile | Ik_for | Ik_while -> true
   | _ -> false
 
-module Path = struct
-  type element = (Sil.if_kind * bool * Location.t) [@@deriving compare]
-  let element_equal = [%compare.equal: element]
-
-  let pp_element fmt (kind, branch, loc) = 
-    let kind = Sil.if_kind_to_string kind in
-    F.fprintf fmt "%s[%s](%B)" kind (Location.to_string loc) branch
-
-  type t = element list
-  let equal x y = List.equal element_equal x y
-
-  let empty = []
-
-  (* Creates common path prefix of provided paths *)
-  let common_prefix = fun path_x path_y ->
-    let rec aux prefix x y = match (x, y) with
-    | head_x :: tail_x, head_y :: tail_y when element_equal head_x head_y -> 
-      aux (head_x :: prefix) tail_x tail_y
-    | _, _ -> prefix
-    in
-    List.rev (aux [] path_x path_y)
-
-  let in_loop path = List.exists path ~f:(fun (kind, branch, _) -> 
-    is_loop_prune kind && branch
-  )
-
-  let pp fmt path = List.iter path ~f:(fun prune_info ->
-    F.fprintf fmt "-> %a " pp_element prune_info
-  )
-
-  let path_to_string path = List.fold path ~init:"" ~f:(fun acc (kind, branch, _) ->
-    let kind = Sil.if_kind_to_string kind in
-    let part = F.sprintf "-> %s(%B) " kind branch in
-    acc ^ part
-  )
-end
-
+let pp_element fmt (kind, branch, loc) = 
+  let kind = Sil.if_kind_to_string kind in
+  F.fprintf fmt "%s[%s](%B)" kind (Location.to_string loc) branch
 
 let rec exp_to_z3_expr smt_ctx exp = 
   let int_sort = Z3.Arithmetic.Integer.mk_sort smt_ctx in
@@ -509,7 +400,6 @@ module DCP = struct
     let rec to_string loc = match loc with
       | Prune (kind, loc) -> F.sprintf "%s [%s]" (Sil.if_kind_to_string kind) (Location.to_string loc)
       | Start loc -> F.sprintf "Begin [%s]" (Location.to_string loc)
-      (* | Join (lhs, rhs) -> F.sprintf "Join(%s, %s)" (to_string lhs) (to_string rhs) *)
       | Join loc -> F.sprintf "Join [%s]" (Location.to_string loc)
       | Exit -> F.sprintf "Exit"
 
@@ -526,8 +416,9 @@ module DCP = struct
       backedge: bool;
       conditions: EdgeExp.Set.t;
       assignments: EdgeExp.t PvarMap.t;
-      modified: PvarSet.t;
-      branch_info: Path.element option;
+      modified: Pvar.Set.t;
+      branch_info: (Sil.if_kind * bool * Location.t) option;
+      exit_edge: bool;
 
       mutable calls: CallSiteSet.t;
       mutable constraints: DC.rhs DC.Map.t;
@@ -535,7 +426,6 @@ module DCP = struct
       mutable bound: EdgeExp.t;
       mutable execution_cost: EdgeExp.t;
       mutable bound_norm: EdgeExp.t option;
-      mutable exit_edge: bool;
       mutable computing_bound: bool;
     }
     [@@deriving compare]
@@ -560,19 +450,14 @@ module DCP = struct
 
     let modified_pvars edge = PvarMap.fold (fun pvar exp pvar_set -> 
       if EdgeExp.equal (EdgeExp.Var pvar) exp then pvar_set
-      else PvarSet.add pvar pvar_set
-    ) edge.assignments PvarSet.empty
-
-    module Set = Caml.Set.Make(struct
-      type nonrec t = t
-      let compare = compare
-    end)
+      else Pvar.Set.add pvar pvar_set
+    ) edge.assignments Pvar.Set.empty
 
     let make assignments branch_info = {
       backedge = false;
       conditions = EdgeExp.Set.empty;
       assignments = assignments;
-      modified = PvarSet.empty;
+      modified = Pvar.Set.empty;
       branch_info = branch_info;
 
       calls = CallSiteSet.empty;
@@ -598,12 +483,12 @@ module DCP = struct
     let add_assignment edge lhs rhs =
       { edge with 
         assignments = PvarMap.add lhs rhs edge.assignments;
-        modified = PvarSet.add lhs edge.modified;
+        modified = Pvar.Set.add lhs edge.modified;
       }  
 
     let add_invariants edge locals =
-      let unmodified = PvarSet.diff locals edge.modified in
-      let with_invariants = PvarSet.fold (fun lhs acc ->
+      let unmodified = Pvar.Set.diff locals edge.modified in
+      let with_invariants = Pvar.Set.fold (fun lhs acc ->
         if PvarMap.mem lhs acc then (
           F.printf "[Warning] Assignment map already contains key";
           acc
@@ -613,8 +498,6 @@ module DCP = struct
       ) unmodified edge.assignments
       in
       { edge with assignments = with_invariants }
-
-    let set_branch_info edge info = { edge with branch_info = info }
 
     let get_assignment_rhs edge lhs =
       match PvarMap.find_opt lhs edge.assignments with
@@ -685,12 +568,12 @@ module DCP = struct
       let norm_set = EdgeExp.Set.empty in
       let get_assignment pvar = match PvarMap.find_opt pvar edge.assignments with
       | Some rhs -> Some rhs
-      | None -> if PvarSet.mem pvar formals then Some (EdgeExp.Var pvar) else None
+      | None -> if Pvar.Set.mem pvar formals then Some (EdgeExp.Var pvar) else None
       in
       let dc_map, norm_set = match norm with
       | EdgeExp.Var x_pvar -> (
         (* Norm [x] *)
-        if PvarSet.mem x_pvar formals then (
+        if Pvar.Set.mem x_pvar formals then (
           (* Ignore norms that are formal parameters *)
           dc_map, norm_set
         ) else match PvarMap.find_opt x_pvar edge.assignments with
@@ -943,7 +826,7 @@ module DCP = struct
   include DefaultDot
   let edge_label : EdgeData.t -> string = fun edge_data ->
     match edge_data.branch_info with
-    | Some prune_info -> F.asprintf "%a\n" Path.pp_element prune_info
+    | Some prune_info -> F.asprintf "%a\n" pp_element prune_info
     | None -> ""
 
   let vertex_attributes node = [ `Shape `Box; `Label (Node.to_string node) ]
@@ -1241,169 +1124,12 @@ let empty_cache = {
   reset_chains = EdgeExp.Map.empty;
 }
 
-
-type t = {
-  path: Path.t;
-  last_node: DCP.Node.t;
-  potential_norms: EdgeExp.Set.t;
-  initial_norms: EdgeExp.Set.t;
-  locals: PvarSet.t;
-  ident_map: EdgeExp.t Ident.Map.t;
-  edge_modified: PvarSet.t;
-  loop_modified: PvarSet.t;
-  edge_data: DCP.EdgeData.t;
-  graph_nodes: DCP.NodeSet.t;
-  graph_edges: DCP.EdgeSet.t;
-  incoming_edges: DCP.EdgeSet.t;
-}
-
-let initial : DCP.Node.t -> t = fun entry_point -> (
-  {
-    path = Path.empty;
-    last_node = entry_point;
-    potential_norms = EdgeExp.Set.empty;
-    initial_norms = EdgeExp.Set.empty;
-    locals = PvarSet.empty;
-    ident_map = Ident.Map.empty;
-    edge_modified = PvarSet.empty;
-    loop_modified = PvarSet.empty;
-    edge_data = DCP.EdgeData.empty;
-    graph_nodes = DCP.NodeSet.add entry_point DCP.NodeSet.empty;
-    graph_edges = DCP.EdgeSet.empty;
-    incoming_edges = DCP.EdgeSet.empty;
-  }
-)
-
 let norm_is_variable norm formals =
   let rec traverse_exp = function
-  | EdgeExp.Var pvar when not (PvarSet.mem pvar formals) -> true
+  | EdgeExp.Var pvar when not (Pvar.Set.mem pvar formals) -> true
   | EdgeExp.Const _ -> false
   | EdgeExp.BinOp (_, lexp, rexp) -> (traverse_exp lexp) || (traverse_exp rexp)
   | EdgeExp.UnOp (_, exp, _) -> (traverse_exp exp)
   | _ -> false
   in
   traverse_exp norm
-
-let get_unmodified_pvars : t -> PvarSet.t = fun astate ->
-  PvarSet.diff astate.locals astate.edge_modified
-
-let ( <= ) ~lhs ~rhs =
-  DCP.EdgeSet.equal lhs.graph_edges rhs.graph_edges || 
-  DCP.EdgeSet.cardinal lhs.graph_edges < DCP.EdgeSet.cardinal rhs.graph_edges
-
-
-let join : t -> t -> t = fun lhs rhs ->
-  F.printf "\n[JOIN] %a | %a\n" DCP.Node.pp lhs.last_node DCP.Node.pp rhs.last_node;
-  let path_prefix = Path.common_prefix lhs.path rhs.path in
-  F.printf "  [NEW] Path prefix: %a\n" Path.pp path_prefix;
-
-  (* let join_node = DCP.Node.Join (lhs.last_node, rhs.last_node) in *)
-  let join_node = DCP.Node.Join Location.dummy in
-
-  let ident_map = Ident.Map.union (fun _ a b ->
-    if not (EdgeExp.equal a b) then 
-      L.(die InternalError)"One SIL identificator maps to multiple Pvars!" 
-    else Some a
-  ) lhs.ident_map rhs.ident_map 
-  in
-
-  let loop_modified, potential_norms = if Path.in_loop path_prefix then (
-    PvarSet.union lhs.loop_modified rhs.loop_modified,
-    EdgeExp.Set.union lhs.potential_norms rhs.potential_norms
-  ) else (
-    PvarSet.empty, EdgeExp.Set.empty
-  )
-  in
-  
-  let astate = { lhs with
-    path = path_prefix;
-    ident_map = ident_map;
-    edge_data = DCP.EdgeData.empty;
-    initial_norms = EdgeExp.Set.union lhs.initial_norms rhs.initial_norms;
-    potential_norms = potential_norms;
-    locals = PvarSet.inter lhs.locals rhs.locals;
-    edge_modified = PvarSet.empty;
-    loop_modified = loop_modified;
-    graph_nodes = DCP.NodeSet.union lhs.graph_nodes rhs.graph_nodes;
-    graph_edges = DCP.EdgeSet.union lhs.graph_edges rhs.graph_edges;
-  }
-  in
-  let lhs_empty = DCP.EdgeData.equal lhs.edge_data DCP.EdgeData.empty in
-  let rhs_empty = DCP.EdgeData.equal rhs.edge_data DCP.EdgeData.empty in
-
-  let is_consecutive_join = (DCP.Node.is_join lhs.last_node && not (Path.equal path_prefix lhs.path))
-   || (DCP.Node.is_join rhs.last_node && not (Path.equal path_prefix rhs.path)) in
-
-  let astate = if is_consecutive_join then (
-    (* Consecutive join, merge join nodes and possibly add new edge to aggregated join node *)
-    let other_state, join_state = if DCP.Node.is_join lhs.last_node then rhs, lhs else lhs, rhs in
-    let incoming_edges, last_node = match other_state.last_node with
-    | DCP.Node.Start _ -> (
-      (* Don't add new edge if it's from the beginning location *)
-      join_state.incoming_edges, join_state.last_node
-    )
-    | _ -> (
-      if Path.equal path_prefix other_state.path then (
-        (* Heuristic: ignore edge from previous location if this is a "backedge" join which 
-         * joins state from inside of the loop with outside state denoted by prune location before loop prune *)
-        join_state.incoming_edges, join_state.last_node
-      ) else (
-        (* Add edge from non-join node to current set of edges pointing to aggregated join node *)
-        let unmodified = get_unmodified_pvars other_state in
-        let edge_data = DCP.EdgeData.add_invariants other_state.edge_data unmodified in
-        let edge_data = DCP.EdgeData.set_branch_info edge_data (List.last other_state.path) in
-        let lts_edge = DCP.E.create other_state.last_node edge_data join_state.last_node in
-        let edges = DCP.EdgeSet.add lts_edge join_state.incoming_edges in
-        edges, DCP.Node.Join Location.dummy
-        (* edges, DCP.Node.Join (join_state.last_node, other_state.last_node) *)
-      )
-    )
-    in
-    { astate with 
-      edge_data = join_state.edge_data;
-      last_node = join_state.last_node;
-      incoming_edges = incoming_edges;
-    }
-  ) else (
-    (* First join in a row, create new join node and join info *)
-    match lhs.last_node, rhs.last_node with
-    | DCP.Node.Prune (kind, _), DCP.Node.Start _ when not (is_loop_prune kind) -> (
-      { astate with last_node = lhs.last_node; edge_data = lhs.edge_data; edge_modified = lhs.edge_modified }
-    )
-    | DCP.Node.Start _, DCP.Node.Prune (kind, _) when not (is_loop_prune kind) -> (
-      { astate with last_node = rhs.last_node; edge_data = rhs.edge_data; edge_modified = rhs.edge_modified }
-    )
-    | _, _ -> (
-      let add_edge incoming_edges state = 
-        if Path.equal path_prefix state.path then (
-          incoming_edges
-        ) else (
-          let unmodified = PvarSet.diff astate.locals state.edge_modified in
-          let edge_data = DCP.EdgeData.add_invariants state.edge_data unmodified in
-          let edge_data = DCP.EdgeData.set_branch_info edge_data (List.last state.path) in
-          let lts_edge = DCP.E.create state.last_node edge_data join_node in
-          DCP.EdgeSet.add lts_edge incoming_edges
-        )
-      in
-      let incoming = add_edge DCP.EdgeSet.empty lhs in
-      let incoming = add_edge incoming rhs in
-      { astate with 
-        last_node = join_node; 
-        incoming_edges = incoming;
-        graph_nodes = DCP.NodeSet.add join_node astate.graph_nodes;
-      }
-    )
-  )
-  in
-  astate
-
-let widen ~prev ~next ~num_iters:_ = 
-  { next with graph_edges = DCP.EdgeSet.union prev.graph_edges next.graph_edges }
-
-let pp fmt astate =
-  DCP.EdgeSet.iter (fun (src, edge_data, dst) -> 
-    F.fprintf fmt "(%a) -->  (%a) [%a]\n" 
-    DCP.Node.pp src
-    DCP.Node.pp dst 
-    PvarSet.pp (DCP.EdgeData.modified_pvars edge_data)
-  ) astate.graph_edges

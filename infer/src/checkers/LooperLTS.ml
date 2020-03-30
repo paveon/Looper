@@ -21,17 +21,17 @@ module GraphData = struct
     edges: Domain.DCP.EdgeSet.t;
     edge_data: Domain.DCP.EdgeData.t;
     ident_map: Domain.EdgeExp.t Ident.Map.t;
-    ident_map2: (Pvar.t * Typ.t) Ident.Map.t;
+    ident_map2: AccessPath.t Ident.Map.t;
     field_map: Pvar.t Fieldname.Map.t;
     node_map: Domain.DCP.Node.t Procdesc.NodeMap.t;
     potential_norms: Domain.EdgeExp.Set.t;
     norms: Domain.EdgeExp.Set.t;
     loop_heads: Location.t list;
-    loop_modified: Domain.PvarSet.t;
+    loop_modified: Pvar.Set.t;
     
-    scope_locals: Domain.PvarSet.t list;
-    locals: Domain.PvarSet.t;
-    formals: Domain.PvarSet.t;
+    scope_locals: Pvar.Set.t list;
+    locals: Pvar.Set.t;
+    formals: Pvar.Set.t;
     type_map: Typ.t Domain.PvarMap.t;
     summary: Summary.t;
   }
@@ -42,21 +42,21 @@ module GraphData = struct
     let formals = Procdesc.get_pvar_formals proc_desc in
 
     let proc_name = Procdesc.get_proc_name proc_desc in
-    let locals, type_map = List.fold locals ~init:(PvarSet.empty, PvarMap.empty) ~f:
+    let locals, type_map = List.fold locals ~init:(Pvar.Set.empty, PvarMap.empty) ~f:
     (fun (locals, type_map) (local : ProcAttributes.var_data) ->
       let pvar = Pvar.mk local.name proc_name in
       let type_map = PvarMap.add pvar local.typ type_map in
-      let locals = PvarSet.add pvar locals in
+      let locals = Pvar.Set.add pvar locals in
       locals, type_map
     )
     in
-    let formals, type_map = List.fold formals ~init:(PvarSet.empty, type_map) ~f:(fun (formals, type_map) (pvar, typ) ->
+    let formals, type_map = List.fold formals ~init:(Pvar.Set.empty, type_map) ~f:(fun (formals, type_map) (pvar, typ) ->
       let type_map = PvarMap.add pvar typ type_map in
-      let formals = PvarSet.add pvar formals in
+      let formals = Pvar.Set.add pvar formals in
       formals, type_map
     )
     in
-    log "Locals: %a\n" PvarSet.pp locals;
+    log "Locals: %a\n" Pvar.Set.pp locals;
     {
     last_node = start_node;
     nodes = Domain.DCP.NodeSet.singleton start_node;
@@ -69,11 +69,11 @@ module GraphData = struct
     potential_norms = Domain.EdgeExp.Set.empty;
     norms = Domain.EdgeExp.Set.empty;
     loop_heads = [];
-    loop_modified = Domain.PvarSet.empty;
+    loop_modified = Pvar.Set.empty;
 
     (* locals = locals; *)
-    scope_locals = [Domain.PvarSet.empty];
-    locals = PvarSet.empty;
+    scope_locals = [Pvar.Set.empty];
+    locals = Pvar.Set.empty;
     formals = formals;
     type_map = type_map;
     summary = summary
@@ -112,7 +112,7 @@ module TransferFunctions = struct
     match instr with
     | Sil.Prune (cond, loc, branch, kind) -> (
       log "[PRUNE (%s)] (%a) | %a\n" (Sil.if_kind_to_string kind) Location.pp loc Exp.pp cond;
-      let pvar_condition = EdgeExp.replace_idents cond graph_data.ident_map in
+      let pvar_condition = EdgeExp.of_exp cond graph_data.ident_map in
       log "[PRUNE (%s)] (%a) | %a\n" (Sil.if_kind_to_string kind) Location.pp loc EdgeExp.pp pvar_condition;
 
       let normalized_cond = EdgeExp.normalize_condition pvar_condition in
@@ -144,7 +144,7 @@ module TransferFunctions = struct
           match process_op op with
           | Some new_norm -> (
             let is_modified = match new_norm with
-            | EdgeExp.Var pvar -> PvarSet.mem pvar graph_data.loop_modified
+            | EdgeExp.Var pvar -> Pvar.Set.mem pvar graph_data.loop_modified
             | _ -> false
             in
             if not loop_prune && not is_modified then (
@@ -164,7 +164,7 @@ module TransferFunctions = struct
 
       { graph_data with
         loop_heads = if branch then [loc] @ graph_data.loop_heads else graph_data.loop_heads;
-        scope_locals = if branch then [PvarSet.empty] @ graph_data.scope_locals else graph_data.scope_locals;
+        scope_locals = if branch then [Pvar.Set.empty] @ graph_data.scope_locals else graph_data.scope_locals;
 
         edge_data = { graph_data.edge_data with
           branch_info = Some (kind, branch, loc);
@@ -173,121 +173,162 @@ module TransferFunctions = struct
       }
     )
     | Sil.Store {e1=lhs; typ; e2=rhs; loc} -> (
-      log "Store: %a = %a\n" Exp.pp lhs Exp.pp rhs;
-      let pvar_rexp = EdgeExp.replace_idents rhs graph_data.ident_map in
-      let pvar_rexp = match pvar_rexp with
-      | EdgeExp.Call (_, _, _, summary) -> (
-        match summary.return_bound with
-        | Some ret_bound -> ret_bound
-        | None -> pvar_rexp
+      log "[STORE] (%a) | %a = %a\n" Location.pp loc Exp.pp lhs Exp.pp rhs;
+      match lhs with
+      | Exp.Lvar pvar when Pvar.is_clang_tmp pvar -> (
+        log "clang_tmp\n";
+        graph_data
       )
-      | _ -> pvar_rexp
-      in
-      let id_resolver (var : Var.t) = match var with
-      | Var.LogicalVar id -> (
-        let pvar, typ = Ident.Map.find id graph_data.ident_map2 in
-        log "Resolving: %a\n" Var.pp var;
-        Some (AccessPath.of_pvar pvar typ)
+      | Exp.Lvar pvar when Pvar.is_frontend_tmp pvar -> (
+        log "frontend_tmp\n";
+        graph_data
       )
-      | Var.ProgramVar _ -> None
-      in
-
-      let path = AccessPath.of_lhs_exp ~include_array_indexes:false lhs typ ~f_resolve_id:id_resolver in
-      (* Option.value_exn *)
-      log "LHS PATH: %a\n" AccessPath.pp (Option.value_exn path);
-
-      let rec extract_assigned_pvar lexp = match lexp with
-      | Exp.Lvar pvar -> pvar
-      | Exp.Lfield (field, name, typ) -> (
-        let proc_name = Procdesc.get_proc_name proc_desc in
-        let pvar = Pvar.mk (Mangled.from_string (Fieldname.to_string name)) proc_name in
-        log "SUB EXP: %a\n" Exp.pp field;
-        extract_assigned_pvar field
+      | Exp.Lvar pvar when Pvar.is_ssa_frontend_tmp pvar -> (
+        log "ssa_frontend_tmp\n";
+        graph_data
       )
-      | Exp.Var id -> L.(die InternalError)"Unsupported assignment LHS: %a" Ident.pp id
-      | Exp.UnOp (op, sub_exp, typ) -> L.(die InternalError)"Unsupported assignment LHS: UnOp"
-      | Exp.BinOp (op, lhs, rhs) -> L.(die InternalError)"Unsupported assignment LHS: BinOp"
-      | Exp.Const const -> L.(die InternalError)"Unsupported assignment LHS: Const"
-      | Exp.Cast (typ, sub_exp) -> L.(die InternalError)"Unsupported assignment LHS: Cast"
-      | Exp.Lindex (array_exp, index_exp) -> L.(die InternalError)"Unsupported assignment LHS: Lindex"
-      | _ -> L.(die InternalError)"Unsupported assignment LHS"
-      in
-
-      let assigned_pvar = extract_assigned_pvar lhs in
-
-      log "[STORE] (%a) | %a = %a\n" Location.pp loc Pvar.pp_value assigned_pvar EdgeExp.pp pvar_rexp;
-
-      (* Substitute rexp based on previous assignments,
-        * eg. [beg = i; end = beg;] becomes [beg = i; end = i] *)
-      let pvar_rexp = match pvar_rexp with
-      | EdgeExp.BinOp (Binop.PlusA _, EdgeExp.Var lexp, EdgeExp.Const (Const.Cint c1)) -> (
-        (* [BINOP] PVAR + CONST *)
-        match (DCP.EdgeData.get_assignment_rhs graph_data.edge_data lexp) with
-        | EdgeExp.Var pvar -> (
-          let const = EdgeExp.Const (Const.Cint c1) in
-          EdgeExp.BinOp (Binop.PlusA None, EdgeExp.Var pvar, const)
+      | Exp.Lvar pvar when Pvar.is_cpp_temporary pvar -> (
+        log "cpp_temporary\n";
+        graph_data
+      )
+      | _ -> (
+        let id_resolver (var : Var.t) = match var with
+        | Var.LogicalVar id -> (
+          (* let pvar, typ = Ident.Map.find id graph_data.ident_map2 in
+          log "Resolving: %a\n" Var.pp var;
+          Some (AccessPath.of_pvar pvar typ) *)
+          None
         )
-        | EdgeExp.BinOp (Binop.PlusA _, lexp, EdgeExp.Const (Const.Cint c2)) -> (
-          (* [BINOP] (PVAR + C1) + C2 -> PVAR + (C1 + C2) *)
-          let const = EdgeExp.Const (Const.Cint (IntLit.add c1 c2)) in
-          EdgeExp.BinOp (Binop.PlusA None, lexp, const)
+        | Var.ProgramVar _ -> None
+        in
+
+        let path = Option.value_exn
+          (AccessPath.of_lhs_exp ~include_array_indexes:false lhs typ ~f_resolve_id:id_resolver)
+        in
+        
+        log "LHS PATH: %a\n" AccessPath.pp path;
+        (* let (var, typ) = fst path in
+        (
+          match var with
+          | Var.ProgramVar pvar -> log "test"
+          | _ -> log "test"
+        ); *)
+
+        let pvar_rexp = EdgeExp.of_exp rhs graph_data.ident_map in
+        let pvar_rexp = match pvar_rexp with
+        | EdgeExp.Call (_, _, _, summary) -> (
+          match summary.return_bound with
+          | Some ret_bound -> ret_bound
+          | None -> pvar_rexp
         )
-        | _ -> (
-          L.(die InternalError)"Unsupported exp substitution"
-          (* pvar_rexp *)
+        | _ -> pvar_rexp
+        in
+
+
+        let rec extract_assigned_pvar lexp = match lexp with
+        | Exp.Lvar pvar -> pvar
+        | Exp.Lfield (field, name, typ) -> (
+          let proc_name = Procdesc.get_proc_name proc_desc in
+          let pvar = Pvar.mk (Mangled.from_string (Fieldname.to_string name)) proc_name in
+          log "SUB EXP: %a\n" Exp.pp field;
+          extract_assigned_pvar field
         )
-      )
-      | EdgeExp.Var rhs_pvar -> (
-        DCP.EdgeData.get_assignment_rhs graph_data.edge_data rhs_pvar
-      )
-      | _ -> pvar_rexp
-      in
+        | Exp.Var id -> L.(die InternalError)"Unsupported assignment LHS: %a" Ident.pp id
+        | Exp.UnOp (op, sub_exp, typ) -> L.(die InternalError)"Unsupported assignment LHS: UnOp"
+        | Exp.BinOp (op, lhs, rhs) -> L.(die InternalError)"Unsupported assignment LHS: BinOp"
+        | Exp.Const const -> L.(die InternalError)"Unsupported assignment LHS: Const"
+        | Exp.Cast (typ, sub_exp) -> L.(die InternalError)"Unsupported assignment LHS: Cast"
+        | Exp.Lindex (array_exp, index_exp) -> L.(die InternalError)"Unsupported assignment LHS: Lindex"
+        | _ -> L.(die InternalError)"Unsupported assignment LHS"
+        in
 
-      let is_plus_minus_op op = match op with
-      | Binop.PlusA _ | Binop.MinusA _ -> true | _ -> false
-      in
+        let assigned_pvar = extract_assigned_pvar lhs in
 
-      let graph_data = match pvar_rexp with 
-      | EdgeExp.BinOp (op, EdgeExp.Var pvar, EdgeExp.Const (Const.Cint _)) when Pvar.equal assigned_pvar pvar -> (
-        let assigned_exp = EdgeExp.Var assigned_pvar in
-        if is_plus_minus_op op && EdgeExp.Set.mem assigned_exp graph_data.potential_norms then (
-          { graph_data with
-            potential_norms = EdgeExp.Set.remove assigned_exp graph_data.potential_norms;
-            norms = EdgeExp.Set.add assigned_exp graph_data.norms;
-          }
-        ) else (
-          graph_data
+        log "[STORE] (%a) | %a = %a\n" Location.pp loc Pvar.pp_value assigned_pvar EdgeExp.pp pvar_rexp;
+
+        (* Substitute rexp based on previous assignments,
+          * eg. [beg = i; end = beg;] becomes [beg = i; end = i] *)
+        let pvar_rexp = match pvar_rexp with
+        | EdgeExp.BinOp (Binop.PlusA _, EdgeExp.Var lexp, EdgeExp.Const (Const.Cint c1)) -> (
+          (* [BINOP] PVAR + CONST *)
+          match (DCP.EdgeData.get_assignment_rhs graph_data.edge_data lexp) with
+          | EdgeExp.Var pvar -> (
+            let const = EdgeExp.Const (Const.Cint c1) in
+            EdgeExp.BinOp (Binop.PlusA None, EdgeExp.Var pvar, const)
+          )
+          | EdgeExp.BinOp (Binop.PlusA _, lexp, EdgeExp.Const (Const.Cint c2)) -> (
+            (* [BINOP] (PVAR + C1) + C2 -> PVAR + (C1 + C2) *)
+            let const = EdgeExp.Const (Const.Cint (IntLit.add c1 c2)) in
+            EdgeExp.BinOp (Binop.PlusA None, lexp, const)
+          )
+          | _ -> (
+            L.(die InternalError)"Unsupported exp substitution"
+            (* pvar_rexp *)
+          )
         )
+        | EdgeExp.Var rhs_pvar -> (
+          DCP.EdgeData.get_assignment_rhs graph_data.edge_data rhs_pvar
+        )
+        | _ -> pvar_rexp
+        in
+
+        let is_plus_minus_op op = match op with
+        | Binop.PlusA _ | Binop.MinusA _ -> true | _ -> false
+        in
+
+        let graph_data = match pvar_rexp with 
+        | EdgeExp.BinOp (op, EdgeExp.Var pvar, EdgeExp.Const (Const.Cint _)) when Pvar.equal assigned_pvar pvar -> (
+          let assigned_exp = EdgeExp.Var assigned_pvar in
+          if is_plus_minus_op op && EdgeExp.Set.mem assigned_exp graph_data.potential_norms then (
+            { graph_data with
+              potential_norms = EdgeExp.Set.remove assigned_exp graph_data.potential_norms;
+              norms = EdgeExp.Set.add assigned_exp graph_data.norms;
+            }
+          ) else (
+            graph_data
+          )
+        )
+        | _ -> graph_data
+        in
+
+        let edge_data = DCP.EdgeData.add_assignment graph_data.edge_data assigned_pvar pvar_rexp in
+        let initial_norms = if Pvar.is_return assigned_pvar then (
+          EdgeExp.Set.add (EdgeExp.Var assigned_pvar) graph_data.norms
+        ) else graph_data.norms
+        in
+
+        let loop_modified = if not (List.is_empty graph_data.loop_heads) then (
+          Pvar.Set.add assigned_pvar graph_data.loop_modified
+        ) else graph_data.loop_modified 
+        in
+
+        { graph_data with
+          edge_data = edge_data;
+          norms = initial_norms;
+          loop_modified = loop_modified;
+        }
       )
-      | _ -> graph_data
-      in
-
-      let edge_data = DCP.EdgeData.add_assignment graph_data.edge_data assigned_pvar pvar_rexp in
-      let initial_norms = if Pvar.is_return assigned_pvar then (
-        edge_data.exit_edge <- true;
-        EdgeExp.Set.add (EdgeExp.Var assigned_pvar) graph_data.norms
-      ) else graph_data.norms
-      in
-
-      let loop_modified = if not (List.is_empty graph_data.loop_heads) then (
-        PvarSet.add assigned_pvar graph_data.loop_modified
-      ) else graph_data.loop_modified 
-      in
-
-      { graph_data with
-        edge_data = edge_data;
-        norms = initial_norms;
-        loop_modified = loop_modified;
-      }
-
     )
     | Sil.Load {id; e; typ; loc;} -> (
       log "[LOAD] (%a) | %a = %a\n" Location.pp loc Ident.pp id Exp.pp e;
       let rec map_ident exp = match exp with
-      | Exp.Lfield (field_exp, name, typ) -> map_ident field_exp
+      | Exp.Lfield (struct_exp, name, typ) -> (
+        log "Field exp: %a\n" Exp.pp struct_exp;
+        match struct_exp with
+        | Exp.Var struct_id -> (
+          let path = Ident.Map.find struct_id graph_data.ident_map2 in
+          let access = AccessPath.FieldAccess name in
+          let ext_path = AccessPath.append path [access] in
+          log "%a --> %a\n" Ident.pp id AccessPath.pp ext_path;
+          let map2 = Ident.Map.add id ext_path graph_data.ident_map2 in
+          graph_data.ident_map, map2
+        )
+        | _ -> graph_data.ident_map, graph_data.ident_map2
+      )
       | Exp.Lvar pvar -> (
         let map1 = Ident.Map.add id (EdgeExp.Var pvar) graph_data.ident_map in
-        let map2 = Ident.Map.add id (pvar, typ) graph_data.ident_map2 in
+        let access = AccessPath.of_pvar pvar typ in
+        let map2 = Ident.Map.add id access graph_data.ident_map2 in
         map1, map2
       )
       | Exp.Var id -> (
@@ -310,7 +351,7 @@ module TransferFunctions = struct
       | Some new_summary -> (
         (* Replace all idents in call arguments with pvars and return these pvars as norms *)
         let args, arg_norms = List.fold args ~init:([], EdgeExp.Set.empty) ~f:(fun (args, norms) (arg, typ) ->
-          let arg = EdgeExp.replace_idents arg graph_data.ident_map in
+          let arg = EdgeExp.of_exp arg graph_data.ident_map in
           let arg_norms = EdgeExp.get_exp_vars arg in
           [(arg, typ)] @ args, EdgeExp.Set.union arg_norms norms
           )
@@ -343,22 +384,23 @@ module TransferFunctions = struct
       | None -> (
         (* L.(die InternalError)"Missing summary!" *)
         (* TODO: figure out how to do this, maybe models? Builtins cause problems *)
-        log "Ret_id: %a\n" Ident.pp ret_id;
+        (* log "Ret_id: %a\n" Ident.pp ret_id;
         let ret_pvar = Pvar.mk_abduced_ret callee_pname loc in
         { graph_data with 
           ident_map = Ident.Map.add ret_id (EdgeExp.Var ret_pvar) graph_data.ident_map;
           ident_map2 = Ident.Map.add ret_id (ret_pvar, ret_type) graph_data.ident_map2;
-        }
+        } *)
+        graph_data
       )
     )
     | Metadata metadata -> (match metadata with
       | VariableLifetimeBegins (pvar, typ, loc) -> (
         let scope_locals = match graph_data.scope_locals with
-        | scope::tail -> [PvarSet.add pvar scope] @ tail
+        | scope::tail -> [Pvar.Set.add pvar scope] @ tail
         | [] -> []
         in
         { graph_data with 
-          locals = PvarSet.add pvar graph_data.locals;
+          locals = Pvar.Set.add pvar graph_data.locals;
           scope_locals = scope_locals;
         }
       )
@@ -413,15 +455,15 @@ module GraphConstructor = struct
         let join_node = DCP.Node.Join (Procdesc.Node.get_loc node) in
         let edge_data = DCP.EdgeData.add_invariants graph_data.edge_data graph_data.locals in
         let new_edge = DCP.E.create graph_data.last_node edge_data join_node in
-        (* log "Locals: %a\n" PvarSet.pp graph_data.locals;
-        log "Scope locals:\n"; List.iter graph_data.scope_locals ~f:(fun scope -> log "  %a\n" PvarSet.pp scope; ); *)
+        (* log "Locals: %a\n" Pvar.Set.pp graph_data.locals;
+        log "Scope locals:\n"; List.iter graph_data.scope_locals ~f:(fun scope -> log "  %a\n" Pvar.Set.pp scope; ); *)
         { graph_data with 
           nodes = DCP.NodeSet.add join_node graph_data.nodes;
           edges = DCP.EdgeSet.add new_edge graph_data.edges;
           last_node = join_node;
           edge_data = DCP.EdgeData.empty;
 
-          locals = PvarSet.diff graph_data.locals (List.hd_exn graph_data.scope_locals);
+          locals = Pvar.Set.diff graph_data.locals (List.hd_exn graph_data.scope_locals);
           scope_locals = List.tl_exn graph_data.scope_locals;
           node_map = Procdesc.NodeMap.add node join_node graph_data.node_map
         }
@@ -462,12 +504,13 @@ module GraphConstructor = struct
       if is_exit_node node then (
         let exit_node = DCP.Node.Exit in
         let edge_data = DCP.EdgeData.add_invariants graph_data.edge_data graph_data.locals in
+        let edge_data = {edge_data with exit_edge = true } in
         let new_edge = DCP.E.create graph_data.last_node edge_data exit_node in
         let graph_data = { graph_data with 
           nodes = DCP.NodeSet.add exit_node graph_data.nodes;
           edges = DCP.EdgeSet.add new_edge graph_data.edges;
           last_node = exit_node;
-          edge_data = DCP.EdgeData.empty; 
+          edge_data = DCP.EdgeData.empty;
         }
         in
         (visited, graph_data)
