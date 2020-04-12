@@ -22,9 +22,9 @@ module EdgeExp : sig
    | BinOp of Binop.t * t * t
    | UnOp of Unop.t * t * Typ.t option
    | Access of AccessPath.t
-   | Var of Pvar.t
+   (* | Var of Pvar.t *)
    | Const of Const.t
-   | Call of call
+   | Call of edge_call
    | Max of t list
    | Min of t list
    | Inf
@@ -32,7 +32,7 @@ module EdgeExp : sig
    
    and call_arg = (t * Typ.t) [@@deriving compare]
 
-   and call = Typ.t * Procname.t * call_arg list * summary
+   and edge_call = Typ.t * Procname.t * call_arg list * summary [@@deriving compare]
 
    and summary = {
       formal_map: FormalMap.t;
@@ -56,17 +56,13 @@ module EdgeExp : sig
 
    val is_one : t -> bool
 
-   val is_int : t -> Typ.t PvarMap.t -> bool
+   val is_int : t -> Typ.t PvarMap.t -> Tenv.t -> bool
 
-   val of_exp : Exp.t -> t Ident.Map.t -> t
+   val of_exp : Exp.t -> t Ident.Map.t -> Typ.t PvarMap.t -> t
 
-   val get_vars: t -> Pvar.Set.t
+   val get_accesses: t -> Set.t
 
-   val get_exp_vars: t -> Set.t
-
-   val iter_vars: t -> f:(Pvar.t -> unit) -> unit
-
-   val map_vars: t -> f:(Pvar.t -> 'a -> t * 'a) -> 'a -> t * 'a
+   val map_accesses: t -> f:(AccessPath.t -> 'a -> t * 'a) -> 'a -> t * 'a
 
    val subst : t -> call_arg list -> FormalMap.t -> t
 
@@ -78,7 +74,7 @@ module EdgeExp : sig
 
    val mult : t -> t -> t
 
-   val to_string : ?braces:bool -> t -> string
+   val to_string : t -> string
 
    val pp : F.formatter -> t -> unit
 end
@@ -129,9 +125,13 @@ module DefaultDot : sig
    val graph_attributes : 'a -> 'b list
 end
 
-type call_site = EdgeExp.call * Location.t
+type call_site = EdgeExp.t * Location.t
 
 module CallSiteSet : Caml.Set.S with type elt = call_site
+
+module AccessSet : Caml.Set.S with type elt = AccessPath.t
+
+module AssignmentMap : Caml.Map.S with type key = AccessPath.t
 
 (* Difference Constraint Program *)
 module DCP : sig
@@ -158,8 +158,8 @@ module DCP : sig
       type t = {
          backedge: bool;
          conditions: EdgeExp.Set.t;
-         assignments: EdgeExp.t PvarMap.t;
-         modified: Pvar.Set.t;
+         assignments: EdgeExp.t AssignmentMap.t;
+         modified: AccessSet.t;
          branch_info: (Sil.if_kind * bool * Location.t) option;
          exit_edge: bool;
          
@@ -183,9 +183,9 @@ module DCP : sig
 
       val active_guards : t -> EdgeExp.Set.t
 
-      val modified_pvars : t -> Pvar.Set.t
+      val modified : t -> AccessSet.t
 
-      val make : EdgeExp.t PvarMap.t -> (Sil.if_kind * bool * Location.t) option -> t
+      val make : EdgeExp.t AssignmentMap.t -> (Sil.if_kind * bool * Location.t) option -> t
 
       val empty : t
 
@@ -196,11 +196,11 @@ module DCP : sig
 
       val add_condition : t -> EdgeExp.t -> t
 
-      val add_assignment : t -> Pvar.t -> EdgeExp.t -> t
+      val add_assignment : t -> AccessPath.t -> EdgeExp.t -> t
 
-      val add_invariants : t -> Pvar.Set.t -> t
+      val add_invariants : t -> Pvar.Set.t -> Typ.t PvarMap.t -> t
 
-      val get_assignment_rhs : t -> Pvar.t -> EdgeExp.t
+      val get_assignment_rhs : t -> AccessPath.t -> EdgeExp.t
 
       val derive_guards : t -> EdgeExp.Set.t -> Z3.Solver.solver -> Z3.context -> unit
       

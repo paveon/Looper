@@ -21,22 +21,22 @@ module GraphData = struct
     edges: Domain.DCP.EdgeSet.t;
     edge_data: Domain.DCP.EdgeData.t;
     ident_map: Domain.EdgeExp.t Ident.Map.t;
-    ident_map2: AccessPath.t Ident.Map.t;
     field_map: Pvar.t Fieldname.Map.t;
     node_map: Domain.DCP.Node.t Procdesc.NodeMap.t;
     potential_norms: Domain.EdgeExp.Set.t;
     norms: Domain.EdgeExp.Set.t;
     loop_heads: Location.t list;
-    loop_modified: Pvar.Set.t;
+    loop_modified: Domain.AccessSet.t;
     
     scope_locals: Pvar.Set.t list;
     locals: Pvar.Set.t;
     formals: Pvar.Set.t;
     type_map: Typ.t Domain.PvarMap.t;
+    tenv: Tenv.t;
     summary: Summary.t;
   }
 
-  let make proc_desc summary start_node = 
+  let make tenv proc_desc summary start_node = 
     let open Domain in
     let locals = Procdesc.get_locals proc_desc in
     let formals = Procdesc.get_pvar_formals proc_desc in
@@ -63,19 +63,20 @@ module GraphData = struct
     edges = Domain.DCP.EdgeSet.empty;
     edge_data = Domain.DCP.EdgeData.empty;
     ident_map = Ident.Map.empty;
-    ident_map2 = Ident.Map.empty;
+    (* ident_map2 = Ident.Map.empty; *)
     field_map = Fieldname.Map.empty;
     node_map = Procdesc.NodeMap.empty;
     potential_norms = Domain.EdgeExp.Set.empty;
     norms = Domain.EdgeExp.Set.empty;
     loop_heads = [];
-    loop_modified = Pvar.Set.empty;
+    loop_modified = Domain.AccessSet.empty;
 
     (* locals = locals; *)
     scope_locals = [Pvar.Set.empty];
     locals = Pvar.Set.empty;
     formals = formals;
     type_map = type_map;
+    tenv = tenv;
     summary = summary
   }
 end
@@ -104,21 +105,20 @@ let is_decl_node node = match Procdesc.Node.get_kind node with
 
 module TransferFunctions = struct
   (* Take an abstract state and instruction, produce a new abstract state *)
-  let exec_instr : Procdesc.t -> Procdesc.Node.t -> GraphData.t -> Sil.instr -> GraphData.t =
-  fun proc_desc node graph_data instr ->
-
+  let exec_instr : GraphData.t -> Sil.instr -> GraphData.t = fun graph_data instr ->
     let open Domain in
 
     match instr with
     | Sil.Prune (cond, loc, branch, kind) -> (
       log "[PRUNE (%s)] (%a) | %a\n" (Sil.if_kind_to_string kind) Location.pp loc Exp.pp cond;
-      let pvar_condition = EdgeExp.of_exp cond graph_data.ident_map in
-      log "[PRUNE (%s)] (%a) | %a\n" (Sil.if_kind_to_string kind) Location.pp loc EdgeExp.pp pvar_condition;
+      (* let cond = EdgeExp.of_exp cond graph_data.ident_map2 graph_data.type_map in *)
+      let cond = EdgeExp.of_exp cond graph_data.ident_map graph_data.type_map in
+      log "[PRUNE (%s)] (%a) | %a\n" (Sil.if_kind_to_string kind) Location.pp loc EdgeExp.pp cond;
 
-      let normalized_cond = EdgeExp.normalize_condition pvar_condition in
+      let normalized_cond = EdgeExp.normalize_condition cond in
 
       let in_loop = not (List.is_empty graph_data.loop_heads) in
-      let is_int_expr = EdgeExp.is_int normalized_cond graph_data.type_map in
+      let is_int_expr = EdgeExp.is_int normalized_cond graph_data.type_map graph_data.tenv in
       let loop_prune = is_loop_prune kind in
 
       let graph_data = if branch && (loop_prune || in_loop) && is_int_expr then (
@@ -127,13 +127,11 @@ module TransferFunctions = struct
         * [x >= y] -> [x - y + 1] > 0 *)
         match normalized_cond with
         | EdgeExp.BinOp (op, lexp, rexp) -> (
-          let process_gt lhs rhs =
-            let lhs_is_zero = EdgeExp.is_zero lhs in
-            let rhs_is_zero = EdgeExp.is_zero rhs in
-            if lhs_is_zero && rhs_is_zero then EdgeExp.zero
-            else if lhs_is_zero then EdgeExp.UnOp (Unop.Neg, rhs, None)
-            else if rhs_is_zero then lhs
-            else EdgeExp.BinOp (Binop.MinusA None, lhs, rhs)
+          let process_gt lhs rhs = match EdgeExp.is_zero lhs, EdgeExp.is_zero rhs with
+          | true, true -> EdgeExp.zero
+          | true, _ -> EdgeExp.UnOp (Unop.Neg, rhs, None)
+          | false, true -> lhs
+          | _ -> EdgeExp.BinOp (Binop.MinusA None, lhs, rhs)
           in
 
           let process_op op = match op with
@@ -144,7 +142,7 @@ module TransferFunctions = struct
           match process_op op with
           | Some new_norm -> (
             let is_modified = match new_norm with
-            | EdgeExp.Var pvar -> Pvar.Set.mem pvar graph_data.loop_modified
+            | EdgeExp.Access access -> AccessSet.mem access graph_data.loop_modified
             | _ -> false
             in
             if not loop_prune && not is_modified then (
@@ -193,7 +191,7 @@ module TransferFunctions = struct
       )
       | _ -> (
         let id_resolver (var : Var.t) = match var with
-        | Var.LogicalVar id -> (
+        | Var.LogicalVar _ -> (
           (* let pvar, typ = Ident.Map.find id graph_data.ident_map2 in
           log "Resolving: %a\n" Var.pp var;
           Some (AccessPath.of_pvar pvar typ) *)
@@ -202,30 +200,23 @@ module TransferFunctions = struct
         | Var.ProgramVar _ -> None
         in
 
-        let path = Option.value_exn
+        let lhs_access = Option.value_exn
           (AccessPath.of_lhs_exp ~include_array_indexes:false lhs typ ~f_resolve_id:id_resolver)
         in
-        
-        log "LHS PATH: %a\n" AccessPath.pp path;
-        (* let (var, typ) = fst path in
-        (
-          match var with
-          | Var.ProgramVar pvar -> log "test"
-          | _ -> log "test"
-        ); *)
 
-        let pvar_rexp = EdgeExp.of_exp rhs graph_data.ident_map in
-        let pvar_rexp = match pvar_rexp with
+        (* let rhs_exp = EdgeExp.of_exp rhs graph_data.ident_map2 graph_data.type_map in *)
+        let rhs_exp = EdgeExp.of_exp rhs graph_data.ident_map graph_data.type_map in
+        let rhs_exp = match rhs_exp with
         | EdgeExp.Call (_, _, _, summary) -> (
           match summary.return_bound with
           | Some ret_bound -> ret_bound
-          | None -> pvar_rexp
+          | None -> rhs_exp
         )
-        | _ -> pvar_rexp
+        | _ -> rhs_exp
         in
 
 
-        let rec extract_assigned_pvar lexp = match lexp with
+        (* let rec extract_assigned_pvar lexp = match lexp with
         | Exp.Lvar pvar -> pvar
         | Exp.Lfield (field, name, typ) -> (
           let proc_name = Procdesc.get_proc_name proc_desc in
@@ -240,25 +231,22 @@ module TransferFunctions = struct
         | Exp.Cast (typ, sub_exp) -> L.(die InternalError)"Unsupported assignment LHS: Cast"
         | Exp.Lindex (array_exp, index_exp) -> L.(die InternalError)"Unsupported assignment LHS: Lindex"
         | _ -> L.(die InternalError)"Unsupported assignment LHS"
-        in
+        in *)
 
-        let assigned_pvar = extract_assigned_pvar lhs in
+        (* let assigned_pvar = extract_assigned_pvar lhs in *)
 
-        log "[STORE] (%a) | %a = %a\n" Location.pp loc Pvar.pp_value assigned_pvar EdgeExp.pp pvar_rexp;
+        log "[STORE] (%a) | %a = %a\n" Location.pp loc AccessPath.pp lhs_access EdgeExp.pp rhs_exp;
 
         (* Substitute rexp based on previous assignments,
           * eg. [beg = i; end = beg;] becomes [beg = i; end = i] *)
-        let pvar_rexp = match pvar_rexp with
-        | EdgeExp.BinOp (Binop.PlusA _, EdgeExp.Var lexp, EdgeExp.Const (Const.Cint c1)) -> (
-          (* [BINOP] PVAR + CONST *)
-          match (DCP.EdgeData.get_assignment_rhs graph_data.edge_data lexp) with
-          | EdgeExp.Var pvar -> (
-            let const = EdgeExp.Const (Const.Cint c1) in
-            EdgeExp.BinOp (Binop.PlusA None, EdgeExp.Var pvar, const)
-          )
-          | EdgeExp.BinOp (Binop.PlusA _, lexp, EdgeExp.Const (Const.Cint c2)) -> (
+        let rhs_exp = match rhs_exp with
+        | EdgeExp.BinOp (Binop.PlusA _, EdgeExp.Access rhs_access, (EdgeExp.Const (Const.Cint rhs_int) as rhs_c)) -> (
+          (* [BINOP] Access + Const *)
+          match (DCP.EdgeData.get_assignment_rhs graph_data.edge_data rhs_access) with
+          | EdgeExp.Access _ as assignment_rhs -> EdgeExp.BinOp (Binop.PlusA None, assignment_rhs, rhs_c)
+          | EdgeExp.BinOp (Binop.PlusA _, lexp, EdgeExp.Const (Const.Cint assignment_rhs_int)) -> (
             (* [BINOP] (PVAR + C1) + C2 -> PVAR + (C1 + C2) *)
-            let const = EdgeExp.Const (Const.Cint (IntLit.add c1 c2)) in
+            let const = EdgeExp.Const (Const.Cint (IntLit.add rhs_int assignment_rhs_int)) in
             EdgeExp.BinOp (Binop.PlusA None, lexp, const)
           )
           | _ -> (
@@ -266,44 +254,45 @@ module TransferFunctions = struct
             (* pvar_rexp *)
           )
         )
-        | EdgeExp.Var rhs_pvar -> (
-          DCP.EdgeData.get_assignment_rhs graph_data.edge_data rhs_pvar
+        | EdgeExp.Access rhs_access -> (
+          DCP.EdgeData.get_assignment_rhs graph_data.edge_data rhs_access
         )
-        | _ -> pvar_rexp
+        | _ -> rhs_exp
         in
 
         let is_plus_minus_op op = match op with
         | Binop.PlusA _ | Binop.MinusA _ -> true | _ -> false
         in
 
-        let graph_data = match pvar_rexp with 
-        | EdgeExp.BinOp (op, EdgeExp.Var pvar, EdgeExp.Const (Const.Cint _)) when Pvar.equal assigned_pvar pvar -> (
-          let assigned_exp = EdgeExp.Var assigned_pvar in
-          if is_plus_minus_op op && EdgeExp.Set.mem assigned_exp graph_data.potential_norms then (
-            { graph_data with
-              potential_norms = EdgeExp.Set.remove assigned_exp graph_data.potential_norms;
-              norms = EdgeExp.Set.add assigned_exp graph_data.norms;
-            }
-          ) else (
-            graph_data
-          )
+        (* Check if we can add new norm to the norm set *)
+        let graph_data = match rhs_exp with 
+        | EdgeExp.BinOp (op, (EdgeExp.Access rhs_access as rhs_access_exp), EdgeExp.Const (Const.Cint _)) -> (
+          if AccessPath.equal lhs_access rhs_access then (
+            if is_plus_minus_op op && EdgeExp.Set.mem rhs_access_exp graph_data.potential_norms then (
+              { graph_data with
+                potential_norms = EdgeExp.Set.remove rhs_access_exp graph_data.potential_norms;
+                norms = EdgeExp.Set.add rhs_access_exp graph_data.norms;
+              }
+            ) else (
+              graph_data
+            )
+          ) else graph_data
         )
         | _ -> graph_data
         in
-
-        let edge_data = DCP.EdgeData.add_assignment graph_data.edge_data assigned_pvar pvar_rexp in
-        let initial_norms = if Pvar.is_return assigned_pvar then (
-          EdgeExp.Set.add (EdgeExp.Var assigned_pvar) graph_data.norms
-        ) else graph_data.norms
+        
+        let initial_norms = match lhs with
+        | Exp.Lvar pvar when Pvar.is_return pvar -> EdgeExp.Set.add (EdgeExp.Access lhs_access) graph_data.norms
+        | _ -> graph_data.norms
         in
 
-        let loop_modified = if not (List.is_empty graph_data.loop_heads) then (
-          Pvar.Set.add assigned_pvar graph_data.loop_modified
-        ) else graph_data.loop_modified 
+        let loop_modified = match List.is_empty graph_data.loop_heads with
+        | false -> AccessSet.add lhs_access graph_data.loop_modified
+        | _ -> graph_data.loop_modified 
         in
 
         { graph_data with
-          edge_data = edge_data;
+          edge_data = DCP.EdgeData.add_assignment graph_data.edge_data lhs_access rhs_exp;
           norms = initial_norms;
           loop_modified = loop_modified;
         }
@@ -311,48 +300,49 @@ module TransferFunctions = struct
     )
     | Sil.Load {id; e; typ; loc;} -> (
       log "[LOAD] (%a) | %a = %a\n" Location.pp loc Ident.pp id Exp.pp e;
-      let rec map_ident exp = match exp with
-      | Exp.Lfield (struct_exp, name, typ) -> (
+      let map_ident exp = match exp with
+      | Exp.Lfield (struct_exp, name, _) -> (
         log "Field exp: %a\n" Exp.pp struct_exp;
         match struct_exp with
         | Exp.Var struct_id -> (
-          let path = Ident.Map.find struct_id graph_data.ident_map2 in
-          let access = AccessPath.FieldAccess name in
-          let ext_path = AccessPath.append path [access] in
-          log "%a --> %a\n" Ident.pp id AccessPath.pp ext_path;
-          let map2 = Ident.Map.add id ext_path graph_data.ident_map2 in
-          graph_data.ident_map, map2
+          match Ident.Map.find struct_id graph_data.ident_map with
+          | EdgeExp.Access path -> (
+            let access = AccessPath.FieldAccess name in
+            let ext_path = EdgeExp.Access (AccessPath.append path [access]) in
+            log "%a --> %a\n" Ident.pp id EdgeExp.pp ext_path;
+            Ident.Map.add id ext_path graph_data.ident_map
+          )
+          | _ -> assert(false)
         )
-        | _ -> graph_data.ident_map, graph_data.ident_map2
+        | _ -> graph_data.ident_map
       )
       | Exp.Lvar pvar -> (
-        let map1 = Ident.Map.add id (EdgeExp.Var pvar) graph_data.ident_map in
-        let access = AccessPath.of_pvar pvar typ in
-        let map2 = Ident.Map.add id access graph_data.ident_map2 in
-        map1, map2
+        let access = EdgeExp.Access (AccessPath.of_pvar pvar typ) in
+        Ident.Map.add id access graph_data.ident_map
       )
       | Exp.Var id -> (
-        let pvar, typ = Ident.Map.find id graph_data.ident_map2 in
-        let pvar_exp = Ident.Map.find id graph_data.ident_map in
-        let map1 = Ident.Map.add id pvar_exp graph_data.ident_map in
-        let map2 = Ident.Map.add id (pvar, typ) graph_data.ident_map2 in
-        map1, map2
+        let exp = Ident.Map.find id graph_data.ident_map in
+        Ident.Map.add id exp graph_data.ident_map
       )
       | _ -> L.(die InternalError)"Unsupported LOAD lhs-expression type!"
       in
 
-      let map1, map2 = map_ident e in
-
-      { graph_data with ident_map = map1; ident_map2 = map2; }
+      { graph_data with ident_map = map_ident e }
     )
-    | Call ((ret_id, ret_type), Exp.Const (Const.Cfun callee_pname), args, loc, _) -> (
+    | Call ((ret_id, ret_typ), Exp.Const (Const.Cfun callee_pname), args, loc, _) -> (
       log "[CALL] (%a) | %a\n" Location.pp loc Procname.pp callee_pname;
+      let ret_pvar = Pvar.mk_abduced_ret callee_pname loc in
+      let graph_data = { graph_data with
+        type_map = PvarMap.add ret_pvar ret_typ graph_data.type_map;
+      }
+      in
+
       match Payload.read ~caller_summary:graph_data.summary ~callee_pname:callee_pname with
       | Some new_summary -> (
         (* Replace all idents in call arguments with pvars and return these pvars as norms *)
         let args, arg_norms = List.fold args ~init:([], EdgeExp.Set.empty) ~f:(fun (args, norms) (arg, typ) ->
-          let arg = EdgeExp.of_exp arg graph_data.ident_map in
-          let arg_norms = EdgeExp.get_exp_vars arg in
+          let arg = EdgeExp.of_exp arg graph_data.ident_map graph_data.type_map in
+          let arg_norms = EdgeExp.get_accesses arg in
           [(arg, typ)] @ args, EdgeExp.Set.union arg_norms norms
           )
         in
@@ -370,7 +360,7 @@ module TransferFunctions = struct
           return_bound = subst_ret_bound;
         } 
         in
-        let call = EdgeExp.Call (ret_type, callee_pname, args, new_summary) in
+        let call = EdgeExp.Call (ret_typ, callee_pname, args, new_summary) in
         let edge_data = { graph_data.edge_data with 
           calls = CallSiteSet.add (call, loc) graph_data.edge_data.calls
         }
@@ -382,19 +372,12 @@ module TransferFunctions = struct
         }
       )
       | None -> (
-        (* L.(die InternalError)"Missing summary!" *)
-        (* TODO: figure out how to do this, maybe models? Builtins cause problems *)
-        (* log "Ret_id: %a\n" Ident.pp ret_id;
-        let ret_pvar = Pvar.mk_abduced_ret callee_pname loc in
-        { graph_data with 
-          ident_map = Ident.Map.add ret_id (EdgeExp.Var ret_pvar) graph_data.ident_map;
-          ident_map2 = Ident.Map.add ret_id (ret_pvar, ret_type) graph_data.ident_map2;
-        } *)
-        graph_data
+        let ret_access = EdgeExp.Access (AccessPath.of_pvar ret_pvar ret_typ) in
+        { graph_data with ident_map = Ident.Map.add ret_id ret_access graph_data.ident_map }
       )
     )
     | Metadata metadata -> (match metadata with
-      | VariableLifetimeBegins (pvar, typ, loc) -> (
+      | VariableLifetimeBegins (pvar, _, _) -> (
         let scope_locals = match graph_data.scope_locals with
         | scope::tail -> [Pvar.Set.add pvar scope] @ tail
         | [] -> []
@@ -414,11 +397,9 @@ end
 
 
 module GraphConstructor = struct
-  let exec_node proc_data node graph_data =
+  let exec_node node graph_data =
     let rev_instrs = IContainer.to_rev_list ~fold:Instrs.fold (Procdesc.Node.get_instrs node) in
-    List.fold (List.rev rev_instrs) ~init:graph_data ~f:(fun graph_data instr -> 
-      TransferFunctions.exec_instr proc_data node graph_data instr
-    )
+    List.fold (List.rev rev_instrs) ~init:graph_data ~f:TransferFunctions.exec_instr
 
   let rec traverseCFG : Procdesc.t -> Procdesc.Node.t -> Procdesc.NodeSet.t -> GraphData.t -> (Procdesc.NodeSet.t * GraphData.t) = 
   fun proc_desc node visited graph_data -> (
@@ -430,7 +411,7 @@ module GraphConstructor = struct
       (* log "Visited Node %a : %s\n" Procdesc.Node.pp node (pp_nodekind (Procdesc.Node.get_kind node)); *)
       let preds = Procdesc.Node.get_preds node in
       let graph_data = if is_join_node node || List.length preds > 1 then (
-        let edge_data = DCP.EdgeData.add_invariants graph_data.edge_data graph_data.locals in
+        let edge_data = DCP.EdgeData.add_invariants graph_data.edge_data graph_data.locals graph_data.type_map in
         let edge_data = if is_loop_head then DCP.EdgeData.set_backedge edge_data else edge_data in
         let node = Procdesc.NodeMap.find node graph_data.node_map in
         (* log "Mapped node %a\n" DCP.Node.pp node; *)
@@ -453,7 +434,7 @@ module GraphConstructor = struct
       let graph_data = if List.length preds > 1 && not is_loop_head then (
         (* Join node *)
         let join_node = DCP.Node.Join (Procdesc.Node.get_loc node) in
-        let edge_data = DCP.EdgeData.add_invariants graph_data.edge_data graph_data.locals in
+        let edge_data = DCP.EdgeData.add_invariants graph_data.edge_data graph_data.locals graph_data.type_map in
         let new_edge = DCP.E.create graph_data.last_node edge_data join_node in
         (* log "Locals: %a\n" Pvar.Set.pp graph_data.locals;
         log "Scope locals:\n"; List.iter graph_data.scope_locals ~f:(fun scope -> log "  %a\n" Pvar.Set.pp scope; ); *)
@@ -472,7 +453,7 @@ module GraphConstructor = struct
 
 
       (* Execute node instructions *)
-      let graph_data = exec_node proc_desc node graph_data in
+      let graph_data = exec_node node graph_data in
 
       let successors = Procdesc.Node.get_succs node in
       let graph_data = if List.length successors > 1 then (
@@ -485,7 +466,7 @@ module GraphConstructor = struct
         | _ -> assert(false)
         in
         let prune_node = DCP.Node.Prune (if_kind, loc) in
-        let edge_data = DCP.EdgeData.add_invariants graph_data.edge_data graph_data.locals in
+        let edge_data = DCP.EdgeData.add_invariants graph_data.edge_data graph_data.locals graph_data.type_map in
         let new_edge = DCP.E.create graph_data.last_node edge_data prune_node in
         { graph_data with 
           nodes = DCP.NodeSet.add prune_node graph_data.nodes;
@@ -503,7 +484,7 @@ module GraphConstructor = struct
 
       if is_exit_node node then (
         let exit_node = DCP.Node.Exit in
-        let edge_data = DCP.EdgeData.add_invariants graph_data.edge_data graph_data.locals in
+        let edge_data = DCP.EdgeData.add_invariants graph_data.edge_data graph_data.locals graph_data.type_map in
         let edge_data = {edge_data with exit_edge = true } in
         let new_edge = DCP.E.create graph_data.last_node edge_data exit_node in
         let graph_data = { graph_data with 
@@ -535,12 +516,12 @@ module GraphConstructor = struct
   )
 
 
-  let create_lts : Procdesc.t -> Summary.t -> GraphData.t = 
-  fun proc_desc summary -> (
+  let create_lts : Tenv.t -> Procdesc.t -> Summary.t -> GraphData.t = 
+  fun tenv proc_desc summary -> (
     let begin_loc = Procdesc.get_loc proc_desc in
     let start_node = Procdesc.get_start_node proc_desc in
     let dcp_start_node = Domain.DCP.Node.Start begin_loc in
-    let graph_data = GraphData.make proc_desc summary dcp_start_node in
+    let graph_data = GraphData.make tenv proc_desc summary dcp_start_node in
     snd (traverseCFG proc_desc start_node Procdesc.NodeSet.empty graph_data)
   )
 end

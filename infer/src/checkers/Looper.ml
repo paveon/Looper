@@ -17,7 +17,7 @@ module DCP_SCC = Graph.Components.Make(Domain.DCP)
 module VFG_SCC = Graph.Components.Make(Domain.VFG)
 
 
-let checker {Callbacks.exe_env; summary; get_procs_in_file} : Summary.t =
+let checker {Callbacks.exe_env; summary; } : Summary.t =
   let open Domain in
   let proc_desc = Summary.get_proc_desc summary in
   let proc_name = Procdesc.get_proc_name proc_desc in
@@ -28,7 +28,7 @@ let checker {Callbacks.exe_env; summary; get_procs_in_file} : Summary.t =
   log "\n---------------------------------\n";
   log " Begin location: %a\n" Location.pp (Procdesc.get_loc proc_desc);
 
-  let graph_data = Analyzer.GraphConstructor.create_lts proc_desc summary in
+  let graph_data = Analyzer.GraphConstructor.create_lts tenv proc_desc summary in
   
   let lts = DCP.create () in
   DCP.NodeSet.iter (fun node ->
@@ -94,19 +94,6 @@ let checker {Callbacks.exe_env; summary; get_procs_in_file} : Summary.t =
   let cfg = [("model", "true"); ("proof", "true")] in
   let ctx = (Z3.mk_context cfg) in
   let solver = (Z3.Solver.mk_solver ctx None) in
-  let zero_const = Z3.Arithmetic.Integer.mk_numeral_i ctx 0 in
-  let possible_guards = EdgeExp.Set.fold (fun norm acc -> match norm with
-    | EdgeExp.BinOp _ | EdgeExp.Var _ -> (
-      let z3_norm = exp_to_z3_expr ctx norm in
-      let guard_expr = Z3.Arithmetic.mk_gt ctx z3_norm zero_const in
-      acc @ [guard_expr]
-    )
-    | EdgeExp.Const Const.Cint _ -> acc
-    | _ -> (
-      L.(die InternalError)"[Guards] Norm expression %a is not supported!" EdgeExp.pp norm
-    )
-  ) !processed_norms []
-  in
   DCP.EdgeSet.iter (fun (src, edge_data, dst) ->
     DCP.EdgeData.derive_guards edge_data !processed_norms solver ctx;
     DCP.add_edge_e dcp (src, edge_data, dst);
@@ -114,7 +101,10 @@ let checker {Callbacks.exe_env; summary; get_procs_in_file} : Summary.t =
 
   let guarded_nodes = DCP.fold_edges_e (fun (_, edge_data, dst) acc ->
     if EdgeExp.Set.is_empty edge_data.guards then acc 
-    else (log "GUARDED NODE: %a\n" DCP.Node.pp dst; DCP.NodeSet.add dst acc)
+    else (
+      (* log "GUARDED NODE: %a\n" DCP.Node.pp dst;  *)
+      DCP.NodeSet.add dst acc
+    )
   ) dcp DCP.NodeSet.empty
   in
 
@@ -244,11 +234,18 @@ let checker {Callbacks.exe_env; summary; get_procs_in_file} : Summary.t =
     * and map each VFG node to this fresh variable. *)
   let vfg_components = VFG_SCC.scc_list vf_graph in
   let vfg_map = List.foldi vfg_components ~init:VFG.Map.empty ~f:(fun idx map component ->
-    let pvar_name = Mangled.from_string ("var_" ^ string_of_int idx) in
-    let aux_norm = EdgeExp.Var (Pvar.mk pvar_name proc_name) in
-    List.fold component ~init:map ~f:(fun map ((exp, dcp_node as node) : VFG.Node.t) ->
+    let pvar = Pvar.mk (Mangled.from_string ("var_" ^ string_of_int idx)) proc_name in
+    let aux_norm = EdgeExp.Access (AccessPath.of_pvar pvar Typ.uint) in
+
+    List.fold component ~init:map ~f:(fun map ((exp, _ as node) : VFG.Node.t) ->
       let aux_norm = match exp with
-      | EdgeExp.Var pvar when Pvar.is_return pvar -> exp
+      | EdgeExp.Access ((var, _), _) -> (match Var.get_pvar var with
+        | Some pvar when Pvar.is_return pvar -> (
+          log "########################## %a\n" EdgeExp.pp exp;
+          exp
+        )
+        | _ -> aux_norm
+      )
       | _ -> aux_norm
       in
       processed_norms := EdgeExp.Set.add aux_norm !processed_norms;
@@ -278,13 +275,13 @@ let checker {Callbacks.exe_env; summary; get_procs_in_file} : Summary.t =
     let calls = CallSiteSet.map (fun (call, loc) -> match call with
     | EdgeExp.Call (typ, procname, args, call_summary) -> (
       log "VFG call: %a\n" EdgeExp.pp call;
-      let renamed_bound, _ = EdgeExp.map_vars call_summary.bound ~f:(fun pvar acc ->
-        let var = EdgeExp.Var pvar in
-        let renamed_var = match VFG.Map.find_opt (var, dcp_dst) vfg_map with
+      let renamed_bound, _ = EdgeExp.map_accesses call_summary.bound ~f:(fun access _ ->
+        let access = EdgeExp.Access access in
+        let renamed_var = match VFG.Map.find_opt (access, dcp_dst) vfg_map with
         | Some mapped_var -> mapped_var
-        | None -> var
+        | None -> access
         in
-        renamed_var, acc
+        renamed_var, None
       ) None
       in
       log "VFG renamed bound: %a\n" EdgeExp.pp renamed_bound;
@@ -360,8 +357,9 @@ let checker {Callbacks.exe_env; summary; get_procs_in_file} : Summary.t =
     ) scc_edges
     in
     match norm with
-    | EdgeExp.Var pvar -> (
-      if Pvar.Set.mem pvar graph_data.formals then sets, processed_edges
+    | EdgeExp.Access ((var, _), _) -> (
+      let base_pvar = Option.value_exn (Var.get_pvar var) in
+      if Pvar.Set.mem base_pvar graph_data.formals then sets, processed_edges
       else (
         let bounded_edges = get_edge_set norm in
         let sets = EdgeExp.Map.add norm bounded_edges sets in
@@ -525,9 +523,11 @@ let checker {Callbacks.exe_env; summary; get_procs_in_file} : Summary.t =
     | None -> (
       let norm_bound = norm in
       let var_bound, cache = match norm with
-      | EdgeExp.Var pvar -> (
-        if Pvar.Set.mem pvar graph_data.formals then (
-          match PvarMap.find_opt pvar graph_data.type_map with
+      | EdgeExp.Access ((var, _), _) -> (
+        let base_pvar = Option.value_exn (Var.get_pvar var) in
+
+        if Pvar.Set.mem base_pvar graph_data.formals then (
+          match PvarMap.find_opt base_pvar graph_data.type_map with
           | Some typ -> (match typ.desc with
             | Typ.Tint ikind -> if Typ.ikind_is_unsigned ikind then (
                 (* for unsigned x: max(x, 0) => x *)
@@ -538,7 +538,7 @@ let checker {Callbacks.exe_env; summary; get_procs_in_file} : Summary.t =
               )
             | _ -> L.(die InternalError)"[VB] Unexpected Lvar type!"
           )
-          | None -> L.(die InternalError)"[VB] Lvar [%a] is not a local variable!" Pvar.pp_value pvar
+          | None -> L.(die InternalError)"[VB] Lvar [%a] is not a local variable!" Pvar.pp_value base_pvar
         ) else (
           let cache = get_update_map norm graph_data.edges cache in
           let _, resets = EdgeExp.Map.find norm cache.updates in
@@ -598,29 +598,32 @@ let checker {Callbacks.exe_env; summary; get_procs_in_file} : Summary.t =
       | Some norm -> (
         log "   [Local bound] %a\n" EdgeExp.pp norm;
         let bound, cache = match norm with
-        | EdgeExp.Var pvar when not (Pvar.Set.mem pvar graph_data.formals) -> (
+        | EdgeExp.Access ((var, _), _) -> (
+          let base_pvar = Option.value_exn (Var.get_pvar var) in
+          if Pvar.Set.mem base_pvar graph_data.formals then norm, cache
+          else (
+            (* Get reset chains for local bound *)
+            let reset_chains, cache = match EdgeExp.Map.find_opt norm cache.reset_chains with
+            | Some chains -> chains, cache
+            | None -> (
+              let chains = RG.get_reset_chains norm reset_graph dcp in
+              let cache = { cache with reset_chains = EdgeExp.Map.add norm chains cache.reset_chains } in
+              chains, cache
+            )
+            in
+            RG.Chain.Set.iter (fun chain ->
+              log "   [Reset Chain] %a\n" RG.Chain.pp chain;
+            ) reset_chains;
 
-          (* Get reset chains for local bound *)
-          let reset_chains, cache = match EdgeExp.Map.find_opt norm cache.reset_chains with
-          | Some chains -> chains, cache
-          | None -> (
-            let chains = RG.get_reset_chains norm reset_graph dcp in
-            let cache = { cache with reset_chains = EdgeExp.Map.add norm chains cache.reset_chains } in
-            chains, cache
+            let norms = RG.Chain.Set.fold (fun chain acc ->
+              let norms, _ = RG.Chain.norms chain reset_graph in
+              EdgeExp.Set.union acc norms
+            ) reset_chains EdgeExp.Set.empty
+            in
+            let increment_sum, cache = calculate_increment_sum norms cache in
+            let reset_sum, cache = calculate_reset_sum reset_chains cache in
+            (EdgeExp.add increment_sum reset_sum), cache
           )
-          in
-          RG.Chain.Set.iter (fun chain ->
-            log "   [Reset Chain] %a\n" RG.Chain.pp chain;
-          ) reset_chains;
-
-          let norms = RG.Chain.Set.fold (fun chain acc ->
-            let norms, _ = RG.Chain.norms chain reset_graph in
-            EdgeExp.Set.union acc norms
-          ) reset_chains EdgeExp.Set.empty
-          in
-          let increment_sum, cache = calculate_increment_sum norms cache in
-          let reset_sum, cache = calculate_reset_sum reset_chains cache in
-          (EdgeExp.add increment_sum reset_sum), cache
         )
         | EdgeExp.Const (Const.Cint _) -> (
           (* Non-loop edge, can be executed only once, const is always 1 *)
@@ -643,8 +646,8 @@ let checker {Callbacks.exe_env; summary; get_procs_in_file} : Summary.t =
         log "   [Call] %a : %a | %a\n" Procname.pp proc_name Domain.pp_summary call_summary Location.pp loc;
 
         (* Replace each argument with its variable bound (coarse overapproximation?) *)
-        let call_cost, new_cache = EdgeExp.map_vars call_summary.bound ~f:(fun argument cache_acc -> 
-          let argument_bound, cache_acc = variable_bound (EdgeExp.Var argument) cache_acc in
+        let call_cost, new_cache = EdgeExp.map_accesses call_summary.bound ~f:(fun argument_access cache_acc -> 
+          let argument_bound, cache_acc = variable_bound (EdgeExp.Access argument_access) cache_acc in
           argument_bound, cache_acc
         ) cache_acc
         in
@@ -717,8 +720,8 @@ let checker {Callbacks.exe_env; summary; get_procs_in_file} : Summary.t =
     log "[Return type] %a\n" Typ.(pp Pp.text) ret_type;
     let edge_list = DCP.EdgeSet.elements graph_data.edges in
     let _, return_edge, _ = List.find_exn edge_list ~f:(fun (_, edge, _) -> DCP.EdgeData.is_exit_edge edge) in
-    let ret_pvar = Procdesc.get_ret_var proc_desc in
-    let norm, _ = DC.Map.find (EdgeExp.Var ret_pvar) return_edge.constraints in
+    let return_access = AccessPath.of_pvar (Procdesc.get_ret_var proc_desc) ret_type in
+    let norm, _ = DC.Map.find (EdgeExp.Access return_access) return_edge.constraints in
     let return_bound, _ = variable_bound norm cache in
     log "[Return bound] %a\n" EdgeExp.pp return_bound;
     Some return_bound
