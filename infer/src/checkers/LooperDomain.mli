@@ -58,6 +58,8 @@ module EdgeExp : sig
 
    val is_int : t -> Typ.t PvarMap.t -> Tenv.t -> bool
 
+   val eval : Binop.t -> IntLit.t -> IntLit.t -> t
+
    val of_exp : Exp.t -> t Ident.Map.t -> Typ.t PvarMap.t -> t
 
    val get_accesses: t -> Set.t
@@ -66,7 +68,7 @@ module EdgeExp : sig
 
    val subst : t -> call_arg list -> FormalMap.t -> t
 
-   val normalize_condition : t -> t
+   val normalize_condition : t -> Tenv.t -> t
 
    val add : t -> t -> t
 
@@ -138,7 +140,7 @@ module DCP : sig
    module Node : sig
       type t = 
       | Prune of (Sil.if_kind * Location.t)
-      | Start of Location.t
+      | Start of (Procname.t * Location.t)
       | Join of Location.t
       | Exit
       [@@deriving compare]

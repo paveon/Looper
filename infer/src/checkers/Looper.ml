@@ -21,14 +21,13 @@ let checker {Callbacks.exe_env; summary; } : Summary.t =
   let open Domain in
   let proc_desc = Summary.get_proc_desc summary in
   let proc_name = Procdesc.get_proc_name proc_desc in
-  let tenv = Exe_env.get_tenv exe_env proc_name in
   let proc_name_str = Procname.to_simplified_string proc_name in
   log "\n\n---------------------------------";
-  log "\n- ANALYZING %s" proc_name_str;
+  log "\n- ANALYZING: %s" proc_name_str;
   log "\n---------------------------------\n";
   log " Begin location: %a\n" Location.pp (Procdesc.get_loc proc_desc);
 
-  let graph_data = Analyzer.GraphConstructor.create_lts tenv proc_desc summary in
+  let graph_data = Analyzer.GraphConstructor.create_lts (Exe_env.get_tenv exe_env proc_name) proc_desc summary in
   
   let lts = DCP.create () in
   DCP.NodeSet.iter (fun node ->
@@ -39,14 +38,14 @@ let checker {Callbacks.exe_env; summary; } : Summary.t =
   ) graph_data.edges;
 
   let out_folder = "./Graphs/" ^ proc_name_str ^ "/" in
-  (try Unix.mkdir out_folder with _ -> ());
+  (try Unix.mkdir_p out_folder with _ -> ());
   let file = Out_channel.create (out_folder ^ "LTS.dot") in
   active_graph_type := LTS;
   DCPDot.output_graph file lts;
   Out_channel.close file;
 
   log "\n---------------------------------";
-  log "\n------- [ANALYSIS REPORT] -------";
+  log "\n- ANALYSIS REPORT %s" proc_name_str;
   log "\n---------------------------------\n";
   (* log "%a" pp post; *)
 
@@ -240,10 +239,7 @@ let checker {Callbacks.exe_env; summary; } : Summary.t =
     List.fold component ~init:map ~f:(fun map ((exp, _ as node) : VFG.Node.t) ->
       let aux_norm = match exp with
       | EdgeExp.Access ((var, _), _) -> (match Var.get_pvar var with
-        | Some pvar when Pvar.is_return pvar -> (
-          log "########################## %a\n" EdgeExp.pp exp;
-          exp
-        )
+        | Some pvar when Pvar.is_return pvar -> exp
         | _ -> aux_norm
       )
       | _ -> aux_norm
@@ -497,7 +493,7 @@ let checker {Callbacks.exe_env; summary; } : Summary.t =
         | Some arg when EdgeExp.is_one arg -> Continue (args, cache)
         | _ -> (
           if EdgeExp.is_one edge_data.bound then Continue ([edge_data.bound], cache) 
-          else Continue (args @ [edge_data.bound], cache)
+          else Continue (edge_data.bound :: args, cache)
         )
       )
     in
@@ -521,7 +517,6 @@ let checker {Callbacks.exe_env; summary; } : Summary.t =
     let bound, cache = match EdgeExp.Map.find_opt norm cache.variable_bounds with
     | Some bound -> bound, cache
     | None -> (
-      let norm_bound = norm in
       let var_bound, cache = match norm with
       | EdgeExp.Access ((var, _), _) -> (
         let base_pvar = Option.value_exn (Var.get_pvar var) in
@@ -531,10 +526,10 @@ let checker {Callbacks.exe_env; summary; } : Summary.t =
           | Some typ -> (match typ.desc with
             | Typ.Tint ikind -> if Typ.ikind_is_unsigned ikind then (
                 (* for unsigned x: max(x, 0) => x *)
-                norm_bound, cache
+                norm, cache
               ) else (
                 (* for signed x: max(x, 0) *)
-                EdgeExp.Max [norm_bound], cache
+                EdgeExp.Max [norm], cache
               )
             | _ -> L.(die InternalError)"[VB] Unexpected Lvar type!"
           )
@@ -558,17 +553,50 @@ let checker {Callbacks.exe_env; summary; } : Summary.t =
             args @ max_arg, cache
           ) resets ([], cache)
           in
-          let max_args = List.dedup_and_sort ~compare:EdgeExp.compare max_args in
-          let max_subexp = if Int.equal (List.length max_args) 1 
-          then List.hd_exn max_args
-          else EdgeExp.Max max_args
+
+          (* Deduplicate and unpack nested max expressions
+           * TODO: unpacking should be done only if certain conditions are met, should think about it later *)
+          let max_args_unpacked = List.fold max_args ~init:[] ~f:(fun acc arg ->
+            match arg with
+            | EdgeExp.Max nested_args -> (
+              List.fold nested_args ~init:acc ~f:(fun acc nested_arg -> 
+                if List.mem acc nested_arg ~equal:EdgeExp.equal then acc else nested_arg :: acc
+              )
+            )
+            | _ -> if List.mem acc arg ~equal:EdgeExp.equal then acc else arg :: acc
+          )
+          in
+          let max_subexp = match List.length max_args_unpacked with
+          | 0 -> (
+            L.(die InternalError)"[VB] Missing max() arguments for [%a]!" EdgeExp.pp norm
+          )
+          | 1 -> List.hd_exn max_args_unpacked
+          | _ -> EdgeExp.Max max_args_unpacked 
           in
           (EdgeExp.add max_subexp increment_sum), cache
         )
       )
       | EdgeExp.Const Const.Cint const_norm -> (
-        if IntLit.isnegative const_norm then EdgeExp.Max [norm_bound], cache
-        else norm_bound, cache
+        if IntLit.isnegative const_norm then EdgeExp.Max [norm], cache
+        else norm, cache
+      )
+      | EdgeExp.Max args -> (
+        (* Variable bound for a max(...) expression. Calculate VB for each variable argument *)
+        let cache, args = List.fold args ~init:(cache, [])  ~f:(fun (cache, args_acc) arg ->
+          match arg with
+          | EdgeExp.Access _ -> (
+            let arg, cache = variable_bound arg cache in
+            cache, arg :: args_acc
+          )
+          | EdgeExp.Max nested_args -> (
+            (* Nested max expression, unpack arguments *)
+            log "Nested max arg: %a\n" EdgeExp.pp arg;
+            let args = List.filter nested_args ~f:(fun x -> not (List.mem args_acc x ~equal:EdgeExp.equal)) in
+            cache, args @ args_acc
+          )
+          | _ -> (cache, arg :: args_acc)
+        ) in
+        EdgeExp.Max args, cache
       )
       | _ -> L.(die InternalError)"[VB] Unsupported norm expression [%a]!" EdgeExp.pp norm
       in
@@ -651,7 +679,7 @@ let checker {Callbacks.exe_env; summary; } : Summary.t =
           argument_bound, cache_acc
         ) cache_acc
         in
-        cost_list @ [call_cost], new_cache
+        call_cost :: cost_list, new_cache
       )
       | _ -> assert(false)
     ) edge_data.calls ([], cache)
@@ -664,8 +692,13 @@ let checker {Callbacks.exe_env; summary; } : Summary.t =
   in
 
   let bound, cache = if not (DCP.EdgeSet.is_empty remaining_edges) then (
-    L.internal_error "[Looper] Local bounds could not be determined for all edges. \
-    Returning [Infinity]\n";
+    let culprits = List.map (DCP.EdgeSet.elements remaining_edges) ~f:(fun (src, _, dst) ->
+      F.asprintf "%a ---> %a" DCP.Node.pp src DCP.Node.pp dst
+    ) |> String.concat ~sep:"\n"
+    in
+    L.internal_error "[%a] Local bound could not be\
+    determined for following edges:\n%s\n\
+    Returning [Infinity]\n" Procname.pp proc_name culprits;
     EdgeExp.Inf, empty_cache
   ) else (
     log "[Local bounds]\n";
@@ -718,18 +751,20 @@ let checker {Callbacks.exe_env; summary; } : Summary.t =
   let return_bound = match ret_type.desc with
   | Tint _ -> (
     log "[Return type] %a\n" Typ.(pp Pp.text) ret_type;
-    let edge_list = DCP.EdgeSet.elements graph_data.edges in
-    let _, return_edge, _ = List.find_exn edge_list ~f:(fun (_, edge, _) -> DCP.EdgeData.is_exit_edge edge) in
+    (* let edge_list = DCP.EdgeSet.elements graph_data.edges in *)
+    (* let _, return_edge, _ = List.find_exn edge_list ~f:(fun (_, edge, _) -> DCP.EdgeData.is_exit_edge edge) in *)
     let return_access = AccessPath.of_pvar (Procdesc.get_ret_var proc_desc) ret_type in
-    let norm, _ = DC.Map.find (EdgeExp.Access return_access) return_edge.constraints in
-    let return_bound, _ = variable_bound norm cache in
+    (* log "[Return access] %a\n" AccessPath.pp return_access; *)
+    (* let norm, _ = DC.Map.find (EdgeExp.Access return_access) return_edge.constraints in *)
+    (* log "[Return norm] %a\n" EdgeExp.pp norm; *)
+    let return_bound, _ = variable_bound (EdgeExp.Access return_access) cache in
     log "[Return bound] %a\n" EdgeExp.pp return_bound;
     Some return_bound
   )
   | _ -> None
   in
 
-  log "Description:\n  signed x: max(x, 0) == [x]\n";
+  log "Description:\n  signed x: max(x, 0) == [x]\n---------------------------------\n";
   let payload : EdgeExp.summary = {
     formal_map = FormalMap.make proc_desc;
     globals = PvarMap.empty;

@@ -110,12 +110,12 @@ module TransferFunctions = struct
 
     match instr with
     | Sil.Prune (cond, loc, branch, kind) -> (
-      log "[PRUNE (%s)] (%a) | %a\n" (Sil.if_kind_to_string kind) Location.pp loc Exp.pp cond;
+      (* log "[PRUNE (%s)] (%a) | %a\n" (Sil.if_kind_to_string kind) Location.pp loc Exp.pp cond; *)
       (* let cond = EdgeExp.of_exp cond graph_data.ident_map2 graph_data.type_map in *)
       let cond = EdgeExp.of_exp cond graph_data.ident_map graph_data.type_map in
       log "[PRUNE (%s)] (%a) | %a\n" (Sil.if_kind_to_string kind) Location.pp loc EdgeExp.pp cond;
 
-      let normalized_cond = EdgeExp.normalize_condition cond in
+      let normalized_cond = EdgeExp.normalize_condition cond graph_data.tenv in
 
       let in_loop = not (List.is_empty graph_data.loop_heads) in
       let is_int_expr = EdgeExp.is_int normalized_cond graph_data.type_map graph_data.tenv in
@@ -171,7 +171,7 @@ module TransferFunctions = struct
       }
     )
     | Sil.Store {e1=lhs; typ; e2=rhs; loc} -> (
-      log "[STORE] (%a) | %a = %a\n" Location.pp loc Exp.pp lhs Exp.pp rhs;
+      (* log "[STORE] (%a) | %a = %a\n" Location.pp loc Exp.pp lhs Exp.pp rhs; *)
       match lhs with
       | Exp.Lvar pvar when Pvar.is_clang_tmp pvar -> (
         log "clang_tmp\n";
@@ -191,11 +191,9 @@ module TransferFunctions = struct
       )
       | _ -> (
         let id_resolver (var : Var.t) = match var with
-        | Var.LogicalVar _ -> (
-          (* let pvar, typ = Ident.Map.find id graph_data.ident_map2 in
-          log "Resolving: %a\n" Var.pp var;
-          Some (AccessPath.of_pvar pvar typ) *)
-          None
+        | Var.LogicalVar id -> (match Ident.Map.find id graph_data.ident_map with
+          | EdgeExp.Access path -> Some path
+          | _ -> None
         )
         | Var.ProgramVar _ -> None
         in
@@ -204,7 +202,6 @@ module TransferFunctions = struct
           (AccessPath.of_lhs_exp ~include_array_indexes:false lhs typ ~f_resolve_id:id_resolver)
         in
 
-        (* let rhs_exp = EdgeExp.of_exp rhs graph_data.ident_map2 graph_data.type_map in *)
         let rhs_exp = EdgeExp.of_exp rhs graph_data.ident_map graph_data.type_map in
         let rhs_exp = match rhs_exp with
         | EdgeExp.Call (_, _, _, summary) -> (
@@ -215,30 +212,28 @@ module TransferFunctions = struct
         | _ -> rhs_exp
         in
 
-
-        (* let rec extract_assigned_pvar lexp = match lexp with
-        | Exp.Lvar pvar -> pvar
-        | Exp.Lfield (field, name, typ) -> (
-          let proc_name = Procdesc.get_proc_name proc_desc in
-          let pvar = Pvar.mk (Mangled.from_string (Fieldname.to_string name)) proc_name in
-          log "SUB EXP: %a\n" Exp.pp field;
-          extract_assigned_pvar field
-        )
-        | Exp.Var id -> L.(die InternalError)"Unsupported assignment LHS: %a" Ident.pp id
-        | Exp.UnOp (op, sub_exp, typ) -> L.(die InternalError)"Unsupported assignment LHS: UnOp"
-        | Exp.BinOp (op, lhs, rhs) -> L.(die InternalError)"Unsupported assignment LHS: BinOp"
-        | Exp.Const const -> L.(die InternalError)"Unsupported assignment LHS: Const"
-        | Exp.Cast (typ, sub_exp) -> L.(die InternalError)"Unsupported assignment LHS: Cast"
-        | Exp.Lindex (array_exp, index_exp) -> L.(die InternalError)"Unsupported assignment LHS: Lindex"
-        | _ -> L.(die InternalError)"Unsupported assignment LHS"
-        in *)
-
-        (* let assigned_pvar = extract_assigned_pvar lhs in *)
-
         log "[STORE] (%a) | %a = %a\n" Location.pp loc AccessPath.pp lhs_access EdgeExp.pp rhs_exp;
 
+        (* TODO: rewrite with recursion, this is nasty *)
         (* Substitute rexp based on previous assignments,
           * eg. [beg = i; end = beg;] becomes [beg = i; end = i] *)
+        let rec substitute exp = match exp with
+        | EdgeExp.Access access -> DCP.EdgeData.get_assignment_rhs graph_data.edge_data access
+        | EdgeExp.BinOp (op, lexp, rexp) -> (
+          let lexp, rexp = substitute lexp, substitute rexp in
+          match lexp, rexp with
+          | EdgeExp.Const Const.Cint c1, EdgeExp.Const Const.Cint c2 -> EdgeExp.eval op c1 c2
+          | _ -> exp
+        )
+        | EdgeExp.UnOp (op, subexp, typ) -> EdgeExp.UnOp (op, substitute subexp, typ)
+        | EdgeExp.Call (ret_typ, procname, args, summary) -> (
+          let args = List.map args ~f:(fun (arg, typ) -> (substitute arg, typ)) in
+          EdgeExp.Call (ret_typ, procname, args, summary)
+        )
+        | EdgeExp.Max args -> EdgeExp.Max (List.map args ~f:substitute)
+        | EdgeExp.Min args -> EdgeExp.Max (List.map args ~f:substitute)
+        | _ -> exp
+        in
         let rhs_exp = match rhs_exp with
         | EdgeExp.BinOp (Binop.PlusA _, EdgeExp.Access rhs_access, (EdgeExp.Const (Const.Cint rhs_int) as rhs_c)) -> (
           (* [BINOP] Access + Const *)
@@ -249,10 +244,18 @@ module TransferFunctions = struct
             let const = EdgeExp.Const (Const.Cint (IntLit.add rhs_int assignment_rhs_int)) in
             EdgeExp.BinOp (Binop.PlusA None, lexp, const)
           )
-          | _ -> (
-            L.(die InternalError)"Unsupported exp substitution"
-            (* pvar_rexp *)
+          | assigned -> (
+            (* L.(die InternalError)"Unsupported exp substitution" *)
+            (* Substitute without simplifying *)
+            L.internal_error "[STORE] Substitution without simplification: %a -> %a\n" 
+              AccessPath.pp rhs_access EdgeExp.pp assigned;
+            EdgeExp.BinOp (Binop.PlusA None, assigned, rhs_c)
           )
+        )
+        | EdgeExp.BinOp (op, EdgeExp.Access rhs_access1, EdgeExp.Access rhs_access2) -> (
+          let rhs_subst1 = DCP.EdgeData.get_assignment_rhs graph_data.edge_data rhs_access1 in
+          let rhs_subst2 = DCP.EdgeData.get_assignment_rhs graph_data.edge_data rhs_access2 in
+          EdgeExp.BinOp (op, rhs_subst1, rhs_subst2)
         )
         | EdgeExp.Access rhs_access -> (
           DCP.EdgeData.get_assignment_rhs graph_data.edge_data rhs_access
@@ -302,14 +305,12 @@ module TransferFunctions = struct
       log "[LOAD] (%a) | %a = %a\n" Location.pp loc Ident.pp id Exp.pp e;
       let map_ident exp = match exp with
       | Exp.Lfield (struct_exp, name, _) -> (
-        log "Field exp: %a\n" Exp.pp struct_exp;
         match struct_exp with
         | Exp.Var struct_id -> (
           match Ident.Map.find struct_id graph_data.ident_map with
           | EdgeExp.Access path -> (
             let access = AccessPath.FieldAccess name in
             let ext_path = EdgeExp.Access (AccessPath.append path [access]) in
-            log "%a --> %a\n" Ident.pp id EdgeExp.pp ext_path;
             Ident.Map.add id ext_path graph_data.ident_map
           )
           | _ -> assert(false)
@@ -320,8 +321,8 @@ module TransferFunctions = struct
         let access = EdgeExp.Access (AccessPath.of_pvar pvar typ) in
         Ident.Map.add id access graph_data.ident_map
       )
-      | Exp.Var id -> (
-        let exp = Ident.Map.find id graph_data.ident_map in
+      | Exp.Var rhs_id -> (
+        let exp = Ident.Map.find rhs_id graph_data.ident_map in
         Ident.Map.add id exp graph_data.ident_map
       )
       | _ -> L.(die InternalError)"Unsupported LOAD lhs-expression type!"
@@ -458,7 +459,6 @@ module GraphConstructor = struct
       let successors = Procdesc.Node.get_succs node in
       let graph_data = if List.length successors > 1 then (
         (* Split node, create new DCP prune node *)
-        let pred_node = List.hd_exn preds in
         let branch_node = List.hd_exn successors in
         let loc = Procdesc.Node.get_loc branch_node in
         let if_kind = match Procdesc.Node.get_kind branch_node with
@@ -468,15 +468,16 @@ module GraphConstructor = struct
         let prune_node = DCP.Node.Prune (if_kind, loc) in
         let edge_data = DCP.EdgeData.add_invariants graph_data.edge_data graph_data.locals graph_data.type_map in
         let new_edge = DCP.E.create graph_data.last_node edge_data prune_node in
+        let node_map = match List.hd preds with
+        | Some pred when Procdesc.is_loop_head proc_desc pred -> Procdesc.NodeMap.add pred prune_node graph_data.node_map
+        | _ -> graph_data.node_map
+        in
         { graph_data with 
           nodes = DCP.NodeSet.add prune_node graph_data.nodes;
           edges = DCP.EdgeSet.add new_edge graph_data.edges;
           last_node = prune_node;
           edge_data = DCP.EdgeData.empty;
-
-          node_map = if Procdesc.is_loop_head proc_desc pred_node
-          then Procdesc.NodeMap.add pred_node prune_node graph_data.node_map 
-          else graph_data.node_map
+          node_map = node_map
         }
       ) 
       else graph_data
@@ -518,9 +519,10 @@ module GraphConstructor = struct
 
   let create_lts : Tenv.t -> Procdesc.t -> Summary.t -> GraphData.t = 
   fun tenv proc_desc summary -> (
+    let proc_name = Procdesc.get_proc_name proc_desc in
     let begin_loc = Procdesc.get_loc proc_desc in
     let start_node = Procdesc.get_start_node proc_desc in
-    let dcp_start_node = Domain.DCP.Node.Start begin_loc in
+    let dcp_start_node = Domain.DCP.Node.Start (proc_name, begin_loc) in
     let graph_data = GraphData.make tenv proc_desc summary dcp_start_node in
     snd (traverseCFG proc_desc start_node Procdesc.NodeSet.empty graph_data)
   )

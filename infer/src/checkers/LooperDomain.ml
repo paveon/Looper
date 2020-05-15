@@ -25,7 +25,6 @@ module EdgeExp = struct
   | BinOp of Binop.t * t * t
   | UnOp of Unop.t * t * Typ.t option
   | Access of AccessPath.t
-  (* | Var of Pvar.t *)
   | Const of Const.t
   | Call of edge_call
   | Max of t list
@@ -75,20 +74,29 @@ module EdgeExp = struct
       | Some typ -> Typ.is_int typ
       | _ -> false
     )
-    (* | Var pvar -> (match PvarMap.find_opt pvar type_map with
-      | Some pvar_typ -> Typ.is_int pvar_typ
-      | None -> false (* [TODO] How the hell can I get the type of a global?! *)
-    ) *)
     | Const Const.Cint _ -> true
     | Call (ret_typ, _, _, _) -> Typ.is_int ret_typ
     | _ -> false
 
+  let eval op c1 c2 = match op with
+    | Binop.PlusA _ -> Const (Const.Cint (IntLit.add c1 c2))
+    | Binop.MinusA _ -> Const (Const.Cint (IntLit.sub c1 c2))
+    | Binop.Mult _ -> Const (Const.Cint (IntLit.mul c1 c2))
+    | Binop.Div -> Const (Const.Cint (IntLit.div c1 c2))
+    | _ -> BinOp (op, Const (Const.Cint c1), Const (Const.Cint c2))
 
-  let rec of_exp exp ident_map type_map = match exp with
+
+  let rec of_exp exp ident_map type_map =   
+    match exp with
     | Exp.BinOp (op, lexp, rexp) -> (
       let lexp = of_exp lexp ident_map type_map in
       let rexp = of_exp rexp ident_map type_map in
-      BinOp (op, lexp, rexp)
+      match lexp, rexp with
+      | Const Const.Cint c1, Const Const.Cint c2 -> eval op c1 c2
+      | _ -> BinOp (op, lexp, rexp)
+    )
+    | Exp.UnOp (Unop.Neg, Exp.Const Const.Cint c, _) -> (
+      Const (Const.Cint (IntLit.neg c))
     )
     | Exp.UnOp (op, sub_exp, typ) -> 
       UnOp (op, of_exp sub_exp ident_map type_map, typ)
@@ -96,7 +104,11 @@ module EdgeExp = struct
     | Exp.Cast (_, exp) -> of_exp exp ident_map type_map
     | Exp.Lvar pvar -> Access (AccessPath.of_pvar pvar (PvarMap.find pvar type_map))
     | Exp.Const const -> Const const
-    | _ -> assert(false)
+    | Exp.Sizeof {nbytes} -> (match nbytes with
+      | Some size -> Const (Const.Cint (IntLit.of_int size))
+      | _ -> assert(false)
+    )
+    | _ -> L.(die InternalError)"[EdgeExp.of_exp] Unsupported expression %a!" Exp.pp exp
 
 
   let get_accesses exp =
@@ -160,7 +172,7 @@ module EdgeExp = struct
     aux bound
 
 
-  let normalize_condition exp = 
+  let normalize_condition exp tenv = 
     let negate_lop lop = match lop with
     | Binop.Lt -> Binop.Ge
     | Binop.Gt -> Binop.Le
@@ -177,10 +189,17 @@ module EdgeExp = struct
     | _ -> BinOp (op, lexp, rexp)
     in
     match exp with
+    | Access path -> (match AccessPath.get_typ path tenv with
+      | Some typ when Typ.is_int typ || Typ.is_pointer typ -> BinOp (Binop.Ne, Access path, zero)
+      | _ -> Access path
+    )
     | BinOp (op, lexp, rexp) -> aux (op, lexp, rexp)
     | UnOp (Unop.LNot, exp, _) -> (
-      (* Currently handles only "!exp" *)
       match exp with
+      | Access path -> (match AccessPath.get_typ path tenv with
+        | Some typ when Typ.is_int typ || Typ.is_pointer typ -> BinOp (Binop.Eq, Access path, zero)
+        | _ -> Access path
+      )
       | BinOp (op, lexp, rexp) -> aux (negate_lop op, lexp, rexp)
       | Const _ -> BinOp (Binop.Eq, exp, zero)
       | _ -> L.(die InternalError)"Unsupported condition type!"
@@ -224,7 +243,8 @@ module EdgeExp = struct
   | Call (_, callee, args, summary) -> (
     let proc_name = Procname.to_simplified_string callee in
     let proc_name = String.slice proc_name 0 (String.length proc_name - 1) in
-    let str = (List.fold args ~init:(proc_name) ~f:(fun acc (arg, _) -> acc ^ (to_string arg))) ^ ")" in
+    let args_string = String.concat ~sep:", " (List.map args ~f:(fun (x, _) -> to_string x)) in
+    let str = proc_name ^ args_string ^ ")" in
     match summary.return_bound with
     | Some return_bound -> str ^ " : " ^ to_string return_bound
     | None -> str
@@ -380,7 +400,7 @@ module DCP = struct
   module Node = struct
     type t = 
       | Prune of (Sil.if_kind * Location.t)
-      | Start of Location.t
+      | Start of (Procname.t * Location.t)
       | Join of Location.t
       | Exit
     [@@deriving compare]
@@ -392,7 +412,7 @@ module DCP = struct
 
     let to_string loc = match loc with
       | Prune (kind, loc) -> F.sprintf "%s [%s]" (Sil.if_kind_to_string kind) (Location.to_string loc)
-      | Start loc -> F.sprintf "Begin [%s]" (Location.to_string loc)
+      | Start (proc_name, loc) -> F.asprintf "Begin: %a [%s]" Procname.pp proc_name (Location.to_string loc)
       | Join loc -> F.sprintf "Join [%s]" (Location.to_string loc)
       | Exit -> F.sprintf "Exit"
 
@@ -589,8 +609,22 @@ module DCP = struct
                   DC.Map.add_dc norm dc_rhs dc_map, EdgeExp.Set.add rhs_access_exp norm_set
                 )
               )
+              | EdgeExp.BinOp(op, EdgeExp.Access _, EdgeExp.Access _) -> (
+                (* TODO: temporary work around, should figure out how to do this properly *)
+                DC.Map.add_dc norm (DC.make_rhs x_rhs) dc_map, norm_set
+                (* match op with
+                | Binop.Shiftrt -> (
+                  
+                )
+                | Binop.PlusA _ | Binop.MinusA _ -> (
+                  DC.Map.add_dc norm (DC.make_rhs x_rhs) dc_map, norm_set
+                ) *)
+              )
               | EdgeExp.Access _ | EdgeExp.Const Const.Cint _-> (
                 DC.Map.add_dc norm (DC.make_rhs x_rhs) dc_map, EdgeExp.Set.add x_rhs norm_set
+              )
+              | EdgeExp.Max _ | EdgeExp.Min _ -> (
+                DC.Map.add_dc norm (DC.make_rhs x_rhs) dc_map, norm_set
               )
               | _ -> L.(die InternalError)"[TODO] currently unsupported assignment expression! %a" EdgeExp.pp x_rhs
           )
