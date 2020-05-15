@@ -1421,9 +1421,11 @@ int getrusage(int who, struct rusage* r_usage) {
 #ifdef __CYGWIN__
 #define gettimeofday_tzp_decl void* __restrict tzp
 #else
-#define gettimeofday_tzp_decl struct timezone* __restrict tzp
+//#define gettimeofday_tzp_decl struct timezone* __restrict tzp
+#define gettimeofday_tzp_decl void * __restrict tzp
 #endif
 #endif
+
 
 int gettimeofday(struct timeval* __restrict tp, gettimeofday_tzp_decl) {
   struct timeval tmp_tp;
