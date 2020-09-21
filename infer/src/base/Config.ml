@@ -2288,6 +2288,11 @@ and use_cost_threshold =
     "Emit costs issues by comparing costs with a set threshold"
 
 
+and disable_vfg_renaming =
+  CLOpt.mk_bool ~long:"disable-vfg-renaming" ~default:false
+    "Disable variable renaming based on VFG"
+
+
 and incremental_analysis =
   CLOpt.mk_bool ~long:"incremental-analysis" ~default:false
     "[EXPERIMENTAL] Use incremental analysis for changed files. Not compatible with \
@@ -3080,6 +3085,8 @@ and uninit_interproc = !uninit_interproc
 and unsafe_malloc = !unsafe_malloc
 
 and use_cost_threshold = !use_cost_threshold
+
+and disable_vfg_renaming = !disable_vfg_renaming
 
 and incremental_analysis = !incremental_analysis
 

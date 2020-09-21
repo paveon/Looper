@@ -277,6 +277,58 @@ module JsonCostsPrinter = MakeJsonListPrinter (struct
         None
 end)
 
+
+type json_looper_printer_typ =
+  {loc: Location.t; proc_name: Procname.t; looper_opt: LooperDomain.EdgeExp.summary option}
+
+
+module JsonLooperPrinter = MakeJsonListPrinter (struct
+  type elt = json_looper_printer_typ
+
+  let to_string {loc; proc_name; looper_opt} = match looper_opt with
+    | Some {formal_map; globals; bound; return_bound } -> 
+        let return_bound_opt = match return_bound with 
+        | Some return_bound -> Some (LooperDomain.EdgeExp.to_string return_bound)
+        | None -> None
+        in
+        let bound_info = { 
+          Jsonbug_t.bound= LooperDomain.EdgeExp.to_string bound
+          ; return_bound = return_bound_opt }
+        in
+
+        let file = SourceFile.to_rel_path loc.Location.file in
+        let looper_item = { 
+          Jsonbug_t.hash= compute_hash ~severity:"" ~bug_type:"" ~proc_name ~file ~qualifier:""
+          ; loc= {file; lnum= loc.Location.line; cnum= loc.Location.col; enum= -1}
+          ; procedure_name= Procname.get_method proc_name
+          ; procedure_id= procedure_id_of_procname proc_name
+          ; bounds= bound_info }
+        in
+        Some (Jsonbug_j.string_of_looper_item looper_item)
+    | _ ->
+        None
+end)
+
+let write_looper_report ~looper_json summary =
+  let mk_outfile fname =
+    match Utils.create_outfile fname with
+    | None ->
+        L.die InternalError "Could not create '%s'." fname
+    | Some outf ->
+        outf
+  in
+  let looper_outf = mk_outfile looper_json in
+  JsonLooperPrinter.pp_open looper_outf.fmt ();
+
+  JsonLooperPrinter.pp looper_outf.fmt {
+    loc= Summary.get_loc summary
+    ; proc_name= Summary.get_proc_name summary
+    ; looper_opt= summary.Summary.payloads.Payloads.looper };
+
+  JsonLooperPrinter.pp_close looper_outf.fmt ();
+  Utils.close_outf looper_outf
+
+
 let mk_error_filter filters proc_name file error_name =
   (Config.write_html || not (IssueType.(equal skip_function) error_name))
   && filters.Inferconfig.path_filter file

@@ -32,7 +32,7 @@ module EdgeExp : sig
    
    and call_arg = (t * Typ.t) [@@deriving compare]
 
-   and edge_call = Typ.t * Procname.t * call_arg list * summary [@@deriving compare]
+   and edge_call = Typ.t * Procname.t * call_arg list * summary option [@@deriving compare]
 
    and summary = {
       formal_map: FormalMap.t;
@@ -46,21 +46,51 @@ module EdgeExp : sig
 
    module Map : Caml.Map.S with type key = t
 
+   val to_string : t -> string
+
+   val pp : F.formatter -> t -> unit
+
    val equal : t -> t -> bool
 
    val one : t
 
    val zero : t
 
+   val of_int : int -> t
+
+   val of_int32 : int32 -> t
+   
+   val of_int64 : int64 -> t
+
    val is_zero : t -> bool
 
    val is_one : t -> bool
 
+   val is_const : t -> bool
+
+   val is_variable : t -> Pvar.Set.t -> bool
+
    val is_int : t -> Typ.t PvarMap.t -> Tenv.t -> bool
+
+   val is_formal : t -> Pvar.Set.t -> bool
 
    val eval : Binop.t -> IntLit.t -> IntLit.t -> t
 
-   val of_exp : Exp.t -> t Ident.Map.t -> Typ.t PvarMap.t -> t
+   val try_eval : Binop.t -> t -> t -> t
+
+   val merge : t -> IntLit.t -> t
+
+   val separate : t -> (t * IntLit.t)
+
+   val simplify : t -> t
+
+   val access_path_id_resolver : t Ident.Map.t -> Var.t -> AccessPath.t option
+
+   val of_exp : Exp.t -> t Ident.Map.t -> Typ.t -> Typ.t PvarMap.t -> t
+
+   val to_z3_expr : t -> Z3.context -> (Z3.Expr.expr * Z3.Expr.expr list)
+
+   val always_positive : t -> Z3.context -> Z3.Solver.solver -> bool
 
    val get_accesses: t -> Set.t
 
@@ -75,10 +105,6 @@ module EdgeExp : sig
    val sub : t -> t -> t
 
    val mult : t -> t -> t
-
-   val to_string : t -> string
-
-   val pp : F.formatter -> t -> unit
 end
 
 val pp_summary : F.formatter -> EdgeExp.summary -> unit
@@ -113,12 +139,11 @@ module DC : sig
       val get_dc : EdgeExp.t -> rhs t -> dc option
 
       val add_dc : EdgeExp.t -> rhs -> rhs t -> rhs t
+
+      val to_string : rhs EdgeExp.Map.t -> string
    end
 end
 
-type graph_type = | LTS | GuardedDCP | DCP
-
-val active_graph_type : graph_type ref 
 
 module DefaultDot : sig
    val default_edge_attributes : 'a -> 'b list
@@ -137,11 +162,13 @@ module AssignmentMap : Caml.Map.S with type key = AccessPath.t
 
 (* Difference Constraint Program *)
 module DCP : sig
+   type edge_output_type = | LTS | GuardedDCP | DCP [@@deriving compare]
+
    module Node : sig
       type t = 
-      | Prune of (Sil.if_kind * Location.t)
+      | Prune of (Sil.if_kind * Location.t * Procdesc.Node.id)
       | Start of (Procname.t * Location.t)
-      | Join of Location.t
+      | Join of (Location.t * Procdesc.Node.id)
       | Exit
       [@@deriving compare]
       val equal : t -> t -> bool
@@ -172,6 +199,8 @@ module DCP : sig
          mutable execution_cost: EdgeExp.t;
          mutable bound_norm: EdgeExp.t option;
          mutable computing_bound: bool;
+
+         mutable edge_type: edge_output_type;
       }
       [@@deriving compare]
 
@@ -194,20 +223,24 @@ module DCP : sig
       (* Required by Graph module interface *)
       val default : t
 
+      val branch_type : t -> bool
+
       val set_backedge : t -> t
 
       val add_condition : t -> EdgeExp.t -> t
 
       val add_assignment : t -> AccessPath.t -> EdgeExp.t -> t
 
-      val add_invariants : t -> Pvar.Set.t -> Typ.t PvarMap.t -> t
+      val add_invariants : t -> AccessSet.t -> t
 
       val get_assignment_rhs : t -> AccessPath.t -> EdgeExp.t
 
       val derive_guards : t -> EdgeExp.Set.t -> Z3.Solver.solver -> Z3.context -> unit
+
+      val derive_constraint2 : (Node.t * t * Node.t) -> EdgeExp.t -> EdgeExp.Set.t -> Pvar.Set.t -> EdgeExp.Set.t
       
       (* Derive difference constraints "x <= y + c" based on edge assignments *)
-      val derive_constraint : t -> EdgeExp.t -> Pvar.Set.t -> EdgeExp.Set.t
+      val derive_constraint : (Node.t * t * Node.t) -> EdgeExp.t -> EdgeExp.Set.t -> Pvar.Set.t -> EdgeExp.Set.t
    end
 
    include module type of Graph.Imperative.Digraph.ConcreteBidirectionalLabeled(Node)(EdgeData)
@@ -221,7 +254,7 @@ module DCP : sig
    val edge_attributes : E.t -> [> `Color of int | `Label of string ] list
 end
 
-module DCPDot : module type of Graph.Graphviz.Dot(DCP)
+module DCP_Dot : module type of Graph.Graphviz.Dot(DCP)
 
 (* Variable flow graph *)
 module VFG : sig
@@ -322,8 +355,6 @@ type cache = {
 
 val empty_cache : cache
 
-val exp_to_z3_expr : Z3.context -> EdgeExp.t -> Z3.Expr.expr
-
 val is_loop_prune : Sil.if_kind -> bool
 
-val norm_is_variable : EdgeExp.t -> Pvar.Set.t -> bool
+val output_graph : string -> 'a ->(Out_channel.t -> 'a -> unit) -> unit

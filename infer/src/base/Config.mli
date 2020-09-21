@@ -182,6 +182,8 @@ val unsafe_unret : string
 
 val use_cost_threshold : bool
 
+val disable_vfg_renaming : bool
+
 val incremental_analysis : bool
 
 val weak : string
