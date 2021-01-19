@@ -19,6 +19,8 @@ let log : F.formatter -> ('a, Format.formatter, unit) format -> 'a = fun fmt for
 module GraphData = struct
   type t = {
     last_node: Domain.DCP.Node.t;
+    last_loophead_node: Procdesc.Node.t option;
+    loophead_stack: Procdesc.Node.t Stack.t;
     nodes: Domain.DCP.NodeSet.t;
     edges: Domain.DCP.EdgeSet.t;
     edge_data: Domain.DCP.EdgeData.t;
@@ -64,6 +66,8 @@ module GraphData = struct
     (* log "Locals: %a\n" Pvar.Set.pp locals; *)
     {
       last_node = start_node;
+      last_loophead_node = None;
+      loophead_stack = Stack.create ();
       nodes = Domain.DCP.NodeSet.singleton start_node;
       edges = Domain.DCP.EdgeSet.empty;
       edge_data = Domain.DCP.EdgeData.empty;
@@ -118,11 +122,10 @@ module TransferFunctions = struct
     let ap_id_resolver = EdgeExp.access_path_id_resolver graph_data.ident_map in
 
     match instr with
-    | Sil.Prune (cond, loc, branch, kind) -> (
+    | Prune (cond, loc, branch, kind) -> (
       (* debug_log "[PRUNE (%s)] (%a) | %a\n" (Sil.if_kind_to_string kind) Location.pp loc Exp.pp cond; *)
       let cond = EdgeExp.of_exp cond graph_data.ident_map Typ.boolean graph_data.type_map in
       debug_log "[PRUNE (%s)] (%a) | %a\n" (Sil.if_kind_to_string kind) Location.pp loc EdgeExp.pp cond;
-
       let normalized_cond = EdgeExp.normalize_condition cond graph_data.tenv in
 
       let in_loop = not (List.is_empty graph_data.loop_heads) in
@@ -178,7 +181,7 @@ module TransferFunctions = struct
         };
       }
     )
-    | Sil.Store {e1=lhs; typ; e2=rhs; loc} -> (
+    | Store {e1=lhs; typ; e2=rhs; loc} -> (
       debug_log "[STORE] (%a) | %a = %a\n" Location.pp loc Exp.pp lhs Exp.pp rhs;
       match lhs with
       | Exp.Lvar pvar when Pvar.is_clang_tmp pvar -> (
@@ -323,7 +326,7 @@ module TransferFunctions = struct
         }
       )
     )
-    | Sil.Load {id; e; typ; loc;} -> (
+    | Load {id; e; typ; loc;} -> (
       debug_log "[LOAD] (%a) | %a = %a\n" Location.pp loc Ident.pp id Exp.pp e;
       let map_ident exp = match exp with
       | Exp.Lindex _ -> (
@@ -464,14 +467,38 @@ module GraphConstructor = struct
   fun proc_desc node visited graph_data -> (
     let open Domain in
 
+    let debug_log format = log graph_data.log_file.fmt format in
+
+    (* TODO: should probably POP loophead from stack if we encounter false branch later on.
+     * Otherwise we are accumulating loop heads from previous loops but it doesn't seem to
+     * affect the algorithm in any way. *)
     let is_loop_head = Procdesc.is_loop_head proc_desc node in
-    if Procdesc.NodeSet.mem node visited 
-    then (
+    let is_backedge = if is_loop_head then (
+      debug_log "[LOOP HEAD] %a\n" Procdesc.Node.pp node;
+      match Stack.top graph_data.loophead_stack with
+      | Some last_loophead -> (
+          debug_log "[PREVIOUS LOOP HEAD] %a\n" Procdesc.Node.pp last_loophead;
+          if Procdesc.Node.equal last_loophead node then (
+            let _ = Stack.pop_exn graph_data.loophead_stack in
+            true
+          ) else (
+            Stack.push graph_data.loophead_stack node;
+            false
+          )
+      )
+      | None -> (
+        Stack.push graph_data.loophead_stack node;
+        false
+      )
+    ) else false
+    in
+
+    if Procdesc.NodeSet.mem node visited then (
       (* log "[Visited Node] %a : %s\n" Procdesc.Node.pp node (pp_nodekind (Procdesc.Node.get_kind node)); *)
       let preds = Procdesc.Node.get_preds node in
       let graph_data = if is_join_node node || List.length preds > 1 then (
         let edge_data = DCP.EdgeData.add_invariants graph_data.edge_data graph_data.locals in
-        let edge_data = if is_loop_head then DCP.EdgeData.set_backedge edge_data else edge_data 
+        let edge_data = if is_backedge then DCP.EdgeData.set_backedge edge_data else edge_data 
         in
         let node = Procdesc.NodeMap.find node graph_data.node_map in
         (* log "Mapped node %a\n" DCP.Node.pp node; *)

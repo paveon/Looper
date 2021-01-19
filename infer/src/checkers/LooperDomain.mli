@@ -74,13 +74,17 @@ module EdgeExp : sig
 
    val is_formal : t -> Pvar.Set.t -> bool
 
+   val is_return : t -> bool
+
    val eval : Binop.t -> IntLit.t -> IntLit.t -> t
 
    val try_eval : Binop.t -> t -> t -> t
 
-   val merge : t -> IntLit.t -> t
+   val merge : t -> (Binop.t * IntLit.t) option -> t
 
-   val separate : t -> (t * IntLit.t)
+   (* val separate : t -> (t * IntLit.t) *)
+
+   val separate2 : t -> t * (Binop.t * IntLit.t) option
 
    val simplify : t -> t
 
@@ -113,13 +117,15 @@ val pp_summary : F.formatter -> EdgeExp.summary -> unit
 (* Difference Constraint of form "x <= y + c"
  * Example: "(len - i) <= (len - i) + 1" *)
 module DC : sig
-   type t = (EdgeExp.t * EdgeExp.t * IntLit.t) [@@deriving compare]
-   type dc = t
-   type rhs = (EdgeExp.t * IntLit.t) [@@deriving compare]
+   type norm = EdgeExp.t [@@deriving compare]
+   type rhs_const = Binop.t * IntLit.t [@@deriving compare]
+   type rhs = norm * Binop.t * IntLit.t [@@deriving compare]
 
-   val make : ?const:IntLit.t -> EdgeExp.t -> EdgeExp.t -> t
+   type t = (norm * rhs) [@@deriving compare]
 
-   val make_rhs : ?const:IntLit.t -> EdgeExp.t -> rhs
+   val make : ?const_part:rhs_const -> norm -> norm -> t
+
+   val make_rhs : ?const_part:rhs_const -> norm -> rhs
 
    val is_constant : t -> bool
 
@@ -131,14 +137,16 @@ module DC : sig
 
    val to_string : t -> bool -> string
       
-   val pp : F.formatter -> dc -> unit
+   val pp : F.formatter -> t -> unit
 
    module Map : sig
+      type dc = t
+
       include module type of EdgeExp.Map
 
-      val get_dc : EdgeExp.t -> rhs t -> dc option
+      val get_dc : norm -> rhs t -> dc option
 
-      val add_dc : EdgeExp.t -> rhs -> rhs t -> rhs t
+      val add_dc : norm -> rhs -> rhs t -> rhs t
 
       val to_string : rhs EdgeExp.Map.t -> string
    end
@@ -208,6 +216,8 @@ module DCP : sig
 
       val is_reset : t -> EdgeExp.t -> bool
 
+      val get_reset : t -> EdgeExp.t -> EdgeExp.t option
+
       val is_exit_edge : t -> bool
 
       val is_backedge : t -> bool
@@ -237,8 +247,6 @@ module DCP : sig
 
       val derive_guards : t -> EdgeExp.Set.t -> Z3.Solver.solver -> Z3.context -> unit
 
-      val derive_constraint2 : (Node.t * t * Node.t) -> EdgeExp.t -> EdgeExp.Set.t -> Pvar.Set.t -> EdgeExp.Set.t
-      
       (* Derive difference constraints "x <= y + c" based on edge assignments *)
       val derive_constraint : (Node.t * t * Node.t) -> EdgeExp.t -> EdgeExp.Set.t -> Pvar.Set.t -> EdgeExp.Set.t
    end

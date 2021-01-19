@@ -101,7 +101,12 @@ module EdgeExp = struct
 
   let is_one = function Const (Const.Cint const) -> IntLit.isone const | _ -> false
 
-  let is_const = function Const _ -> true | _ -> false
+  let rec is_const exp = match exp with
+    | Const _ -> true
+    | BinOp (_, lexp, rexp) -> is_const lexp && is_const rexp
+    | UnOp (_, exp, _) -> is_const exp
+    | Max args | Min args -> List.for_all args ~f:is_const
+    | _ -> false
 
   let is_variable norm formals =
     let rec traverse_exp = function
@@ -136,6 +141,10 @@ module EdgeExp = struct
     )
     | _ -> false
 
+  let is_return exp = match exp with
+  | Access ((var, _), _) -> Pvar.is_return (Option.value_exn (Var.get_pvar var))
+  | _ -> false
+
   let eval_consts op c1 c2 = match op with
     | Binop.PlusA _ -> IntLit.add c1 c2
     | Binop.MinusA _ -> IntLit.sub c1 c2
@@ -143,6 +152,8 @@ module EdgeExp = struct
     | Binop.Div -> IntLit.div c1 c2
     | Binop.Ne -> if IntLit.eq c1 c2 then IntLit.zero else IntLit.one
     | Binop.Eq -> if IntLit.eq c1 c2 then IntLit.one else IntLit.zero
+    | Binop.Shiftrt -> IntLit.shift_right c1 c2
+    | Binop.Shiftlt -> IntLit.shift_left c1 c2
     | _ -> L.(die InternalError)"[EdgeExp.eval_consts] Unsupported operator %a %s %a" IntLit.pp c1 (Binop.str Pp.text op) IntLit.pp c2
 
   let eval op c1 c2 = Const (Const.Cint (eval_consts op c1 c2))
@@ -172,7 +183,7 @@ module EdgeExp = struct
 
   let merge exp const_opt = match const_opt with
     | Some (op, const) -> (
-        if IntLit.isnegative const then (
+      if IntLit.isnegative const then (
         let const_neg = (Const (Const.Cint (IntLit.neg const))) in
         match op with
         | Binop.MinusA kind -> try_eval (Binop.PlusA kind) exp const_neg
@@ -234,7 +245,9 @@ module EdgeExp = struct
     | _ -> (exp, IntLit.zero) *)
 
 
-  let rec separate2 exp = match exp with
+  let rec separate2 exp = 
+    log "Separate: %a\n" pp exp;
+    match exp with
     | Access _ -> exp, None
     | Const (Const.Cint c) -> zero, Some (Binop.PlusA None, c)
     | BinOp (op, lexp, rexp) -> (
@@ -243,30 +256,69 @@ module EdgeExp = struct
       let lexp_derived, rexp_derived, const_part = match op with
       | Binop.PlusA _ -> (match l_const_opt, r_const_opt with
         | Some (l_op, l_const), Some (r_op, r_const) -> (
-            match l_op, r_op with
+          match l_op, r_op with
           | Binop.PlusA _, Binop.PlusA _ -> lexp_derived, rexp_derived, Some (Binop.PlusA None, IntLit.add l_const r_const)
+          | Binop.MinusA _, Binop.PlusA _ -> lexp_derived, rexp_derived, Some (Binop.PlusA None, IntLit.sub r_const l_const)
           | _ -> assert(false)
         )
-        | _ -> assert(false)
+        | Some (l_op, l_const), None -> (
+          match l_op with
+          | Binop.PlusA _ | Binop.MinusA _ -> lexp_derived, rexp_derived, Some (l_op, l_const)
+          | _ -> assert(false)
+        )
+        | None, Some (r_op, r_const) -> (
+          match r_op with
+          | Binop.PlusA _ | Binop.MinusA _ -> lexp_derived, rexp_derived, Some (r_op, r_const)
+          | _ -> assert(false)
+        )
+        | None, None -> lexp_derived, rexp_derived, None
       )
-      | Binop.MinusA _ -> (match l_const_opt, r_const_opt with
+      | Binop.MinusA typ_opt -> (match l_const_opt, r_const_opt with
         | Some (l_op, l_const), Some (r_op, r_const) -> (
           match l_op, r_op with
           | Binop.PlusA _, Binop.PlusA _ -> lexp_derived, rexp_derived, Some (Binop.PlusA None, IntLit.sub l_const r_const)
+          | Binop.MinusA _, Binop.PlusA _ -> lexp_derived, rexp_derived, Some (Binop.MinusA typ_opt, IntLit.add l_const r_const)
           | _ -> assert(false)
         )
-        | _ -> assert(false)
+        | Some (l_op, l_const), None -> (
+          match l_op with
+          | Binop.PlusA _ | Binop.MinusA _ -> lexp_derived, rexp_derived, Some (l_op, l_const)
+          | _ -> assert(false)
+        )
+        | None, Some (r_op, r_const) -> (
+          match r_op with
+          | Binop.PlusA typ_opt -> lexp_derived, rexp_derived, Some (Binop.MinusA typ_opt, r_const)
+          | Binop.MinusA typ_opt -> lexp_derived, rexp_derived, Some (Binop.PlusA typ_opt, r_const)
+          | _ -> assert(false)
+        )
+        | None, None -> lexp_derived, rexp_derived, None
       )
       | Binop.Shiftrt -> (match l_const_opt, r_const_opt with
         | Some (l_op, l_const), Some (r_op, r_const) -> (
           match l_op, r_op with
-          | _, Binop.PlusA _ -> (
-            let lexp_merged = merge lexp_derived l_const_opt in
-            lexp_merged, rexp_derived, Some (Binop.Shiftrt, r_const)
+          | Binop.PlusA _, Binop.PlusA _ -> (
+            merge lexp_derived l_const_opt, rexp_derived, Some (Binop.Shiftrt, r_const)
+            (* assert(false) *)
+          )
+          | Binop.Shiftrt, Binop.PlusA _ -> (
+            lexp_derived, rexp_derived, Some (Binop.Shiftrt, IntLit.add l_const r_const)
+            (* assert(false) *)
+          )
+          | _ -> (
+            assert(false)
+            (* let lexp_merged = merge lexp_derived l_const_opt in
+            lexp_merged, rexp_derived, Some (Binop.Shiftrt, r_const) *)
+          )
+        )
+        | Some (l_op, l_const), None -> assert(false)
+        | None, Some (r_op, r_const) -> (
+          match r_op with
+          | Binop.PlusA _ -> (
+            lexp_derived, rexp_derived, Some (Binop.Shiftrt, r_const)
           )
           | _ -> assert(false)
         )
-        | _ -> assert(false)
+        | None, None -> lexp_derived, rexp_derived, None
       )
       | _ -> (
         merge lexp_derived l_const_opt, merge rexp_derived r_const_opt, None
@@ -284,7 +336,7 @@ module EdgeExp = struct
         | Binop.Shiftrt -> zero, None
         | _ -> assert(false)
       )
-      | _ -> (
+      | false, false -> (
         if equal lexp_derived rexp_derived then match op with
           (* | Binop.MinusA _ -> Some (zero, IntLit.add l_const (IntLit.neg r_const)) *)
           | Binop.MinusA _ -> zero, const_part
@@ -296,19 +348,42 @@ module EdgeExp = struct
           | Binop.MinusA _
           | Binop.PlusA _
           | Binop.Div
+          | Binop.Mult _
           | Binop.Shiftrt 
           | Binop.Shiftlt -> (
             try_eval op lexp_derived rexp_derived, const_part
           )
-          | _ -> assert(false)
+          | _ -> (
+            log "%a %s %a\n" pp lexp_derived (Binop.str Pp.text op) pp rexp_derived;
+            match const_part with
+            | Some (const_op, rhs_const) -> (
+              log "Const part: %s %a\n" (Binop.str Pp.text const_op) IntLit.pp rhs_const;
+              assert(false)
+            )
+            | None -> assert(false)
+          )
         )
       )
     )
-    | UnOp (op, exp, typ) -> (
-      let derived_exp, const_opt = separate2 exp in
-      UnOp (op, derived_exp, typ), const_opt
+    | UnOp (unop, exp, typ) -> (match unop with
+      | Unop.Neg -> (
+        let derived_exp, const_opt = separate2 exp in
+        (* let derived_exp = if is_zero derived_exp then derived_exp else UnOp (unop, derived_exp, typ) in *)
+        match const_opt with
+        | Some (binop, const) -> (
+          if IntLit.iszero const then UnOp (unop, derived_exp, typ), None
+          else (match binop with
+            | Binop.PlusA typ_opt -> UnOp (unop, derived_exp, typ), Some (Binop.MinusA typ_opt, const)
+            | Binop.MinusA typ_opt -> UnOp (unop, derived_exp, typ), Some (Binop.PlusA typ_opt, const)
+            | _ -> assert(false)
+          )
+        )
+        | None -> UnOp (unop, derived_exp, typ), None
+      )
+      | _ -> assert(false)
     )
-    | Max _ | Min _ -> assert(false)
+    | Max _ -> exp, None
+    | Min _ -> assert(false)
     | _ -> exp, None
 
 
@@ -502,7 +577,8 @@ module EdgeExp = struct
     | BinOp (op, lexp, rexp) -> (
       let lexp, acc = aux lexp acc in
       let rexp, acc = aux rexp acc in
-      BinOp (op, lexp, rexp), acc
+      try_eval op lexp rexp, acc
+      (* BinOp (op, lexp, rexp), acc *)
     )
     | UnOp (op, exp, typ) -> (
       let exp, acc = aux exp acc in
@@ -537,9 +613,24 @@ module EdgeExp = struct
       | None -> bound
     )
     | BinOp (op, lexp, rexp) -> try_eval op (aux lexp) (aux rexp)
-    | UnOp (op, exp, typ) -> UnOp (op, aux exp, typ)
-    | Max max_args -> Max (List.map max_args ~f:(fun arg -> aux arg))
-    | Min min_args -> Min (List.map min_args ~f:(fun arg -> aux arg))
+    | UnOp (op, exp, typ) -> (
+      let subst_subexp = aux exp in
+      if is_zero subst_subexp then subst_subexp else UnOp (op, subst_subexp, typ)
+    )
+    | Max max_args -> (
+      let max_args_subst = List.map max_args ~f:(fun arg -> aux arg) in
+      if List.for_all max_args_subst ~f:is_const then (
+        Option.value_exn (List.max_elt max_args_subst ~compare:compare)        
+      )
+      else Max max_args_subst
+    )
+    | Min min_args -> (
+      let min_args_subst = (List.map min_args ~f:(fun arg -> aux arg)) in
+      if List.for_all min_args_subst ~f:is_const then (
+        Option.value_exn (List.min_elt min_args_subst ~compare:compare)
+      )
+      else Min min_args_subst
+    )
     | _ -> bound
     in
     aux bound
@@ -608,46 +699,75 @@ let pp_summary fmt (summary : EdgeExp.summary) = EdgeExp.pp fmt summary.bound
 (* Difference Constraint of form "x <= y + c"
  * Example: "(len - i) <= (len - i) + 1" *)
 module DC = struct
-  type t = (EdgeExp.t * EdgeExp.t * IntLit.t)
-  [@@deriving compare]
+   type norm = EdgeExp.t [@@deriving compare]
+   type rhs_const = Binop.t * IntLit.t [@@deriving compare]
+   type rhs = norm * Binop.t * IntLit.t [@@deriving compare]
 
-  type dc = t
-  type rhs = (EdgeExp.t * IntLit.t)
-  [@@deriving compare]
+   type t = (norm * rhs) [@@deriving compare]
 
-  let make ?(const = IntLit.zero) lhs rhs_norm = (lhs, rhs_norm, const)
+  (* type dc = t *)
 
-  let make_rhs ?(const = IntLit.zero) rhs_norm = (rhs_norm, const)
+  let make ?(const_part = Binop.PlusA None, IntLit.zero) lhs_norm rhs_norm = 
+    let op, rhs_const = const_part in
+    match op with
+    | Binop.PlusA _ | Binop.Shiftrt -> lhs_norm, (rhs_norm, op, rhs_const)
+    | _ -> assert(false)
 
-  let is_constant (lhs, rhs, const) = EdgeExp.equal lhs rhs && IntLit.iszero const
+  let make_rhs ?(const_part = Binop.PlusA None, IntLit.zero) rhs_norm = 
+    let op, rhs_const = const_part in
+    match op with
+    | Binop.PlusA _ | Binop.Shiftrt -> rhs_norm, op, rhs_const
+    | _ -> assert(false)
 
-  let same_norms (lhs, rhs, _) = EdgeExp.equal lhs rhs
+  let is_constant (lhs_norm, (rhs_norm, op, const)) = match op with
+    | Binop.PlusA _ -> EdgeExp.equal lhs_norm rhs_norm && IntLit.iszero const
+    | _ -> assert(false)
 
-  let is_decreasing (_, _, const) = IntLit.isnegative const
+  let same_norms (lhs_norm, (rhs_norm, _, _)) = EdgeExp.equal lhs_norm rhs_norm
 
-  let is_increasing (_, _, const) = not (IntLit.isnegative const) && not (IntLit.iszero const)
+  let is_decreasing (_, (_, op, const)) = match op with
+    | Binop.PlusA _ -> IntLit.isnegative const
+    | _ -> false
+    (* | _ -> assert(false) *)
 
-  let to_string (lhs, rhs_norm, rhs_const) guarded =
+  let is_increasing (_, (_, op, const)) = match op with
+    | Binop.PlusA _ -> not (IntLit.isnegative const) && not (IntLit.iszero const)
+    | _ -> false
+    (* | _ -> assert(false) *)
+
+  let to_string (lhs, (rhs_norm, op, rhs_const)) guarded =
     let dc = if guarded then F.asprintf "%a' <= %a" EdgeExp.pp lhs EdgeExp.pp rhs_norm
     else F.asprintf "[%a]' <= [%a]" EdgeExp.pp lhs EdgeExp.pp rhs_norm
     in
-    if IntLit.iszero rhs_const then dc
-    else if IntLit.isnegative rhs_const then dc ^ " - " ^ IntLit.to_string (IntLit.neg rhs_const)
-    else dc ^ " + " ^ IntLit.to_string rhs_const
+    match op with
+    | Binop.PlusA _ -> (
+      if IntLit.iszero rhs_const then dc
+      else if IntLit.isnegative rhs_const then dc ^ " - " ^ IntLit.to_string (IntLit.neg rhs_const)
+      else dc ^ " + " ^ IntLit.to_string rhs_const
+    )
+    | Binop.Shiftrt -> (
+      if IntLit.iszero rhs_const then dc
+      else dc ^ F.asprintf " %s %a" (Binop.str Pp.text op) IntLit.pp rhs_const
+    )
+    | _ -> (
+      L.(die InternalError)"TODO: unsupported op: %s %a" (Binop.str Pp.text op) IntLit.pp rhs_const
+    )
     
   let pp fmt dc = 
     F.fprintf fmt "%s" (to_string dc false)
 
   module Map = struct
+    type dc = t
+
     include EdgeExp.Map
 
     let get_dc key map =
       match find_opt key map with
-      | Some (rhs_norm, const) -> Some (key, rhs_norm, const)
+      | Some (rhs_norm, op, rhs_const) -> Some (key, (rhs_norm, op, rhs_const))
       | None -> None
 
     let add_dc dc_lhs dc_rhs map =
-      let rhs_norm, rhs_const = dc_rhs in
+      let rhs_norm, _, rhs_const = dc_rhs in
       if EdgeExp.equal dc_lhs rhs_norm && IntLit.iszero rhs_const then (
         (* Check if set already contains some constraint with this left hand side *)
         if mem dc_lhs map then (
@@ -664,8 +784,8 @@ module DC = struct
     (* let pp fmt map = iter (fun pvar _ -> F.fprintf fmt " %s " (Pvar.to_string pvar)) map *)
 
     let to_string map =
-      let tmp = fold (fun lhs (rhs, const) acc ->
-        acc ^ F.asprintf "(%a <= %a + %a)" EdgeExp.pp lhs EdgeExp.pp rhs IntLit.pp const  ^ " "
+      let tmp = fold (fun lhs_norm dc_rhs acc ->
+        acc ^ (to_string (lhs_norm, dc_rhs) false) ^ " "
       ) map ""
       in
       "[" ^ (String.rstrip tmp) ^ "]"
@@ -764,6 +884,10 @@ module DCP = struct
     let is_reset edge norm = match DC.Map.get_dc norm edge.constraints with
       | Some dc -> not (DC.same_norms dc)
       | None -> false
+
+    let get_reset edge norm = match DC.Map.get_dc norm edge.constraints with
+      | Some ((_, (exp, op, lit)) as dc) when not (DC.same_norms dc) -> Some (EdgeExp.merge exp (Some (op, lit)))
+      | _ -> None
 
     let is_exit_edge edge = edge.exit_edge
 
@@ -877,7 +1001,7 @@ module DCP = struct
       )
 
 
-    let derive_constraint2 (_, edge_data, _) norm existing_norms formals =
+    let derive_constraint (_, edge_data, _) norm existing_norms formals =
       let dc_map = edge_data.constraints in
 
       let get_assignment lhs_access = match AssignmentMap.find_opt lhs_access edge_data.assignments with
@@ -888,7 +1012,7 @@ module DCP = struct
       )
       in
 
-      let process_assignment lhs_access rhs = match rhs with
+      (* let process_assignment lhs_access rhs = match rhs with
         | EdgeExp.BinOp (op, (EdgeExp.Access _ as rhs_access_exp), EdgeExp.Const Const.Cint rhs_const) -> (
             let const_part = match op with
             | Binop.MinusA _ -> IntLit.neg rhs_const
@@ -914,88 +1038,56 @@ module DCP = struct
         | EdgeExp.Access _
         | EdgeExp.Call _ -> rhs, None
         | _ -> L.(die InternalError)"[TODO] Unsupported asssignment: %a = %a" AccessPath.pp lhs_access EdgeExp.pp rhs
-      in
-
+      in *)
 
       let rec derive_rhs norm = match norm with
-        | EdgeExp.Access access -> (
-          match get_assignment access with
-          | Some assignment_rhs -> Some (process_assignment access assignment_rhs)
-          | None -> None
-          (* | None -> norm, IntLit.zero *)
-        )
-        | EdgeExp.Const (Const.Cint c) -> Some (EdgeExp.zero, Some (Binop.PlusA None, c))
+        | EdgeExp.Access access -> get_assignment access
+        | EdgeExp.Const (Const.Cint _) -> Some norm
         | EdgeExp.BinOp (op, lexp, rexp) -> (
+          log "Deriving for: %a %s %a\n" EdgeExp.pp lexp (Binop.str Pp.text op) EdgeExp.pp rexp;
           match derive_rhs lexp, derive_rhs rexp with
-          | Some (lexp_derived, l_const_opt), Some (rexp_derived, r_const_opt) -> (
-            (* let const = EdgeExp.eval_consts op l_const r_const in *)
-            (* log "[Before] (%a + [%a]) %s (%a + [%a])\n" EdgeExp.pp lexp_derived IntLit.pp l_const (Binop.str Pp.text op) EdgeExp.pp rexp_derived IntLit.pp r_const; *)
-
-            let lexp_derived, rexp_derived, const = match op with
-            | Binop.PlusA _ -> (lexp_derived, rexp_derived, IntLit.add l_const r_const)
-            | Binop.MinusA _ -> (lexp_derived, rexp_derived, IntLit.sub l_const r_const)
-            | _ -> (
-              merge lexp_derived l_const_opt, merge rexp_derived r_const_opt, None
-            )
-            in
-            (* log "[After] (%a %s %a) + [%a]\n" EdgeExp.pp lexp_derived (Binop.str Pp.text op) EdgeExp.pp rexp_derived IntLit.pp const; *)
-
-            match EdgeExp.is_zero lexp_derived, EdgeExp.is_zero rexp_derived with
-            | true, true -> Some (EdgeExp.zero, const)
-            | false, true -> Some (lexp_derived, const)
-            | true, false -> (
-              match op with
-              | Binop.MinusA _ -> Some (EdgeExp.UnOp (Unop.Neg, rexp_derived, None), const)
-              | Binop.PlusA _ -> Some (rexp_derived, const)
-              | _ -> assert(false)
-            )
-            | _ -> (
-              if EdgeExp.equal lexp_derived rexp_derived then match op with
-                (* | Binop.MinusA _ -> Some (EdgeExp.zero, IntLit.add l_const (IntLit.neg r_const)) *)
-                | Binop.MinusA _ -> Some (EdgeExp.zero, Some (Binop.PlusA None, const))
-                | Binop.PlusA _ -> Some (EdgeExp.try_eval op lexp_derived rexp_derived, Some (Binop.PlusA None, const))
-                | _ -> assert(false)
-              else (
-                match op with
-                | Binop.MinusA _ -> Some (EdgeExp.try_eval op lexp_derived rexp_derived, const)
-                | Binop.PlusA _ -> Some (EdgeExp.try_eval op lexp_derived rexp_derived, const)
-                | Binop.Div
-                | Binop.Shiftrt 
-                | Binop.Shiftlt -> (
-                  Some (EdgeExp.try_eval op lexp_derived rexp_derived, const)
-                )
-                | _ -> assert(false)
-              )
-            )
+          | Some lexp_derived, Some rexp_derived -> Some (EdgeExp.BinOp (op, lexp_derived, rexp_derived))
+          | Some _, None
+          | None, Some _ -> (
+            (* Some expression variable is not defined on this edge *)
+            None
           )
-          | _ -> None
+          | _ -> (
+            (* assert(false) *)
+            None
+          )
         )
-        (* | EdgeExp.UnOp (op, exp, typ) -> (match derive_rhs exp with
-          | Some (derived_exp, const) -> Some (EdgeExp.UnOp (op, derived_exp, typ), const)
-          | None -> None
-        ) *)
-        | EdgeExp.UnOp (Unop.Neg, exp, typ) -> (match derive_rhs exp with
-          | Some (derived, const_opt) ->
-            let derived = if EdgeExp.is_zero derived then derived else EdgeExp.UnOp (Unop.Neg, derived, typ) in
-            let const_part = match const_opt with
-            | Some (op, const) -> match op with
-              | Binop.PlusA _ -> if IntLit.iszero const then Some (op, const) else Some (op, IntLit.neg const)
-              | _ -> assert(false)
-            | None -> None
-            in
-            Some (derived, const_part)
+        | EdgeExp.UnOp (Unop.Neg, exp, typ) -> (
+          let exp_derived_opt = derive_rhs exp in
+          match exp_derived_opt with
+          | Some exp_derived -> (if EdgeExp.is_zero exp_derived 
+            then exp_derived_opt 
+            else Some (EdgeExp.UnOp (Unop.Neg, exp_derived, typ))
+          )
           | None -> None
         )
         | EdgeExp.UnOp (_, _, _) -> assert(false)
         | EdgeExp.Max _ -> assert(false)
         | EdgeExp.Min _ -> assert(false)
-        | _ -> Some (norm, None)
+        | _ -> Some norm
       in
 
       let rec is_new_norm rhs = not (EdgeExp.Set.mem rhs existing_norms) && match rhs with
-        | EdgeExp.BinOp (_, lexp, EdgeExp.Const _) -> is_new_norm lexp
-        | EdgeExp.BinOp (_, EdgeExp.Const _, rexp) -> is_new_norm rexp
-        | EdgeExp.BinOp (op, lexp, rexp) -> (match op with
+        | EdgeExp.BinOp (op, lexp, EdgeExp.Const _) -> (
+          match op with
+          | Binop.Shiftrt -> (
+            (* TODO: figure out a better way? *)
+            true
+          )
+          | _ -> is_new_norm lexp
+        )
+        | EdgeExp.BinOp (op, EdgeExp.Const _, rexp) -> (
+          match op with
+          | Binop.Shiftrt -> assert(false)
+          | _ -> is_new_norm rexp
+        )
+        | EdgeExp.BinOp (op, lexp, rexp) -> (
+          match op with
           | Binop.Shiftrt -> true
           | _ -> is_new_norm lexp && is_new_norm rexp
         )
@@ -1011,46 +1103,86 @@ module DCP = struct
         | EdgeExp.Min _ -> false *)
       in
 
-      (* if EdgeExp.is_variable norm formals then match derive_rhs2 norm with
-        | Some rhs_norm -> (
-          if EdgeExp.equal norm rhs_norm then EdgeExp.Set.empty
-          else (
-            let is_variable = EdgeExp.is_variable rhs_norm formals in
-            let is_new = is_variable && is_new_norm rhs_norm in
-            log "Derived: %a, [Variable norm: %B] [New norm: %B]\n" EdgeExp.pp rhs_norm is_variable is_new;
-            EdgeExp.Set.empty
-            (* let dc_rhs = DC.make_rhs ~const:rhs_const rhs_norm in
-            let updated_dc_map = DC.Map.add_dc norm dc_rhs dc_map in
+      if EdgeExp.is_variable norm formals then (match derive_rhs norm with
+        | Some derived_rhs -> (
+          let rhs_norm, rhs_const_opt = EdgeExp.separate2 derived_rhs in
+          let merged = EdgeExp.merge rhs_norm rhs_const_opt in
+          log "Derived RHS: %a\n" EdgeExp.pp merged;
+          if EdgeExp.equal merged norm then (
+            (* Norm doesn't change it's value on this edge *)
+            let updated_dc_map = DC.Map.add_dc norm (DC.make_rhs norm) dc_map in
             edge_data.constraints <- updated_dc_map;
-            if is_new then EdgeExp.Set.singleton rhs_norm else EdgeExp.Set.empty *)
+            EdgeExp.Set.empty
           )
-        )
-        | None -> EdgeExp.Set.empty
-      else EdgeExp.Set.empty *)
-
-      EdgeExp.Set.empty
-      (* if EdgeExp.is_variable norm formals then match derive_rhs norm with
-        | Some (rhs_norm, rhs_const) -> (
-          let lhs_norm, lhs_const = EdgeExp.separate norm in
-          let rhs_norm, rhs_const = if EdgeExp.is_zero rhs_norm 
-            then (EdgeExp.Const (Const.Cint rhs_const), IntLit.zero)
-            else rhs_norm, rhs_const
-          in
-          if EdgeExp.equal lhs_norm rhs_norm then (
-            let diff = IntLit.sub rhs_const lhs_const in
-            let dc_rhs = DC.make_rhs ~const:diff norm in
-            let updated_dc_map = DC.Map.add_dc norm dc_rhs dc_map in
-            edge_data.constraints <- updated_dc_map;
-            EdgeExp.Set.empty
-          ) else (
-            let merged = EdgeExp.merge rhs_norm rhs_const in
-
-            let dc_rhs = DC.make_rhs ~const:rhs_const rhs_norm in
-            let updated_dc_map = DC.Map.add_dc norm dc_rhs dc_map in
-            edge_data.constraints <- updated_dc_map;
-            if (EdgeExp.equal norm rhs_norm && IntLit.iszero rhs_const) || EdgeExp.equal merged norm then (
+          else (
+            (* Derived RHS expression is not equal to the original norm *)
+            log "Derived RHS is different\n";
+            let lhs_norm, lhs_const_opt = EdgeExp.separate2 norm in
+            let rhs_norm, rhs_const_opt = if EdgeExp.is_zero rhs_norm then (
+              match rhs_const_opt with
+              | Some (rhs_op, rhs_const) -> (match rhs_op with
+                | Binop.PlusA _ -> (EdgeExp.Const (Const.Cint rhs_const), None)
+                | Binop.MinusA _ -> (EdgeExp.Const (Const.Cint (IntLit.neg rhs_const)), None)
+                | _ -> assert(false)
+              )
+              | None -> (
+                (* 0 + None *)
+                EdgeExp.zero, None
+              )
+            )
+            else rhs_norm, rhs_const_opt
+            in
+            if EdgeExp.equal lhs_norm rhs_norm then (
+              log "Derived lhs_norm == rhs_norm: %a == %a\n" EdgeExp.pp lhs_norm EdgeExp.pp rhs_norm;
+              let dc_rhs = match lhs_const_opt, rhs_const_opt with
+              | Some (lhs_op, lhs_const), Some (rhs_op, rhs_const) -> (
+                assert(Binop.equal lhs_op rhs_op);
+                match lhs_op with
+                | Binop.PlusA _ -> (
+                  let diff = IntLit.sub rhs_const lhs_const in
+                  DC.make_rhs ~const_part:(lhs_op, diff) norm
+                )
+                | Binop.MinusA typ_opt -> (
+                  (* [lhs_norm] (-) lhs_const, [rhs_norm] (-) rhs_const --->  +(-(rhs_const - lhs_const)) *)
+                  let diff = IntLit.neg (IntLit.sub rhs_const lhs_const) in
+                  DC.make_rhs ~const_part:(Binop.PlusA typ_opt, diff) norm
+                )
+                | Binop.Shiftrt -> (
+                  let diff = IntLit.sub rhs_const lhs_const in
+                  DC.make_rhs ~const_part:(lhs_op, diff) norm
+                  (* DC.make_rhs merged *)
+                )
+                | _ -> assert(false)
+              )
+              | None, Some (rhs_op, rhs_const) -> (match rhs_op with
+                | Binop.PlusA _ -> DC.make_rhs ~const_part:(rhs_op, rhs_const) norm
+                | Binop.MinusA typ_opt -> DC.make_rhs ~const_part:(Binop.PlusA typ_opt, IntLit.neg rhs_const) norm
+                | _ -> assert(false)
+              )
+              | _ -> assert(false)
+              in
+              let rhs_norm, op, rhs_const = dc_rhs in
+              log "Adding DC: %a <= %a %s (%a)\n" EdgeExp.pp norm EdgeExp.pp rhs_norm (Binop.str Pp.text op) IntLit.pp rhs_const;
+              let updated_dc_map = DC.Map.add_dc norm dc_rhs dc_map in
+              edge_data.constraints <- updated_dc_map;
               EdgeExp.Set.empty
+
             ) else (
+              log "Derived lhs_norm != rhs_norm: %a != %a\n" EdgeExp.pp lhs_norm EdgeExp.pp rhs_norm;
+              let rhs_norm, op, rhs_const = match rhs_const_opt with
+              | Some (rhs_op, rhs_const) -> (match rhs_op with
+                | Binop.PlusA _ -> DC.make_rhs ~const_part:(rhs_op, rhs_const) rhs_norm
+                | Binop.MinusA typ_opt -> DC.make_rhs ~const_part:(Binop.PlusA typ_opt, IntLit.neg rhs_const) rhs_norm
+                | Binop.Shiftrt -> (
+                  (* TODO *)
+                  DC.make_rhs merged
+                )
+                | _ -> assert(false)
+              )
+              | None -> DC.make_rhs rhs_norm
+              in
+              let updated_dc_map = DC.Map.add_dc norm (rhs_norm, op, rhs_const) dc_map in
+              edge_data.constraints <- updated_dc_map;
               let is_variable = EdgeExp.is_variable rhs_norm formals in
               let is_new = is_variable && is_new_norm rhs_norm in
               log "Derived: %a + (%a), [Variable norm: %B] [New norm: %B]\n" EdgeExp.pp rhs_norm IntLit.pp rhs_const is_variable is_new;
@@ -1063,437 +1195,8 @@ module DCP = struct
           )
         )
         | None -> EdgeExp.Set.empty
-      else EdgeExp.Set.empty *)
-
-    
-    (* TODO: Completely rewrite in more general and elegant way, this is not maintainable *)
-    (* Derive difference constraints "x <= y + c" based on edge assignments *)
-    let derive_constraint (src, edge_data, dst) norm existing_norms formals =
-      let dc_map = edge_data.constraints in
-      let norm_set = EdgeExp.Set.empty in
-      let get_assignment lhs_access = match AssignmentMap.find_opt lhs_access edge_data.assignments with
-      | Some rhs -> Some rhs
-      | None -> (
-        let base_pvar = Option.value_exn (Var.get_pvar (fst (fst lhs_access))) in
-        if Pvar.Set.mem base_pvar formals then Some (EdgeExp.Access lhs_access) else None
       )
-      in
-      let dc_map, norm_set = match norm with
-      | EdgeExp.Access x_access -> (
-        (* Norm [x] *)
-
-        let x_pvar = Option.value_exn (Var.get_pvar (fst (fst x_access))) in
-        if Pvar.Set.mem x_pvar formals then (
-          (* Ignore norms that are formal parameters *)
-          dc_map, norm_set
-        ) else match AssignmentMap.find_opt x_access edge_data.assignments with
-          | Some x_rhs -> (
-            if EdgeExp.equal norm x_rhs then (
-              (* [x = x], unchanged *)
-              DC.Map.add_dc norm (DC.make_rhs norm) dc_map, norm_set
-            ) else match x_rhs with
-              | EdgeExp.BinOp (op, (EdgeExp.Access rhs_access as rhs_access_exp), EdgeExp.Const Const.Cint increment) -> (
-                let const = match op with
-                | Binop.PlusA _ -> increment
-                | Binop.MinusA _ -> IntLit.neg increment
-                | _ -> L.(die InternalError)"[TODO] currently unsupported binop operator!"
-                in
-                if AccessPath.equal x_access rhs_access then (
-                  (* [x = x OP const] *)
-                  let dc_rhs = DC.make_rhs ~const norm in
-                  DC.Map.add_dc norm dc_rhs dc_map, norm_set
-                ) else (
-                  (* [x = z OP const] *)
-                  let dc_rhs = DC.make_rhs ~const rhs_access_exp in
-                  DC.Map.add_dc norm dc_rhs dc_map, EdgeExp.Set.add rhs_access_exp norm_set
-                )
-              )
-              | EdgeExp.BinOp(op, EdgeExp.Access _, EdgeExp.Access _) -> (
-                (* TODO: temporary work around, should figure out how to do this properly *)
-                DC.Map.add_dc norm (DC.make_rhs x_rhs) dc_map, norm_set
-                (* match op with
-                | Binop.Shiftrt -> (
-                  
-                )
-                | Binop.PlusA _ | Binop.MinusA _ -> (
-                  DC.Map.add_dc norm (DC.make_rhs x_rhs) dc_map, norm_set
-                ) *)
-              )
-              | EdgeExp.Access _ | EdgeExp.Const Const.Cint _-> (
-                DC.Map.add_dc norm (DC.make_rhs x_rhs) dc_map, EdgeExp.Set.add x_rhs norm_set
-              )
-              | EdgeExp.Max _ | EdgeExp.Min _ -> (
-                DC.Map.add_dc norm (DC.make_rhs x_rhs) dc_map, norm_set
-              )
-              | _ -> (
-                DC.Map.add_dc norm (DC.make_rhs x_rhs) dc_map, norm_set
-                (* L.(die InternalError)"[TODO] currently unsupported assignment expression [%a = %a]!" AccessPath.pp x_access EdgeExp.pp x_rhs *)
-              )
-          )
-          | None -> dc_map, norm_set
-      )
-      | EdgeExp.BinOp (Binop.MinusA _, x, y) -> (
-        match x, y with
-        | EdgeExp.Const (Const.Cint _), EdgeExp.Access y_access -> (
-          match get_assignment y_access with
-          | Some y_rhs -> (
-            if EdgeExp.equal y y_rhs then DC.Map.add_dc norm (DC.make_rhs norm) dc_map, norm_set
-            else (
-              (* [x_const - y] *)
-              match y_rhs with
-              | EdgeExp.BinOp (op, EdgeExp.Access y_rhs_access, EdgeExp.Const Const.Cint y_rhs_const) -> (
-                assert(AccessPath.equal y_rhs_access y_access);
-                match op with
-                | Binop.PlusA _ -> (
-                  (* norm [x_const - y], assignment [y = y + const] -> [(x_const - y) - const] *)
-
-                  log "  [Edge] %a ---> %a\n" Node.pp src Node.pp dst;
-                  log "    [New DC] (%a - %a), (%a = %a + %a) ---> (%a - %a) - %a\n" 
-                  EdgeExp.pp x EdgeExp.pp y 
-                  EdgeExp.pp y EdgeExp.pp y IntLit.pp y_rhs_const 
-                  EdgeExp.pp x EdgeExp.pp y IntLit.pp y_rhs_const;
-
-                  let dc_rhs = DC.make_rhs ~const:(IntLit.neg y_rhs_const) norm in
-                  let dc_map = DC.Map.add_dc norm dc_rhs dc_map in 
-                  dc_map, norm_set
-                )
-                | Binop.MinusA _ -> (
-                  (* norm [x_const - y], assignment [y = y - const] -> [(x_const - y) + const] *)
-                  let dc_rhs = DC.make_rhs ~const:y_rhs_const norm in
-                  let dc_map = DC.Map.add_dc norm dc_rhs dc_map in
-                  dc_map, norm_set
-                )
-                | _ -> (
-                  L.(die InternalError)"[TODO] currently unsupported binop operator!"
-                )
-              )
-              | EdgeExp.Access _ -> (
-                (* norm [x_const - y], assignment [y = z] -> [x_const - z] *)
-                let new_norm = EdgeExp.BinOp (Binop.MinusA None, x, y_rhs) in
-                DC.Map.add_dc norm (DC.make_rhs new_norm) dc_map, EdgeExp.Set.add new_norm norm_set
-              )
-              | EdgeExp.Const (Const.Cint _) -> (
-                (* norm [x_const - y], assignment [y = const] -> [eval_const] *)
-                let eval_const = EdgeExp.try_eval (Binop.MinusA None) x y_rhs in
-                DC.Map.add_dc norm (DC.make_rhs eval_const) dc_map, EdgeExp.Set.add eval_const norm_set
-              )
-              | _ -> L.(die InternalError)"[TODO] currently unsupported assignment expression!"
-            )
-          )
-          | None -> dc_map, norm_set
-        )
-        | EdgeExp.Access x_access, EdgeExp.Const (Const.Cint _) -> (
-          match get_assignment x_access with
-          | Some x_rhs -> (
-            if EdgeExp.equal x x_rhs then DC.Map.add_dc norm (DC.make_rhs norm) dc_map, norm_set
-            else (
-              (* [x - y_const] *)
-              match x_rhs with
-              | EdgeExp.BinOp (op, EdgeExp.Access x_rhs_access, EdgeExp.Const Const.Cint x_rhs_const) -> (
-                assert(AccessPath.equal x_rhs_access x_access);
-                match op with
-                | Binop.PlusA _ -> (
-                  (* norm [x - y_const], assignment [x = x + const] -> [(x - y_const) + const] *)
-                  let dc_rhs = DC.make_rhs ~const:(x_rhs_const) norm in
-                  DC.Map.add_dc norm dc_rhs dc_map, norm_set
-                )
-                | Binop.MinusA _ -> (
-                  (* norm [x - y_const], assignment [x = x - const] -> [(x - y_const) - const] *)
-                  let dc_rhs = DC.make_rhs ~const:(IntLit.neg x_rhs_const) norm in
-                  DC.Map.add_dc norm dc_rhs dc_map, norm_set
-                )
-                | _ -> (
-                  L.(die InternalError)"[TODO] currently unsupported binop operator!"
-                )
-              )
-              | EdgeExp.Access _ -> (
-                (* norm [x - y_const], assignment [x = z] -> [z - y_const] *)
-                let new_norm = EdgeExp.BinOp (Binop.MinusA None, x_rhs, y) in
-                DC.Map.add_dc norm (DC.make_rhs new_norm) dc_map, EdgeExp.Set.add new_norm norm_set
-              )
-              | EdgeExp.Const (Const.Cint _) -> (
-                (* norm [x - y_const], assignment [x = const] -> [eval_const] *)
-                let eval_const = EdgeExp.try_eval (Binop.MinusA None) x_rhs y in
-                DC.Map.add_dc norm (DC.make_rhs eval_const) dc_map, EdgeExp.Set.add eval_const norm_set
-              )
-              | _ -> L.(die InternalError)"[TODO] currently unsupported assignment expression!"
-            )
-          )
-          | None -> dc_map, norm_set
-        )
-        | EdgeExp.Access x_access, EdgeExp.Access y_access -> (
-          (* Most common form of norm, obtained from condition of form [x > y] -> norm [x - y] *)
-
-          match get_assignment x_access, get_assignment y_access with
-          | Some x_rhs, Some y_rhs -> (
-            match EdgeExp.equal x x_rhs, EdgeExp.equal y y_rhs with
-            | true, true -> (
-              (* assignments [x = x] and [y = y] *)
-              DC.Map.add_dc norm (DC.make_rhs norm) dc_map, norm_set
-            )
-            | true, false -> (
-              (* assignments [x = x] and [y = expr] *)
-              match y_rhs with
-              | EdgeExp.BinOp (op, EdgeExp.Access y_rhs_access, EdgeExp.Const Const.Cint y_rhs_const) -> (
-                assert(not (AccessPath.equal y_rhs_access x_access));
-                assert(AccessPath.equal y_rhs_access y_access);
-                match op with
-                | Binop.PlusA _ -> (
-                  (* norm [x - y], assignment [y = y + const] -> [(x - y) - const] *)
-                  let dc_rhs = DC.make_rhs ~const:(IntLit.neg y_rhs_const) norm in
-                  DC.Map.add_dc norm dc_rhs dc_map, norm_set
-                )
-                | Binop.MinusA _ -> (
-                  (* norm [x - y], assignment [y = y - const] -> [(x - y) + const] *)
-                  let dc_rhs = DC.make_rhs ~const:y_rhs_const norm in
-                  DC.Map.add_dc norm dc_rhs dc_map, norm_set
-                )
-                | _ -> (
-                  L.(die InternalError)"[TODO] currently unsupported binop operator!"
-                )
-              )
-              | EdgeExp.Access y_rhs_access -> (
-                if AccessPath.equal y_rhs_access x_access then (
-                  (* norm [x - y], assignment [y = x], zero interval *)
-                  DC.Map.add_dc norm (DC.make_rhs EdgeExp.zero) dc_map, EdgeExp.Set.add EdgeExp.zero norm_set
-                ) else (
-                  (* norm [x - y], assignment [y = z] -> [x - z] *)
-                  let new_norm = EdgeExp.BinOp (Binop.MinusA None, x, y_rhs) in
-                  DC.Map.add_dc norm (DC.make_rhs new_norm) dc_map, EdgeExp.Set.add new_norm norm_set
-                )
-              )
-              | EdgeExp.Const (Const.Cint const) -> (
-                if IntLit.iszero const then (
-                  (* norm [x - y], assignment [y = 0] -> [x] *)
-                  DC.Map.add_dc norm (DC.make_rhs x) dc_map, EdgeExp.Set.add x norm_set
-                ) else if IntLit.isone const then (
-                  (* norm [x - y], assignment [y = 1] -> [x - 1] *)
-                  DC.Map.add_dc norm (DC.make_rhs ~const:(IntLit.neg const) x) dc_map, EdgeExp.Set.add x norm_set
-                ) else (
-                  L.(die InternalError)"[TODO] currently unsupported assignment expression [%a = %a]!" AccessPath.pp y_access EdgeExp.pp y_rhs
-                )
-              )
-              | _ -> L.(die InternalError)"[TODO] currently unsupported assignment expression [%a = %a]!" AccessPath.pp y_access EdgeExp.pp y_rhs
-            )
-            | false, true -> (
-              (* assignments [y = y] and [x = expr] *)
-              match x_rhs with
-              | EdgeExp.BinOp (op, EdgeExp.Access x_rhs_access, EdgeExp.Const Const.Cint x_rhs_const) -> (
-                assert(not (AccessPath.equal x_rhs_access y_access));
-                assert(AccessPath.equal x_rhs_access x_access);
-                match op with
-                | Binop.PlusA _ -> (
-                  (* norm [x - y], assignment [x = x + const] -> [(x - y) + const] *)
-                  let dc_rhs = DC.make_rhs ~const:x_rhs_const norm in
-                  DC.Map.add_dc norm dc_rhs dc_map, norm_set
-                )
-                | Binop.MinusA _ -> (
-                  (* norm [x - y], assignment [x = x - const] -> [(x - y) - const] *)
-                  let dc_rhs = DC.make_rhs ~const:(IntLit.neg x_rhs_const) norm in
-                  DC.Map.add_dc norm dc_rhs dc_map, norm_set
-                )
-                | _ -> (
-                  L.(die InternalError)"[TODO] currently unsupported binop operator!"
-                )
-              )
-              | EdgeExp.Access x_rhs_access -> (
-                if AccessPath.equal x_rhs_access x_access then (
-                  (* norm [x - y], assignment [x = y], zero interval *)
-                  DC.Map.add_dc norm (DC.make_rhs EdgeExp.zero) dc_map, EdgeExp.Set.add EdgeExp.zero norm_set
-                ) else (
-                  (* norm [x - y], assignment [x = z] -> [z - y] *)
-                  let new_norm = EdgeExp.BinOp (Binop.MinusA None, x_rhs, y) in
-                  DC.Map.add_dc norm (DC.make_rhs new_norm) dc_map, EdgeExp.Set.add new_norm norm_set
-                )
-              )
-              | EdgeExp.Const (Const.Cint const) when IntLit.iszero const -> (
-                (* norm [x - y], assignment [x = 0] -> [-y] *)
-                log "-----------------------TEST--------------------";
-                let new_norm = EdgeExp.UnOp (Unop.Neg, y, None) in
-                DC.Map.add_dc norm (DC.make_rhs new_norm) dc_map, EdgeExp.Set.add new_norm norm_set
-              )
-              | _ -> L.(die InternalError)"[TODO] currently unsupported assignment expression!"
-            )
-            | _ -> (
-              if EdgeExp.equal x_rhs y_rhs then (
-                (* norm [x - y], assignments [x = expr] and [y = expr] -> 0 *)  
-                DC.Map.add_dc norm (DC.make_rhs EdgeExp.zero) dc_map, EdgeExp.Set.add EdgeExp.zero norm_set
-              )
-              else (
-                (* TODO: [x = e1] && [y = e2] -> [e1 - e2] *)
-                match x_rhs, y_rhs with
-                | EdgeExp.Const Const.Cint x_rhs_const, EdgeExp.Access _ -> (
-                  let new_norm = EdgeExp.UnOp (Unop.Neg, y_rhs, None) in
-                  if IntLit.iszero x_rhs_const then (
-                    DC.Map.add_dc norm (DC.make_rhs new_norm) dc_map, EdgeExp.Set.add new_norm norm_set
-                  ) else (
-                    let dc_rhs = DC.make_rhs ~const:x_rhs_const new_norm in
-                    DC.Map.add_dc norm dc_rhs dc_map, EdgeExp.Set.add new_norm norm_set
-                  )
-                )
-                | EdgeExp.Access _, EdgeExp.Const Const.Cint y_rhs_const -> (
-                  if IntLit.iszero y_rhs_const then (
-                    DC.Map.add_dc norm (DC.make_rhs x_rhs) dc_map, EdgeExp.Set.add x_rhs norm_set
-                  ) else dc_map, norm_set
-                )
-                | EdgeExp.Const Const.Cint x_const, EdgeExp.Const Const.Cint y_const -> (
-                  let dc_rhs = DC.make_rhs (EdgeExp.Const (Const.Cint (IntLit.sub x_const y_const))) in
-                  DC.Map.add_dc norm dc_rhs dc_map, norm_set
-                )
-                | _ -> L.(die InternalError)"[TODO] currently unsupported assignments '%a', '%a' !" EdgeExp.pp x_rhs EdgeExp.pp y_rhs
-              )
-            )
-          )
-          | _ -> (
-            (* Both variables constituting the norm must be defined on edge
-            * ie. the edge must at least contain constant assignment [var = var]
-            * for both norm variables in order to derive difference constraint
-            * for this norm *)
-            dc_map, norm_set
-          )
-        )
-        | EdgeExp.BinOp (Binop.PlusA _, (EdgeExp.Access x_access as x), (EdgeExp.Const Const.Cint const as c)), (EdgeExp.Access y_access as y) -> (
-          (* TODO: rewrite entire derivation code for [x - y] exp as recursive
-           * function which will determine if the overall value of a norm
-           * increases/decreases. Current approach is hideous. *)
-
-          match get_assignment x_access, get_assignment y_access with
-          | Some x_rhs, Some y_rhs -> (
-            match EdgeExp.equal x x_rhs, EdgeExp.equal y y_rhs with
-            | true, false -> (
-              match y_rhs with
-              | EdgeExp.BinOp (op, EdgeExp.Access y_rhs_access, EdgeExp.Const Const.Cint y_rhs_const) -> (
-                assert(AccessPath.equal y_access y_rhs_access);
-                match op with
-                | Binop.PlusA _ -> (
-                  (* norm [x - y], assignment [y = y + const] -> [(x - y) - const] *)
-                  let dc_rhs = DC.make_rhs ~const:(IntLit.neg y_rhs_const) norm in
-                  DC.Map.add_dc norm dc_rhs dc_map, norm_set
-                )
-                | Binop.MinusA _ -> (
-                  (* norm [x - y], assignment [y = y - const] -> [(x - y) + const] *)
-                  let dc_rhs = DC.make_rhs ~const norm in
-                  DC.Map.add_dc norm dc_rhs dc_map, norm_set
-                )
-                | _ -> (
-                  L.(die InternalError)"[TODO] currently unsupported binop operator!"
-                )
-              )
-              | EdgeExp.Access y_rhs_access when AccessPath.equal x_access y_rhs_access -> (
-                DC.Map.add_dc norm (DC.make_rhs c) dc_map, EdgeExp.Set.add c norm_set
-              )
-              | _ -> L.(die InternalError)"[TODO] currently unsupported assignment '%a' !" EdgeExp.pp y_rhs
-            )
-            | _ -> DC.Map.add_dc norm (DC.make_rhs norm) dc_map, norm_set
-          )
-          | _ -> dc_map, norm_set
-        )
-        | x_exp, EdgeExp.Access y_access -> (
-          (* TODO: fix this hack *)
-          match get_assignment y_access with
-          | Some y_rhs -> (
-            if EdgeExp.equal y y_rhs then DC.Map.add_dc norm (DC.make_rhs norm) dc_map, norm_set
-            else (
-              (* [x_exp - y] *)
-              match y_rhs with
-              | EdgeExp.BinOp (op, EdgeExp.Access y_rhs_access, EdgeExp.Const Const.Cint y_rhs_const) -> (
-                assert(AccessPath.equal y_rhs_access y_access);
-                match op with
-                | Binop.PlusA _ -> (
-                  (* norm [x_exp - y], assignment [y = y + const] -> [(x_exp - y) - const] *)
-
-                  log "  [Edge] %a ---> %a\n" Node.pp src Node.pp dst;
-                  log "    [New DC] (%a - %a), (%a = %a + %a) ---> (%a - %a) - %a\n" 
-                  EdgeExp.pp x EdgeExp.pp y 
-                  EdgeExp.pp y EdgeExp.pp y IntLit.pp y_rhs_const 
-                  EdgeExp.pp x EdgeExp.pp y IntLit.pp y_rhs_const;
-
-                  let dc_rhs = DC.make_rhs ~const:(IntLit.neg y_rhs_const) norm in
-                  let dc_map = DC.Map.add_dc norm dc_rhs dc_map in 
-                  dc_map, norm_set
-                )
-                | Binop.MinusA _ -> (
-                  (* norm [x_exp - y], assignment [y = y - const] -> [(x_exp - y) + const] *)
-                  let dc_rhs = DC.make_rhs ~const:y_rhs_const norm in
-                  let dc_map = DC.Map.add_dc norm dc_rhs dc_map in
-                  dc_map, norm_set
-                )
-                | _ -> (
-                  L.(die InternalError)"[TODO] currently unsupported binop operator!"
-                )
-              )
-              | EdgeExp.Access _ -> (
-                (* norm [x_exp - y], assignment [y = z] -> [x_exp - z] *)
-                let new_norm = EdgeExp.BinOp (Binop.MinusA None, x, y_rhs) in
-                DC.Map.add_dc norm (DC.make_rhs new_norm) dc_map, EdgeExp.Set.add new_norm norm_set
-              )
-              | EdgeExp.Const (Const.Cint _) -> (
-                (* norm [x_exp - y], assignment [y = const] -> [x_exp - const] *)
-                let new_norm = EdgeExp.BinOp (Binop.MinusA None, x, y_rhs) in
-                DC.Map.add_dc norm (DC.make_rhs new_norm) dc_map, EdgeExp.Set.add x norm_set
-              )
-              | y_rhs_exp -> (
-                let new_norm = EdgeExp.BinOp (Binop.MinusA None, x, y_rhs_exp) in
-                DC.Map.add_dc norm (DC.make_rhs new_norm) dc_map, EdgeExp.Set.add new_norm norm_set
-              )
-              | _ -> L.(die InternalError)"[TODO] currently unsupported assignment expression %a = %a!" EdgeExp.pp y EdgeExp.pp y_rhs
-            )
-          )
-          | None -> dc_map, norm_set
-        )
-        | x_exp, y_exp -> (
-          (* TODO: fix this hack *)
-          dc_map, norm_set
-        )
-        (* | EdgeExp.Const Const.Cint x_const, EdgeExp.Access y_access -> (
-          (* [x_const - y_pvar] *)
-
-          match get_assignment y_access with
-          | Some rhs -> (
-            if not (EdgeExp.equal y rhs) then (
-              match rhs with
-              | EdgeExp.BinOp (op, EdgeExp.Access rhs_access, EdgeExp.Const Const.Cint const) -> (
-                assert(AccessPath.equal y_access rhs_access);
-                match op with
-                | Binop.PlusA _ -> (
-                  (* norm [x - y], assignment [y = y + const] -> [(x - y) - const] *)
-                  let dc_rhs = DC.make_rhs ~const:(IntLit.neg const) norm in
-                  DC.Map.add_dc norm dc_rhs dc_map, norm_set
-                )
-                | Binop.MinusA _ -> (
-                  (* norm [x - y], assignment [y = y - const] -> [(x - y) + const] *)
-                  let dc_rhs = DC.make_rhs ~const norm in
-                  DC.Map.add_dc norm dc_rhs dc_map, norm_set
-                )
-                | _ -> (
-                  L.(die InternalError)"[TODO] currently unsupported binop operator!"
-                )
-              )
-              | EdgeExp.Const Const.Cint y_const -> (
-                (* norm [x_const - y], assignment [y = const] -> [x_const - const] *)
-                let new_norm = EdgeExp.Const (Const.Cint (IntLit.sub x_const y_const)) in
-                DC.Map.add_dc norm (DC.make_rhs new_norm) dc_map, EdgeExp.Set.add new_norm norm_set
-              )
-              | EdgeExp.UnOp (Unop.Neg, EdgeExp.Const Const.Cint y_const, _) -> (
-                let new_norm = EdgeExp.Const (Const.Cint (IntLit.add x_const y_const)) in
-                DC.Map.add_dc norm (DC.make_rhs new_norm) dc_map, EdgeExp.Set.add new_norm norm_set
-              )
-              | _ -> L.(die InternalError)"[TODO] currently unsupported assignment '%a' !" EdgeExp.pp rhs
-            ) else (
-              DC.Map.add_dc norm (DC.make_rhs norm) dc_map, norm_set
-            )
-          )
-          | _ -> (
-            dc_map, norm_set
-          )
-        ) *)
-        | _ -> L.(die InternalError)"[TODO] currently unsupported type of norm '%a' !" EdgeExp.pp norm
-      )
-      | EdgeExp.Const Const.Cint _ -> dc_map, norm_set
-      | _ -> L.(die InternalError)"[TODO] currently unsupported type of norm '%a' !" EdgeExp.pp norm
-      in
-      edge_data.constraints <- dc_map;
-      norm_set
+      else EdgeExp.Set.empty
   end
 
   include Graph.Imperative.Digraph.ConcreteBidirectionalLabeled(Node)(EdgeData)
@@ -1535,15 +1238,15 @@ module DCP = struct
       [`Label label; `Color 4711]
     )
     | GuardedDCP -> (
-      let guards = List.map (EdgeExp.Set.elements edge_data.guards) ~f:(fun guard -> EdgeExp.to_string guard) in
-      let constraints = List.map (DC.Map.bindings edge_data.constraints) ~f:(fun (l, (n, c)) -> (DC.to_string (l, n, c) true)) in
+      let guards = List.map (EdgeExp.Set.elements edge_data.guards) ~f:(fun guard -> F.asprintf "[GUARD] %s > 0" (EdgeExp.to_string guard)) in
+      let constraints = List.map (DC.Map.bindings edge_data.constraints) ~f:(fun dc -> (DC.to_string dc true)) in
       let label = F.asprintf "%s\n%s\n%s\n%s" label 
-      (String.concat ~sep:" > 0\n" guards) 
+      (String.concat ~sep:"\n" guards) 
       (String.concat ~sep:"\n" constraints) calls_str in
       [`Label label; `Color 4711]
     )
     | DCP -> (
-      let constraints = List.map (DC.Map.bindings edge_data.constraints) ~f:(fun (l, (n, c)) -> (DC.to_string (l, n, c) false)) in
+      let constraints = List.map (DC.Map.bindings edge_data.constraints) ~f:(fun dc -> (DC.to_string dc false)) in
       let label = F.asprintf "%s\n%s\n%s" label (String.concat ~sep:"\n" constraints) calls_str in
       [`Label label; `Color 4711]
     )
