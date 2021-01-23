@@ -286,7 +286,7 @@ module JsonLooperPrinter = MakeJsonListPrinter (struct
   type elt = json_looper_printer_typ
 
   let to_string {loc; proc_name; looper_opt} = match looper_opt with
-    | Some {formal_map; globals; bound; return_bound } -> 
+    | Some {formal_map; bound; return_bound } -> 
         let return_bound_opt = match return_bound with 
         | Some return_bound -> Some (LooperDomain.EdgeExp.to_string return_bound)
         | None -> None

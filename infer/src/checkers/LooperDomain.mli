@@ -16,6 +16,10 @@ module PvarMap : sig
   val to_string : 'a t -> string
 end
 
+module AccessSet : Caml.Set.S with type elt = AccessPath.t
+
+module AccessPathMap : Caml.Map.S with type key = AccessPath.t
+
 
 module EdgeExp : sig
    type t =
@@ -36,7 +40,6 @@ module EdgeExp : sig
 
    and summary = {
       formal_map: FormalMap.t;
-      globals: Typ.t PvarMap.t;
       bound: t;
       return_bound: t option;
    }
@@ -92,7 +95,9 @@ module EdgeExp : sig
 
    val of_exp : Exp.t -> t Ident.Map.t -> Typ.t -> Typ.t PvarMap.t -> t
 
-   val to_z3_expr : t -> Z3.context -> (Z3.Expr.expr * Z3.Expr.expr list)
+   (* val to_z3_expr : t -> Z3.context -> Z3.Expr.expr Map.t -> (Z3.Expr.expr * Z3.Expr.expr list) *)
+
+   val to_z3_expr : t -> Z3.context -> (AccessPath.t -> (Z3.Expr.expr * Z3.Expr.expr list)) option -> (Z3.Expr.expr * Z3.Expr.expr list)
 
    val always_positive : t -> Z3.context -> Z3.Solver.solver -> bool
 
@@ -164,10 +169,6 @@ type call_site = EdgeExp.t * Location.t
 
 module CallSiteSet : Caml.Set.S with type elt = call_site
 
-module AccessSet : Caml.Set.S with type elt = AccessPath.t
-
-module AssignmentMap : Caml.Map.S with type key = AccessPath.t
-
 (* Difference Constraint Program *)
 module DCP : sig
    type edge_output_type = | LTS | GuardedDCP | DCP [@@deriving compare]
@@ -195,7 +196,7 @@ module DCP : sig
       type t = {
          backedge: bool;
          conditions: EdgeExp.Set.t;
-         assignments: EdgeExp.t AssignmentMap.t;
+         assignments: EdgeExp.t AccessPathMap.t;
          modified: AccessSet.t;
          branch_info: (Sil.if_kind * bool * Location.t) option;
          exit_edge: bool;
@@ -226,7 +227,7 @@ module DCP : sig
 
       val modified : t -> AccessSet.t
 
-      val make : EdgeExp.t AssignmentMap.t -> (Sil.if_kind * bool * Location.t) option -> t
+      val make : EdgeExp.t AccessPathMap.t -> (Sil.if_kind * bool * Location.t) option -> t
 
       val empty : t
 

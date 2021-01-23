@@ -14,6 +14,16 @@ module PvarMap = struct
   let pp fmt map = F.fprintf fmt "%s" (to_string map)
 end
 
+module AccessSet = Caml.Set.Make(struct
+  type nonrec t = AccessPath.t
+  let compare = AccessPath.compare
+end)
+
+module AccessPathMap = Caml.Map.Make(struct
+  type nonrec t = AccessPath.t
+  let compare = AccessPath.compare
+end)
+
 
 module EdgeExp = struct
   type t =
@@ -33,7 +43,6 @@ module EdgeExp = struct
 
   and summary = {
     formal_map: FormalMap.t;
-    globals: Typ.t PvarMap.t;
     bound: t;
     return_bound: t option;
   }
@@ -438,7 +447,7 @@ module EdgeExp = struct
 
 
   (* TODO: figure out what to do floats *)
-  let rec to_z3_expr exp smt_ctx = 
+  let rec to_z3_expr exp smt_ctx access_map_func = 
     let int_sort = Z3.Arithmetic.Integer.mk_sort smt_ctx in
     let zero_const = Z3.Arithmetic.Integer.mk_numeral_i smt_ctx 0 in
 
@@ -468,11 +477,19 @@ module EdgeExp = struct
       (* Treat function without summary as constant *)
       make_access_term (Procname.to_string procname) typ
     )
-    | Access (((_, typ), _) as access) -> make_access_term (F.asprintf "%a" AccessPath.pp access) typ
+    | Access (((_, typ), _) as access) -> (
+      match access_map_func with
+      | Some func -> func access
+      | None -> make_access_term (F.asprintf "%a" AccessPath.pp access) typ
+      (* match Map.find_opt exp bound_vars_map with
+      | Some bound_variable -> bound_variable, []
+      | None -> make_access_term (F.asprintf "%a" AccessPath.pp access) typ *)
+    )
     | BinOp (op, lexp, rexp) -> (
-      let lexp, lexp_type_conditions = to_z3_expr lexp smt_ctx in
-      let rexp, rexp_type_conditions = to_z3_expr rexp smt_ctx in
-
+      let lexp, lexp_type_conditions = to_z3_expr lexp smt_ctx access_map_func in
+      let rexp, rexp_type_conditions = to_z3_expr rexp smt_ctx access_map_func in
+      
+      (* VOLNE PROMENNE LEZOU ODTUD, FIXNOUT!!!! *)
       let aux expr_z3 (typ_opt : Typ.ikind option) = match typ_opt with
       | Some ikind when Typ.ikind_is_unsigned ikind -> expr_z3, [Z3.Arithmetic.mk_ge smt_ctx expr_z3 zero_const]
       | _ -> expr_z3, []
@@ -508,8 +525,28 @@ module EdgeExp = struct
       expr_z3, condition @ lexp_type_conditions @ rexp_type_conditions
     )
     | UnOp (Unop.Neg, subexp, _) -> (
-      let subexp, conditions = to_z3_expr subexp smt_ctx in
+      let subexp, conditions = to_z3_expr subexp smt_ctx access_map_func in
       Z3.Arithmetic.mk_unary_minus smt_ctx subexp, conditions
+    )
+    | Max max_args -> (
+      let z3_args, type_constraints = List.fold max_args ~init:([], []) ~f:(fun (args, constraints) arg ->
+        let z3_arg, arg_type_constraints = to_z3_expr arg smt_ctx access_map_func in
+        z3_arg :: args, arg_type_constraints @ constraints
+      )
+      in
+      if List.length max_args < 2 then (
+        assert(List.length max_args > 0);
+        let arg = List.hd_exn z3_args in
+        let ite_condition = Z3.Arithmetic.mk_gt smt_ctx arg zero_const in
+        let max_expr = Z3.Boolean.mk_ite smt_ctx ite_condition arg zero_const in
+        max_expr, type_constraints
+      ) else (
+        let max_expr = List.reduce_exn z3_args ~f:(fun x y ->
+          Z3.Boolean.mk_ite smt_ctx (Z3.Arithmetic.mk_gt smt_ctx x y) x y
+        )
+        in
+        max_expr, type_constraints
+      )
     )
     | _ -> L.(die InternalError)"[EdgeExp.to_z3_expr] Expression '%a' contains invalid element!" pp exp
 
@@ -540,7 +577,7 @@ module EdgeExp = struct
     )
     | Min args -> List.for_all args ~f:aux
     | _ -> (
-      let exp_z3, type_conditions = to_z3_expr exp smt_ctx in
+      let exp_z3, type_conditions = to_z3_expr exp smt_ctx None in
       let zero_const = Z3.Arithmetic.Integer.mk_numeral_i smt_ctx 0 in
       let rhs = Z3.Arithmetic.mk_ge smt_ctx exp_z3 zero_const in
 
@@ -808,21 +845,12 @@ module DefaultDot = struct
   let graph_attributes _ = []
 end
 
+
 type call_site = EdgeExp.t * Location.t [@@deriving compare]
 
 module CallSiteSet = Caml.Set.Make(struct
   type nonrec t = call_site
   let compare = compare_call_site
-end)
-
-module AccessSet = Caml.Set.Make(struct
-  type nonrec t = AccessPath.t
-  let compare = AccessPath.compare
-end)
-
-module AssignmentMap = Caml.Map.Make(struct
-  type nonrec t = AccessPath.t
-  let compare = AccessPath.compare
 end)
 
 
@@ -862,7 +890,7 @@ module DCP = struct
     type t = {
       backedge: bool;
       conditions: EdgeExp.Set.t;
-      assignments: EdgeExp.t AssignmentMap.t;
+      assignments: EdgeExp.t AccessPathMap.t;
       modified: AccessSet.t;
       branch_info: (Sil.if_kind * bool * Location.t) option;
       exit_edge: bool;
@@ -901,7 +929,7 @@ module DCP = struct
       | _ -> EdgeExp.Set.add guard acc
     ) edge.guards EdgeExp.Set.empty
 
-    let modified edge = AssignmentMap.fold (fun lhs_access rhs_exp acc -> 
+    let modified edge = AccessPathMap.fold (fun lhs_access rhs_exp acc -> 
       if EdgeExp.equal (EdgeExp.Access lhs_access) rhs_exp then acc
       else AccessSet.add lhs_access acc
     ) edge.assignments AccessSet.empty
@@ -925,7 +953,7 @@ module DCP = struct
       edge_type = LTS
     }
 
-    let empty = make AssignmentMap.empty None
+    let empty = make AccessPathMap.empty None
 
     (* Required by Graph module interface *)
     let default = empty
@@ -940,20 +968,20 @@ module DCP = struct
       { edge with conditions = EdgeExp.Set.add cond edge.conditions }
 
     let add_assignment edge lhs rhs = { edge with 
-      assignments = AssignmentMap.add lhs rhs edge.assignments;
+      assignments = AccessPathMap.add lhs rhs edge.assignments;
       modified = AccessSet.add lhs edge.modified;
     }  
 
     let add_invariants edge locals =
       let with_invariants = AccessSet.fold (fun local acc ->
-        if AssignmentMap.mem local acc then acc else
-        AssignmentMap.add local (EdgeExp.Access local) acc
+        if AccessPathMap.mem local acc then acc else
+        AccessPathMap.add local (EdgeExp.Access local) acc
       ) locals edge.assignments
       in
       { edge with assignments = with_invariants }
 
     let get_assignment_rhs edge lhs_access =
-      match AssignmentMap.find_opt lhs_access edge.assignments with
+      match AccessPathMap.find_opt lhs_access edge.assignments with
       | Some rhs -> rhs
       | None -> EdgeExp.Access lhs_access
 
@@ -962,7 +990,7 @@ module DCP = struct
         match cond with
         | EdgeExp.BinOp (_, EdgeExp.Const _, EdgeExp.Const _) -> acc
         | EdgeExp.BinOp _ -> (
-          let cond_z3, type_conditions = EdgeExp.to_z3_expr cond smt_ctx in
+          let cond_z3, type_conditions = EdgeExp.to_z3_expr cond smt_ctx None in
           cond_z3 :: type_conditions @ acc
         )
         | _ -> L.(die InternalError)"[Guards] Condition of form '%a' is not supported" EdgeExp.pp cond
@@ -991,7 +1019,7 @@ module DCP = struct
           in
           match norm with
           (* TODO: add norm type conditions to condition set? *)
-          | EdgeExp.BinOp _ | EdgeExp.Access _ -> solve_formula (fst (EdgeExp.to_z3_expr norm smt_ctx))
+          | EdgeExp.BinOp _ | EdgeExp.Access _ -> solve_formula (fst (EdgeExp.to_z3_expr norm smt_ctx None))
           | EdgeExp.Const Const.Cint _ -> acc
           | _ -> L.(die InternalError)"[Guards] Norm expression %a is not supported!" EdgeExp.pp norm
 
@@ -1004,7 +1032,7 @@ module DCP = struct
     let derive_constraint (_, edge_data, _) norm existing_norms formals =
       let dc_map = edge_data.constraints in
 
-      let get_assignment lhs_access = match AssignmentMap.find_opt lhs_access edge_data.assignments with
+      let get_assignment lhs_access = match AccessPathMap.find_opt lhs_access edge_data.assignments with
       | Some rhs -> Some rhs
       | None -> (
         let base_pvar = Option.value_exn (Var.get_pvar (fst (fst lhs_access))) in
@@ -1224,11 +1252,11 @@ module DCP = struct
     match edge_data.edge_type with
     | LTS -> (
       let conditions = List.map (EdgeExp.Set.elements edge_data.conditions) ~f:(fun cond -> EdgeExp.to_string cond) in
-      let non_const_assignments = List.filter (AssignmentMap.bindings edge_data.assignments) ~f:(fun (lhs, rhs) ->
+      let non_const_assignments = List.filter (AccessPathMap.bindings edge_data.assignments) ~f:(fun (lhs, rhs) ->
         not (EdgeExp.equal (EdgeExp.Access lhs) rhs)
       ) in
 
-      let assignments = List.map (AssignmentMap.bindings edge_data.assignments) ~f:(fun (lhs, rhs) ->
+      let assignments = List.map (AccessPathMap.bindings edge_data.assignments) ~f:(fun (lhs, rhs) ->
         F.asprintf "%a = %s" AccessPath.pp lhs (EdgeExp.to_string rhs)
       ) in
 
