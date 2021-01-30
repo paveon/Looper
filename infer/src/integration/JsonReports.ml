@@ -279,7 +279,7 @@ end)
 
 
 type json_looper_printer_typ =
-  {loc: Location.t; proc_name: Procname.t; looper_opt: LooperDomain.EdgeExp.summary option}
+  {loc: Location.t; proc_name: Procname.t; looper_opt: LooperDomain.summary option}
 
 
 module JsonLooperPrinter = MakeJsonListPrinter (struct

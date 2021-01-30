@@ -6,7 +6,7 @@ module Domain = LooperDomain
 
 
 module Payload = SummaryPayload.Make (struct
-  type t = Domain.EdgeExp.summary
+  type t = Domain.summary
 
   let field = Payloads.Fields.looper
 end)
@@ -38,6 +38,7 @@ module GraphData = struct
     type_map: Typ.t Domain.PvarMap.t;
     tenv: Tenv.t;
     summary: Summary.t;
+    call_summaries: Domain.summary Location.Map.t;
 
     (* Hack workaround for now *)
     log_file: Utils.outfile;
@@ -85,6 +86,7 @@ module GraphData = struct
       type_map = type_map;
       tenv = tenv;
       summary = summary;
+      call_summaries = Location.Map.empty;
 
       log_file = log_file
     }
@@ -201,8 +203,10 @@ module TransferFunctions = struct
         let lhs_access_exp = EdgeExp.Access lhs_access in
 
         let rhs_exp = match EdgeExp.of_exp rhs graph_data.ident_map typ graph_data.type_map with
-        | (EdgeExp.Call (_, _, _, summary_opt) as call) -> (match summary_opt with
-          | Some summary -> (match summary.return_bound with
+        | EdgeExp.Call (_, _, _, loc) as call -> (
+          match Location.Map.find_opt loc graph_data.call_summaries with
+          | Some summary -> (
+            match summary.return_bound with
             | Some ret_bound -> ret_bound
             | None -> assert(false)
           )
@@ -378,9 +382,9 @@ module TransferFunctions = struct
         | _ -> exp
       )
       | EdgeExp.UnOp (op, subexp, typ) -> EdgeExp.UnOp (op, substitute edge_data subexp, typ)
-      | EdgeExp.Call (ret_typ, procname, args, summary) -> (
+      | EdgeExp.Call (ret_typ, procname, args, loc) -> (
         let args = List.map args ~f:(fun (arg, typ) -> (substitute edge_data arg, typ)) in
-        EdgeExp.Call (ret_typ, procname, args, summary)
+        EdgeExp.Call (ret_typ, procname, args, loc)
       )
       | EdgeExp.Max args -> EdgeExp.Max (List.map args ~f:(substitute edge_data))
       | EdgeExp.Min args -> EdgeExp.Max (List.map args ~f:(substitute edge_data))
@@ -394,45 +398,33 @@ module TransferFunctions = struct
         (arg, arg_typ) :: args, if Typ.is_int arg_typ then EdgeExp.Set.union arg_norms norms else norms
       )
       in
-      let args = List.rev args in
 
-      let call_summary = match Payload.read ~caller_summary:graph_data.summary ~callee_pname:callee_pname with
-      | Some new_summary -> (
-        debug_log "[CALL] FormalMap: %a\n" FormalMap.pp new_summary.formal_map;
-        debug_log "[CALL] Formal Bound: %a\n" EdgeExp.pp new_summary.bound;
-        let subst_bound = EdgeExp.subst new_summary.bound args new_summary.formal_map in
-        let subst_ret_bound = match new_summary.return_bound with
-        | Some ret_bound -> Some (EdgeExp.subst ret_bound args new_summary.formal_map)
+      (* debug_log "  Arg norms: ";
+      EdgeExp.Set.iter (fun norm -> debug_log "%a " EdgeExp.pp norm) arg_norms;
+      debug_log "\n"; *)
+      
+      let args = List.rev args in
+      let call = EdgeExp.Call (ret_typ, callee_pname, args, loc) in
+
+      let payload_opt = Payload.read ~caller_summary:graph_data.summary ~callee_pname in
+      let call_summaries = match payload_opt with
+      | Some payload -> (
+        let subst_ret_bound = match payload.return_bound with
+        | Some ret_bound -> Some (EdgeExp.subst ret_bound args payload.formal_map)
         | None -> None
         in
-        debug_log "[CALL] Instantiated Bound: %a\n" EdgeExp.pp subst_bound;
-        (* let new_summary = { new_summary with 
-          bound = subst_bound;
-          return_bound = subst_ret_bound;
-        } 
-        in *)
-
-        (* { graph_data with 
-          norms = EdgeExp.Set.union graph_data.norms arg_norms;
-          ident_map = Ident.Map.add ret_id call graph_data.ident_map;
-          edge_data = edge_data;
-        } *)
-
-        Some { new_summary with bound = subst_bound; return_bound = subst_ret_bound } 
+        let summary = { payload with return_bound = subst_ret_bound } in
+        Location.Map.add loc summary graph_data.call_summaries
       )
-      | None -> (
-        (* let ret_access = EdgeExp.Access (AccessPath.of_pvar ret_pvar ret_typ) in
-        debug_log "[CALL] Missing procedure summary, %a = %a\n" Ident.pp ret_id EdgeExp.pp ret_access;
-        { graph_data with ident_map = Ident.Map.add ret_id ret_access graph_data.ident_map } *)
-        None
-      )
+      | None -> graph_data.call_summaries
       in
-      let call = EdgeExp.Call (ret_typ, callee_pname, args, call_summary) in
+
       { graph_data with 
         norms = EdgeExp.Set.union graph_data.norms arg_norms;
         ident_map = Ident.Map.add ret_id call graph_data.ident_map;
+        call_summaries = call_summaries;
         edge_data = { graph_data.edge_data with 
-          calls = CallSiteSet.add (call, loc) graph_data.edge_data.calls
+          calls = EdgeExp.Set.add call graph_data.edge_data.calls
         }
       }
     )

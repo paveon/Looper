@@ -17,7 +17,7 @@ type t =
   ; cost: CostDomain.summary option
   ; lab_resource_leaks: ResourceLeakDomain.summary option
   ; litho_required_props: LithoDomain.summary option
-  ; looper: LooperDomain.EdgeExp.summary option
+  ; looper: LooperDomain.summary option
   ; pulse: PulseSummary.t option
   ; purity: PurityDomain.summary option
   ; quandary: QuandarySummary.t option

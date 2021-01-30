@@ -100,9 +100,14 @@ let checker {Callbacks.exe_env; summary; } : Summary.t =
 
     let unprocessed = if EdgeExp.is_const norm then unprocessed
     else DCP.EdgeSet.fold (fun ((src, _, dst) as edge) unprocessed ->
-      console_log "%a ---> %a, deriving for: %a\n" DCP.Node.pp src DCP.Node.pp dst EdgeExp.pp norm;
       let all_norms = EdgeExp.Set.union processed unprocessed in
-      let derived_norms = DCP.EdgeData.derive_constraint edge norm all_norms graph_data.formals in
+      (* let derived_norms = DCP.EdgeData.derive_constraint edge norm all_norms graph_data.formals in *)
+      let derived_norms = if EdgeExp.is_variable norm graph_data.formals then (
+        console_log "%a ---> %a, deriving for: %a\n" DCP.Node.pp src DCP.Node.pp dst EdgeExp.pp norm;
+        DCP.EdgeData.derive_constraint edge norm all_norms graph_data.formals
+      )
+      else EdgeExp.Set.empty
+      in
       
       (* Remove already processed norms and add new norms to unprocessed set *)
       let new_norms = EdgeExp.Set.diff derived_norms processed in
@@ -127,13 +132,13 @@ let checker {Callbacks.exe_env; summary; } : Summary.t =
     * [x >= 0] and [y > x] then we can prove that
     * norm [x + y] > 0 thus it is a guard on this transition *)
   debug_log "\n==========[Deriving guards]=======================\n";
-  let cfg = [("model", "true"); ("proof", "false"); ("auto_config", "true"); ("timeout", "20000")] in
+  let cfg = [("model", "true"); ("proof", "false"); ("auto_config", "true"); ("timeout", "5000")] in
   let z3_ctx = (Z3.mk_context cfg) in
   let solver = (Z3.Solver.mk_solver z3_ctx None) in
   DCP.EdgeSet.iter (fun (src, edge_data, dst) ->
     debug_log "[Guard Derivation] %a ---> %a\n" DCP.Node.pp src DCP.Node.pp dst;
     edge_data.edge_type <- GuardedDCP;
-    DCP.EdgeData.derive_guards edge_data final_norm_set solver z3_ctx;
+    DCP.EdgeData.derive_guards edge_data final_norm_set tenv z3_ctx solver;
     List.iter (EdgeExp.Set.elements edge_data.guards) ~f:(fun guard -> 
       debug_log "\t%s > 0\n" (EdgeExp.to_string guard);
     );
@@ -388,45 +393,51 @@ let checker {Callbacks.exe_env; summary; } : Summary.t =
       ) edge_data.constraints DC.Map.empty
       in
 
-      let calls = CallSiteSet.map (fun (call, loc) -> match call with
-      | EdgeExp.Call (typ, procname, args, call_summary_opt) -> (
-        let call_summary = match call_summary_opt with
+      let calls_renamed_args = EdgeExp.Set.map (fun call -> match call with
+      | EdgeExp.Call (ret_typ, proc_name, args, loc) -> (
+        let renamed_args = List.map args ~f:(fun (arg, typ) ->
+          if Typ.is_int typ then (
+            let renamed_arg, _ = EdgeExp.map_accesses arg ~f:(fun access _ ->
+              let access = EdgeExp.Access access in
+              if EdgeExp.is_formal access graph_data.formals then access, None
+              else (
+                match VFG.Map.find_opt (access, dcp_dst) vfg_map, VFG.Map.find_opt (access, dcp_src) vfg_map with
+                | Some dst_map, Some _ -> dst_map, None
+                | Some dst_map, None -> dst_map, None
+                | None, Some src_map -> src_map, None
+                | _ -> (
+                  (* This case should occur only for SSA variables which are constant after initialization *)
+                  console_log "VFG ACCESS: %a\n" EdgeExp.pp access;
+                  let ssa_init_rhs = EdgeExp.Map.find access ssa_variables_map in
+                  ssa_init_rhs, None
+                  (* debug_log "  [VFG] Missing mapping for: %a\n" EdgeExp.pp access;
+                  access, None *)
+                )
+              )
+            ) None
+            in
+            renamed_arg, typ
+
+          ) else arg, typ
+        )
+        in
+        EdgeExp.Call (ret_typ, proc_name, renamed_args, loc)
+
+        (* match Location.Map.find_opt loc graph_data.call_summaries with
         | Some call_summary -> (
           debug_log "[Call] %a\n  [Complexity bound] %a\n" EdgeExp.pp call EdgeExp.pp call_summary.bound;
           (match call_summary.return_bound with
           | Some bound -> debug_log "  [Return bound] %a\n" EdgeExp.pp bound
           | _ -> ());
-
-          let renamed_bound, _ = EdgeExp.map_accesses call_summary.bound ~f:(fun access _ ->
-            let access = EdgeExp.Access access in
-            if EdgeExp.is_formal access graph_data.formals then access, None
-            else (
-              match VFG.Map.find_opt (access, dcp_dst) vfg_map, VFG.Map.find_opt (access, dcp_src) vfg_map with
-              | Some dst_map, Some _ -> dst_map, None
-              | Some dst_map, None -> dst_map, None
-              | None, Some src_map -> src_map, None
-              | _ -> (
-                (* This case should occur only for SSA variables which are constant after initialization *)
-                let ssa_init_rhs = EdgeExp.Map.find access ssa_variables_map in
-                ssa_init_rhs, None
-                (* debug_log "  [VFG] Missing mapping for: %a\n" EdgeExp.pp access;
-                access, None *)
-              )
-            )
-          ) None
-          in
           debug_log "  [Complexity bound renamed]: %a\n" EdgeExp.pp renamed_bound;
-          (* EdgeExp.Call (typ, procname, args, Some { call_summary with bound = renamed_bound; }), loc *)
-          Some { call_summary with bound = renamed_bound; }
+          call
         )
-        | None -> None
-        in
-        EdgeExp.Call (typ, procname, args, call_summary), loc
+        | None -> call *)
       )
       | _ -> assert(false)
-      ) edge_data.calls 
+      ) edge_data.calls
       in
-      edge_data.calls <- calls;
+      edge_data.calls <- calls_renamed_args;
       edge_data.constraints <- constraints;
       edge_data.edge_type <- DCP;
     ) graph_data.edges;
@@ -705,6 +716,7 @@ let checker {Callbacks.exe_env; summary; } : Summary.t =
           EdgeExp.Max args, cache
         )
         | _ -> (
+          debug_log "   [VB(%a)]\n" EdgeExp.pp norm;
           let cache = get_update_map norm graph_data.edges cache in
           let _, resets = EdgeExp.Map.find norm cache.updates in
           let increment_sum, cache = calculate_increment_sum (EdgeExp.Set.singleton norm) cache in
@@ -725,10 +737,38 @@ let checker {Callbacks.exe_env; summary; } : Summary.t =
             args @ max_arg, cache
           ) resets ([], cache)
           in
+          debug_log "   [VB(%a)] Max args: " EdgeExp.pp norm;
+          List.iter max_args ~f:(fun x -> debug_log "%a " EdgeExp.pp x);
+          debug_log "\n";
 
           (* Deduplicate and unpack nested max expressions
             * TODO: unpacking should be done only if certain conditions are met, should think about it later *)
-          let max_args_unpacked = List.fold max_args ~init:[] ~f:(fun acc arg ->
+          let rec flatten_nested_max args acc_set = List.fold args ~init:acc_set ~f:(fun acc arg ->
+            match arg with
+            | EdgeExp.Max nested_args -> flatten_nested_max nested_args acc
+            | _ -> EdgeExp.Set.add arg acc
+          )
+          in
+
+          let flattened_args = flatten_nested_max max_args EdgeExp.Set.empty |> EdgeExp.Set.elements in
+          let max_subexp, cache = match List.length flattened_args with
+          | 0 -> L.(die InternalError)"[VB] Missing max() arguments for [%a]!" EdgeExp.pp norm
+          | 1 -> (
+            let arg = List.hd_exn flattened_args in
+            let is_always_positive, cache = match EdgeExp.Map.find_opt arg cache.positivity with
+            | Some value -> value, cache
+            | None -> (
+              let value = EdgeExp.always_positive arg tenv z3_ctx solver in
+              value, { cache with positivity = EdgeExp.Map.add arg value cache.positivity }
+            )
+            in
+            (if is_always_positive then arg else EdgeExp.Max [arg]), cache
+          )
+          | _ -> EdgeExp.Max flattened_args, cache
+          in
+
+
+          (* let max_args_unpacked = List.fold max_args ~init:[] ~f:(fun acc arg ->
             match arg with
             | EdgeExp.Max nested_args -> (
               List.fold nested_args ~init:acc ~f:(fun acc nested_arg -> 
@@ -742,7 +782,7 @@ let checker {Callbacks.exe_env; summary; } : Summary.t =
           | 0 -> L.(die InternalError)"[VB] Missing max() arguments for [%a]!" EdgeExp.pp norm
           | 1 -> List.hd_exn max_args_unpacked
           | _ -> EdgeExp.Max max_args_unpacked 
-          in
+          in *)
           (EdgeExp.add max_subexp increment_sum), cache
         )
         in
@@ -750,8 +790,13 @@ let checker {Callbacks.exe_env; summary; } : Summary.t =
         var_bound, { cache with variable_bounds = EdgeExp.Map.add norm var_bound cache.variable_bounds }
       ) 
       else (
-        let bound = if EdgeExp.always_positive norm z3_ctx solver then norm else EdgeExp.Max [norm] in
-        bound, cache
+        let always_positive = EdgeExp.always_positive norm tenv z3_ctx solver in
+        debug_log "   [Always positive] %a: %B\n" EdgeExp.pp norm always_positive;
+        let bound = if always_positive then norm else EdgeExp.Max [norm] in
+        bound, { 
+          cache with 
+          variable_bounds = EdgeExp.Map.add norm bound cache.variable_bounds;
+          positivity = EdgeExp.Map.add norm always_positive cache.positivity; }
       )
     )
     in
@@ -818,8 +863,28 @@ let checker {Callbacks.exe_env; summary; } : Summary.t =
 
   and calculate_exec_cost (edge_data : DCP.EdgeData.t) cache =
     (* Sum together the cost of all functions called on this transition *)
-    let cost_list, updated_cache = CallSiteSet.fold (fun (call_exp, loc) (cost_list, cache_acc) -> match call_exp with
-      | EdgeExp.Call (_, proc_name, _, call_summary_opt) -> (match call_summary_opt with
+    let cost_list, updated_cache = EdgeExp.Set.fold (fun call_exp (cost_list, cache_acc) -> match call_exp with
+      | EdgeExp.Call (_, proc_name, args, loc) -> (
+        let payload_opt = Location.Map.find_opt loc graph_data.call_summaries in
+        match payload_opt with
+        | Some payload -> (
+          let subst_bound = EdgeExp.subst payload.bound args payload.formal_map in
+          debug_log "  [CALL] %a : %a | %a\n" Procname.pp proc_name Domain.pp_summary payload Location.pp loc;
+          (* debug_log "  [CALL] FormalMap: %a\n" FormalMap.pp payload.formal_map; *)
+          debug_log "  [CALL] Formal Bound: %a\n" EdgeExp.pp payload.bound;
+          debug_log "  [CALL] Instantiated Bound: %a\n" EdgeExp.pp subst_bound;
+
+          (* Replace each argument with its variable bound (coarse overapproximation?) *)
+          let call_cost, new_cache = EdgeExp.map_accesses subst_bound ~f:(fun argument_access cache_acc -> 
+            let argument_bound, cache_acc = variable_bound (EdgeExp.Access argument_access) cache_acc in
+            argument_bound, cache_acc
+          ) cache_acc
+          in
+          (EdgeExp.simplify call_cost) :: cost_list, new_cache
+        )
+        | None -> cost_list, cache_acc
+
+        (* match Location.Map.find_opt loc call_summaries with
         | Some call_summary -> (
           debug_log "  [Call] %a : %a | %a\n" Procname.pp proc_name Domain.pp_summary call_summary Location.pp loc;
           (* Replace each argument with its variable bound (coarse overapproximation?) *)
@@ -830,7 +895,7 @@ let checker {Callbacks.exe_env; summary; } : Summary.t =
           in
           (EdgeExp.simplify call_cost) :: cost_list, new_cache
         )
-        | None -> cost_list, cache_acc
+        | None -> cost_list, cache_acc *)
       )
       | _ -> assert(false)
     ) edge_data.calls ([], cache)
@@ -858,7 +923,7 @@ let checker {Callbacks.exe_env; summary; } : Summary.t =
     let call_edges = DCP.EdgeSet.filter (fun (src, edge_data, dst) ->
       let local_bound = Option.value_exn edge_data.bound_norm in
       debug_log "  %a ---> %a: %a\n" DCP.Node.pp src DCP.Node.pp dst EdgeExp.pp local_bound;
-      EdgeExp.is_one local_bound && not (CallSiteSet.is_empty edge_data.calls)
+      EdgeExp.is_one local_bound && not (EdgeExp.Set.is_empty edge_data.calls)
     ) graph_data.edges
     in
 
@@ -920,12 +985,9 @@ let checker {Callbacks.exe_env; summary; } : Summary.t =
   in
   debug_log "\n[Final bound] %a\n" EdgeExp.pp bound;
 
-  let bound_formals = EdgeExp.Set.elements (EdgeExp.get_accesses bound) in
-
-  let z3_int_sort = Z3.Arithmetic.Integer.mk_sort z3_ctx in
-  let param_sorts, param_symbols, bound_vars, bound_vars_map = List.foldi bound_formals 
-  ~init:([], [], [], AccessPathMap.empty) 
-  ~f:(fun idx (sorts, symbols, bound_vars, bindings) exp ->
+  (* let param_sorts, param_symbols, bound_vars, bound_accesses, bound_vars_map = List.foldi bound_formals 
+  ~init:([], [], [], [], AccessPathMap.empty) 
+  ~f:(fun idx (sorts, symbols, bound_vars, accesses, bindings) exp ->
     match exp with
     | EdgeExp.Access access -> (
       let access_str = F.asprintf "%a" AccessPath.pp access in
@@ -939,20 +1001,164 @@ let checker {Callbacks.exe_env; summary; } : Summary.t =
         sorts @ [z3_int_sort], 
         symbols @ [access_symbol],
         bound_vars @ [bound_var],
+        accesses @ [access],
         AccessPathMap.add access bound_var bindings
       )
       | _ -> assert(false)
     )
     | _ -> assert(false)
   )
-  in
+  in *)
 
-  (* This is kind of stupid but it seems there's no good way to avoid
+
+
+  (* let monotony_map = try
+    let bound_formals = EdgeExp.Set.elements (EdgeExp.get_accesses bound) in
+    let real_sort = Z3.Arithmetic.Real.mk_sort z3_ctx in
+    let param_sorts, param_symbols, bound_accesses = List.fold bound_formals ~init:([], [], [])
+    ~f:(fun (sorts, symbols, accesses) exp ->
+      match exp with
+      | EdgeExp.Access access -> (
+        let access_str = F.asprintf "%a" AccessPath.pp access in
+        let access_symbol = Z3.Symbol.mk_string z3_ctx access_str in
+        match AccessPath.get_typ access tenv with
+        | Some typ when Typ.is_int typ -> (
+          sorts @ [real_sort], 
+          symbols @ [access_symbol],
+          accesses @ [access]
+        )
+        | _ -> assert(false)
+      )
+      | _ -> assert(false)
+    )
+    in
+
+    if EdgeExp.is_const bound then EdgeExp.Map.empty
+    else (
+      debug_log "[Determining monotony of variables]\n";
+      let bound_func_decl = Z3.FuncDecl.mk_func_decl_s z3_ctx "bound_function" param_sorts real_sort in
+      let params = List.map param_symbols ~f:(fun symbol -> Z3.Expr.mk_const z3_ctx symbol real_sort) in
+      let func_app = Z3.Expr.mk_app z3_ctx bound_func_decl params in
+      let q_bound_var = Z3.Quantifier.mk_bound z3_ctx 0 real_sort in
+
+      let tmp_var_symbol = Z3.Symbol.mk_string z3_ctx "tmp_var" in
+      let tmp_var_exp = Z3.Expr.mk_const z3_ctx tmp_var_symbol real_sort in
+
+      List.foldi param_symbols ~init:EdgeExp.Map.empty ~f:(fun replace_idx acc current_symbol ->
+        let formal_exp = List.nth_exn bound_formals replace_idx in
+        let param_access = List.nth_exn bound_accesses replace_idx in
+        let param_sort = List.nth_exn param_sorts replace_idx in
+        let param_name = Z3.Symbol.to_string current_symbol in
+        let param_expr = Z3.Expr.mk_const z3_ctx current_symbol real_sort in
+
+        let new_params = List.mapi params ~f:(fun param_idx param ->
+          if Int.equal param_idx replace_idx then tmp_var_exp else param
+        )
+        in
+        let z3_func_app_2 = Z3.Expr.mk_app z3_ctx bound_func_decl new_params in
+
+        (* Construct Z3 bound with bound variable for the current parameter *)
+        let bound_access_map access = if AccessPath.equal access param_access 
+        then Some q_bound_var 
+        else None
+        in
+        let z3_bound = EdgeExp.to_z3_expr bound tenv z3_ctx (Some bound_access_map) |> fst in
+        let type_constraints = EdgeExp.to_z3_expr bound tenv z3_ctx None |> snd |> Z3ExprSet.elements in
+
+        (* Use constructed bound in quantified expression to define function over all arguments *)
+        let args = List.mapi params ~f:(fun param_idx param ->
+          if Int.equal param_idx replace_idx then q_bound_var else param
+        )
+        in
+
+        (* ForAll[x]: bound_func(.., x, ..) = bound_expr *)
+        let q_func_app = Z3.Expr.mk_app z3_ctx bound_func_decl args in
+        let q_body = Z3.Boolean.mk_eq z3_ctx q_func_app z3_bound in
+        let quantifier = Z3.Quantifier.mk_forall z3_ctx [param_sort] [current_symbol] q_body None [] [] None None in
+        let quantifier_expr = Z3.Expr.simplify (Z3.Quantifier.expr_of_quantifier quantifier) None in
+        let solver_base_assertions = quantifier_expr :: type_constraints in
+
+        (* debug_log "\n  [Z3 Quantifier body] %s\n" (Z3.Expr.to_string quantifier_body);
+        debug_log "\n  [Z3 Bound function] %s\n" (Z3.Expr.to_string func_constraint); *)
+        
+        let antecedent = Z3.Arithmetic.mk_gt z3_ctx tmp_var_exp param_expr in
+        let non_decreasing_consequent = Z3.Arithmetic.mk_ge z3_ctx z3_func_app_2 func_app in
+        let non_decreasing_implication = Z3.Boolean.mk_implies z3_ctx antecedent non_decreasing_consequent in
+        let non_decreasing_goal = Z3.Expr.simplify (Z3.Boolean.mk_not z3_ctx non_decreasing_implication) None in
+
+        let non_increasing_consequent = Z3.Arithmetic.mk_le z3_ctx z3_func_app_2 func_app in
+        let non_increasing_implication = Z3.Boolean.mk_implies z3_ctx antecedent non_increasing_consequent in
+        let non_increasing_goal = Z3.Expr.simplify (Z3.Boolean.mk_not z3_ctx non_increasing_implication) None in
+
+        (* debug_log "  [Z3 Goal] %s\n" (Z3.Expr.to_string goal); *)
+        (* List.iter type_constraints ~f:(fun expr -> 
+          debug_log "  [Z3 Type constraint] %s\n" (Z3.Expr.to_string expr);
+        ); *)
+
+        try
+          (* Check for non-decreasing property first *)
+          Z3.Solver.reset solver;
+          Z3.Solver.add solver (non_decreasing_goal :: solver_base_assertions);
+
+          match Z3.Solver.check solver [] with
+          | Z3.Solver.UNSATISFIABLE -> (
+            debug_log "  [Variable: %s] Non-decreasing\n" param_name;
+            EdgeExp.Map.add formal_exp VariableMonotony.NonDecreasing acc
+          )
+          | Z3.Solver.SATISFIABLE -> (
+            let decreasing_model = match Z3.Solver.get_model solver with
+            | Some model -> Z3.Model.to_string model
+            | None -> assert(false)
+            in
+
+            (* Check for non-increasing property next *)
+            Z3.Solver.reset solver;
+            Z3.Solver.add solver (non_increasing_goal :: solver_base_assertions);
+
+            match Z3.Solver.check solver [] with
+            | Z3.Solver.UNSATISFIABLE -> (
+              debug_log "  [Variable: %s] Non-increasing\n" param_name;
+              EdgeExp.Map.add formal_exp VariableMonotony.NonDecreasing acc
+            )
+            | Z3.Solver.SATISFIABLE -> (
+              debug_log "  [Variable: %s] Not Monotonic\n" param_name;
+              EdgeExp.Map.add formal_exp VariableMonotony.NotMonotonic acc
+            ) 
+            | Z3.Solver.UNKNOWN -> (
+              (* EdgeExp.Map.add formal_exp FormalBoundMonotony.NotMonotonic acc *)
+              L.die InternalError "[Monotony Check] Unknown Z3 result: %s\n" (Z3.Solver.get_reason_unknown solver)
+            )
+          )
+          | Z3.Solver.UNKNOWN -> (
+            (* EdgeExp.Map.add formal_exp FormalBoundMonotony.NotMonotonic acc *)
+            L.die InternalError "[Monotony Check] Unknown Z3 result: %s\n" (Z3.Solver.get_reason_unknown solver)
+          )
+        with Z3.Error str -> (
+          (* This should hopefully be only caused by potential Z3 timeout *)
+          (* EdgeExp.Map.add formal_exp FormalBoundMonotony.NonDecreasing acc *)
+          L.die InternalError "[Z3 Error] %s\n" str
+        )
+      )
+    );
+  with Z3.Error str -> (
+    L.die InternalError "[Z3 Error] %s\n" str
+  )
+  in *)
+
+  debug_log "========[Determining monotony of bound variables]========\n";
+  let monotony_map = EdgeExp.determine_monotony bound tenv z3_ctx solver in
+  EdgeExp.Map.iter (fun variable monotony -> match monotony with
+    | VariableMonotony.NonDecreasing -> debug_log "[Variable: %a] Non-decreasing\n" EdgeExp.pp variable;
+    | VariableMonotony.NonIncreasing -> debug_log "[Variable: %a] Non-increasing\n" EdgeExp.pp variable;
+    | VariableMonotony.NotMonotonic -> debug_log "[Variable: %a] Not Monotonic\n" EdgeExp.pp variable;
+  ) monotony_map;
+
+  (* (* This is kind of stupid but it seems there's no good way to avoid
    * converting to Z3 expression twice: once with bound variables for quantified
    * expression and once with free variables for type constraint expressions *)
-  let bound_access_map access = AccessPathMap.find access bound_vars_map, [] in
-  let z3_bound = EdgeExp.to_z3_expr bound z3_ctx (Some bound_access_map) |> fst in
-  (* let type_constraints = EdgeExp.to_z3_expr bound z3_ctx None |> snd in *)
+  let bound_access_map access = AccessPathMap.find access bound_vars_map, Z3ExprSet.empty in
+  let z3_bound = EdgeExp.to_z3_expr bound tenv z3_ctx (Some bound_access_map) |> fst in
+  let type_constraints = EdgeExp.to_z3_expr bound tenv z3_ctx None |> snd |> Z3ExprSet.elements in
 
   debug_log "[Determining monotony of variables]\n";
 
@@ -962,9 +1168,9 @@ let checker {Callbacks.exe_env; summary; } : Summary.t =
     let z3_zero_const = Z3.Arithmetic.Integer.mk_numeral_i z3_ctx 0 in
     let z3_bound_func_decl = Z3.FuncDecl.mk_func_decl_s z3_ctx "bound_function" param_sorts z3_int_sort in
     let params = List.map param_symbols ~f:(fun symbol -> Z3.Expr.mk_const z3_ctx symbol z3_int_sort) in
-    let type_constraints = List.map params ~f:(fun param ->
+    (* let type_constraints = List.map params ~f:(fun param ->
       Z3.Arithmetic.mk_ge z3_ctx param z3_zero_const
-    ) in
+    ) in *)
 
     let z3_func_app = Z3.Expr.mk_app z3_ctx z3_bound_func_decl params in
     let z3_quant_func_app = Z3.Expr.mk_app z3_ctx z3_bound_func_decl bound_vars in
@@ -1013,7 +1219,7 @@ let checker {Callbacks.exe_env; summary; } : Summary.t =
       ); *)
 
       Z3.Solver.reset solver;
-      Z3.Solver.add solver (solver_base_assertions @ [non_decreasing_goal; new_func_constraint]);
+      Z3.Solver.add solver (solver_base_assertions @ [non_decreasing_goal]);
 
       match Z3.Solver.check solver [] with
       | Z3.Solver.UNSATISFIABLE -> (
@@ -1060,41 +1266,38 @@ let checker {Callbacks.exe_env; summary; } : Summary.t =
         );
         L.die InternalError "[Monotony Check] Unknown Z3 result: %s\n" (Z3.Solver.get_reason_unknown solver)
       )
-    );
+    ); *)
 
-    let ret_type = Procdesc.get_ret_type proc_desc in
-    let return_bound = match ret_type.desc with
-    | Tint _ -> (
-      debug_log "[Return type] %a\n" Typ.(pp Pp.text) ret_type;
-      (* let edge_list = DCP.EdgeSet.elements graph_data.edges in *)
-      (* let _, return_edge, _ = List.find_exn edge_list ~f:(fun (_, edge, _) -> DCP.EdgeData.is_exit_edge edge) in *)
-      let return_access = AccessPath.of_pvar (Procdesc.get_ret_var proc_desc) ret_type in
-      (* log "[Return access] %a\n" AccessPath.pp return_access; *)
-      (* let norm, _ = DC.Map.find (EdgeExp.Access return_access) return_edge.constraints in *)
-      (* log "[Return norm] %a\n" EdgeExp.pp norm; *)
-      let return_bound, _ = variable_bound (EdgeExp.Access return_access) cache in
-      debug_log "[Return bound] %a\n" EdgeExp.pp return_bound;
-      Some return_bound
-    )
-    | _ -> None
-    in
-
-    debug_log "Description:\n  signed x: max(x, 0) == [x]\n---------------------------------\n";
-    let payload : EdgeExp.summary = {
-      formal_map = FormalMap.make proc_desc;
-      bound = bound;
-      return_bound = return_bound;
-    }
-    in
-    Utils.close_outf log_file;
-
-    let looper_json = looper_dir ^/ source_file_str ^/ proc_name_str ^ ".json" in
-    (* let json_file = mk_outfile json_report_fname in *)
-    
-    let new_summary = Analyzer.Payload.update_summary payload summary in
-    JsonReports.write_looper_report ~looper_json new_summary;
-    new_summary
-
-  with Z3.Error str -> (
-    L.die InternalError "[Z3 Error] %s\n" str
+  let ret_type = Procdesc.get_ret_type proc_desc in
+  let return_bound = match ret_type.desc with
+  | Tint _ -> (
+    debug_log "[Return type] %a\n" Typ.(pp Pp.text) ret_type;
+    (* let edge_list = DCP.EdgeSet.elements graph_data.edges in *)
+    (* let _, return_edge, _ = List.find_exn edge_list ~f:(fun (_, edge, _) -> DCP.EdgeData.is_exit_edge edge) in *)
+    let return_access = AccessPath.of_pvar (Procdesc.get_ret_var proc_desc) ret_type in
+    (* log "[Return access] %a\n" AccessPath.pp return_access; *)
+    (* let norm, _ = DC.Map.find (EdgeExp.Access return_access) return_edge.constraints in *)
+    (* log "[Return norm] %a\n" EdgeExp.pp norm; *)
+    let return_bound, _ = variable_bound (EdgeExp.Access return_access) cache in
+    debug_log "[Return bound] %a\n" EdgeExp.pp return_bound;
+    Some return_bound
   )
+  | _ -> None
+  in
+
+  debug_log "Description:\n  signed x: max(x, 0) == [x]\n---------------------------------\n";
+  let payload : Domain.summary = {
+    formal_map = FormalMap.make proc_desc;
+    monotony_map = monotony_map;
+    bound = bound;
+    return_bound = return_bound;
+  }
+  in
+  Utils.close_outf log_file;
+
+  let looper_json = looper_dir ^/ source_file_str ^/ proc_name_str ^ ".json" in
+  (* let json_file = mk_outfile json_report_fname in *)
+  
+  let new_summary = Analyzer.Payload.update_summary payload summary in
+  JsonReports.write_looper_report ~looper_json new_summary;
+  new_summary

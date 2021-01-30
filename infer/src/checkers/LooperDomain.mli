@@ -18,31 +18,28 @@ end
 
 module AccessSet : Caml.Set.S with type elt = AccessPath.t
 
+module Z3ExprSet : Caml.Set.S with type elt = Z3.Expr.expr
+
 module AccessPathMap : Caml.Map.S with type key = AccessPath.t
 
+module VariableMonotony : sig
+   type t =
+   | NonDecreasing
+   | NonIncreasing
+   | NotMonotonic
+   [@@deriving compare]
+end
 
 module EdgeExp : sig
    type t =
    | BinOp of Binop.t * t * t
    | UnOp of Unop.t * t * Typ.t option
    | Access of AccessPath.t
-   (* | Var of Pvar.t *)
    | Const of Const.t
-   | Call of edge_call
+   | Call of Typ.t * Procname.t * (t * Typ.t) list * Location.t
    | Max of t list
    | Min of t list
    | Inf
-   [@@deriving compare]
-   
-   and call_arg = (t * Typ.t) [@@deriving compare]
-
-   and edge_call = Typ.t * Procname.t * call_arg list * summary option [@@deriving compare]
-
-   and summary = {
-      formal_map: FormalMap.t;
-      bound: t;
-      return_bound: t option;
-   }
    [@@deriving compare]
 
    module Set : Caml.Set.S with type elt = t
@@ -85,29 +82,29 @@ module EdgeExp : sig
 
    val merge : t -> (Binop.t * IntLit.t) option -> t
 
-   (* val separate : t -> (t * IntLit.t) *)
-
-   val separate2 : t -> t * (Binop.t * IntLit.t) option
+   val separate : t -> t * (Binop.t * IntLit.t) option
 
    val simplify : t -> t
+
+   val simplify_const : t -> IntLit.t
 
    val access_path_id_resolver : t Ident.Map.t -> Var.t -> AccessPath.t option
 
    val of_exp : Exp.t -> t Ident.Map.t -> Typ.t -> Typ.t PvarMap.t -> t
 
-   (* val to_z3_expr : t -> Z3.context -> Z3.Expr.expr Map.t -> (Z3.Expr.expr * Z3.Expr.expr list) *)
+   val to_z3_expr : t -> Tenv.t -> Z3.context -> (AccessPath.t -> Z3.Expr.expr option) option -> (Z3.Expr.expr * Z3ExprSet.t)
 
-   val to_z3_expr : t -> Z3.context -> (AccessPath.t -> (Z3.Expr.expr * Z3.Expr.expr list)) option -> (Z3.Expr.expr * Z3.Expr.expr list)
-
-   val always_positive : t -> Z3.context -> Z3.Solver.solver -> bool
+   val always_positive : t -> Tenv.t -> Z3.context -> Z3.Solver.solver -> bool
 
    val get_accesses: t -> Set.t
 
    val map_accesses: t -> f:(AccessPath.t -> 'a -> t * 'a) -> 'a -> t * 'a
 
-   val subst : t -> call_arg list -> FormalMap.t -> t
+   val subst : t -> (t * Typ.t) list -> FormalMap.t -> t
 
    val normalize_condition : t -> Tenv.t -> t
+
+   val determine_monotony : t -> Tenv.t -> Z3.context -> Z3.Solver.solver -> VariableMonotony.t Map.t
 
    val add : t -> t -> t
 
@@ -115,8 +112,6 @@ module EdgeExp : sig
 
    val mult : t -> t -> t
 end
-
-val pp_summary : F.formatter -> EdgeExp.summary -> unit
 
 
 (* Difference Constraint of form "x <= y + c"
@@ -165,10 +160,6 @@ module DefaultDot : sig
    val graph_attributes : 'a -> 'b list
 end
 
-type call_site = EdgeExp.t * Location.t
-
-module CallSiteSet : Caml.Set.S with type elt = call_site
-
 (* Difference Constraint Program *)
 module DCP : sig
    type edge_output_type = | LTS | GuardedDCP | DCP [@@deriving compare]
@@ -201,7 +192,7 @@ module DCP : sig
          branch_info: (Sil.if_kind * bool * Location.t) option;
          exit_edge: bool;
          
-         mutable calls: CallSiteSet.t;
+         mutable calls: EdgeExp.Set.t;
          mutable constraints: DC.rhs DC.Map.t;
          mutable guards: EdgeExp.Set.t;
          mutable bound: EdgeExp.t;
@@ -246,7 +237,7 @@ module DCP : sig
 
       val get_assignment_rhs : t -> AccessPath.t -> EdgeExp.t
 
-      val derive_guards : t -> EdgeExp.Set.t -> Z3.Solver.solver -> Z3.context -> unit
+      val derive_guards : t -> EdgeExp.Set.t -> Tenv.t -> Z3.context -> Z3.Solver.solver -> unit
 
       (* Derive difference constraints "x <= y + c" based on edge assignments *)
       val derive_constraint : (Node.t * t * Node.t) -> EdgeExp.t -> EdgeExp.Set.t -> Pvar.Set.t -> EdgeExp.Set.t
@@ -360,6 +351,7 @@ type cache = {
   updates: (Increments.t * Resets.t) EdgeExp.Map.t;
   variable_bounds: EdgeExp.t EdgeExp.Map.t;
   reset_chains: RG.Chain.Set.t EdgeExp.Map.t;
+  positivity: bool EdgeExp.Map.t;
 }
 
 val empty_cache : cache
@@ -367,3 +359,13 @@ val empty_cache : cache
 val is_loop_prune : Sil.if_kind -> bool
 
 val output_graph : string -> 'a ->(Out_channel.t -> 'a -> unit) -> unit
+
+type summary = {
+   formal_map: FormalMap.t;
+   monotony_map: VariableMonotony.t EdgeExp.Map.t;
+   bound: EdgeExp.t;
+   return_bound: EdgeExp.t option;
+}
+[@@deriving compare]
+
+val pp_summary : F.formatter -> summary -> unit
