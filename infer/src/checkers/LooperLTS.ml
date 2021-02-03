@@ -399,10 +399,6 @@ module TransferFunctions = struct
       )
       in
 
-      (* debug_log "  Arg norms: ";
-      EdgeExp.Set.iter (fun norm -> debug_log "%a " EdgeExp.pp norm) arg_norms;
-      debug_log "\n"; *)
-      
       let args = List.rev args in
       let call = EdgeExp.Call (ret_typ, callee_pname, args, loc) in
 

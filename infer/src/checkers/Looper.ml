@@ -132,9 +132,14 @@ let checker {Callbacks.exe_env; summary; } : Summary.t =
     * [x >= 0] and [y > x] then we can prove that
     * norm [x + y] > 0 thus it is a guard on this transition *)
   debug_log "\n==========[Deriving guards]=======================\n";
-  let cfg = [("model", "true"); ("proof", "false"); ("auto_config", "true"); ("timeout", "5000")] in
+  let cfg = [("model", "true"); ("proof", "false"); ("timeout", "5000")] in
   let z3_ctx = (Z3.mk_context cfg) in
+  (* let nlqsat_tactic = Z3.Tactic.mk_tactic z3_ctx "nlqsat" in *)
   let solver = (Z3.Solver.mk_solver z3_ctx None) in
+  let tactics = Z3.Tactic.get_tactic_names z3_ctx in
+  List.iter tactics ~f:(fun name ->
+    debug_log "[Tactic] %s: %s\n" name (Z3.Tactic.get_tactic_description z3_ctx name)
+  );
   DCP.EdgeSet.iter (fun (src, edge_data, dst) ->
     debug_log "[Guard Derivation] %a ---> %a\n" DCP.Node.pp src DCP.Node.pp dst;
     edge_data.edge_type <- GuardedDCP;
@@ -149,10 +154,6 @@ let checker {Callbacks.exe_env; summary; } : Summary.t =
     if EdgeExp.Set.is_empty edge_data.guards then acc else DCP.NodeSet.add dst acc
   ) dcp DCP.NodeSet.empty
   in
-
-  (* let test_expr = EdgeExp.BinOp (Binop.MinusA None, EdgeExp.of_int 5, EdgeExp.of_int 6) in
-  let test = EdgeExp.always_positive test_expr z3_ctx solver in
-  console_log "'%a' always positive: %B\n" EdgeExp.pp test_expr test; *)
 
   (* Propagate guard to all outgoing edges if all incoming edges
     * are guarded by this guard and the guard itself is not decreased
@@ -171,20 +172,6 @@ let checker {Callbacks.exe_env; summary; } : Summary.t =
           )
       )
       in
-
-      (* let rec get_shared_guards : EdgeExp.Set.t -> DCP.edge list -> EdgeExp.Set.t =
-      fun guards edges -> match edges with
-      | (_, edge_data, _) :: edges -> (
-        if DCP.EdgeData.is_backedge edge_data then (
-          get_shared_guards guards edges
-        ) else (
-          (* Get edge guards that are not decreased on this edge *)
-          let guards = DCP.EdgeData.active_guards edge_data in
-          EdgeExp.Set.inter guards (get_shared_guards guards edges)
-        )
-      )
-      | [] -> guards
-      in *)
 
       (* Pop one node from set of unprocessed nodes *)
       let node = DCP.NodeSet.min_elt nodes in
@@ -327,12 +314,6 @@ let checker {Callbacks.exe_env; summary; } : Summary.t =
     let vfg_map, vfg_norm_set = List.foldi vfg_components ~init:(VFG.Map.empty, EdgeExp.Set.empty) ~f:(fun idx (map, norm_set) component ->
       let pvar = Pvar.mk (Mangled.from_string ("var_" ^ string_of_int idx)) proc_name in
       let aux_norm = EdgeExp.Access (AccessPath.of_pvar pvar Typ.uint) in
-      (* let map = List.fold component ~init:map ~f:(fun map (norm, dcp_node as node) -> 
-        debug_log "(%a, %a) --> %a\n" DCP.Node.pp dcp_node EdgeExp.pp norm EdgeExp.pp aux_norm;
-        VFG.Map.add node aux_norm map
-      )
-      in
-      map, EdgeExp.Set.add aux_norm norm_set *)
 
       List.fold component ~init:(map, EdgeExp.Set.add aux_norm norm_set) ~f:(fun (map, norm_set) ((exp, _ as node) : VFG.Node.t) ->
         if EdgeExp.is_return exp then VFG.Map.add node exp map, EdgeExp.Set.add exp norm_set
@@ -348,36 +329,16 @@ let checker {Callbacks.exe_env; summary; } : Summary.t =
 
     (* Apply VFG mapping and rename DCP variables to ensure acyclic reset DAG *)
     DCP.EdgeSet.iter (fun (dcp_src, edge_data, dcp_dst) -> 
-      (* let constraints = DC.Map.fold (fun lhs_norm (rhs_norm, const) map -> 
-        let lhs_norm = match VFG.Map.find_opt (lhs_norm, dcp_dst) vfg_map with
-        | Some norm -> norm
-        | None -> lhs_norm
-        in
-        let rhs_norm = match VFG.Map.find_opt (rhs_norm, dcp_src) vfg_map with
-        | Some norm -> norm
-        | None -> rhs_norm
-        in
-        DC.Map.add lhs_norm (rhs_norm, const) map
-      ) edge_data.constraints DC.Map.empty
-      in *)
       let constraints = DC.Map.fold (fun lhs_norm (rhs_norm, op, rhs_const) map ->
         let lhs_node, rhs_node = (lhs_norm, dcp_dst), (rhs_norm, dcp_src) in
         match VFG.Map.find_opt lhs_node vfg_map, VFG.Map.find_opt rhs_node vfg_map with
         | Some lhs_mapped, Some rhs_mapped -> DC.Map.add lhs_mapped (rhs_mapped, op, rhs_const) map
         | None, Some rhs_mapped -> (
-          if EdgeExp.is_variable lhs_norm graph_data.formals then (
-            map
-            (* if DC.Map.mem rhs_mapped map then map
-            else DC.Map.add rhs_mapped (rhs_mapped, const) map *)
-          )
+          if EdgeExp.is_variable lhs_norm graph_data.formals then map
           else DC.Map.add lhs_norm (rhs_mapped, op, rhs_const) map
         )
         | Some lhs_mapped, None -> (
-          if EdgeExp.is_variable rhs_norm graph_data.formals then (
-            map
-            (* if DC.Map.mem lhs_mapped map then map
-            else DC.Map.add lhs_mapped (lhs_mapped, const) map *)
-          )
+          if EdgeExp.is_variable rhs_norm graph_data.formals then map
           else DC.Map.add lhs_mapped (rhs_norm, op, rhs_const) map
         )
         | None, None -> (
@@ -410,29 +371,16 @@ let checker {Callbacks.exe_env; summary; } : Summary.t =
                   console_log "VFG ACCESS: %a\n" EdgeExp.pp access;
                   let ssa_init_rhs = EdgeExp.Map.find access ssa_variables_map in
                   ssa_init_rhs, None
-                  (* debug_log "  [VFG] Missing mapping for: %a\n" EdgeExp.pp access;
-                  access, None *)
                 )
               )
             ) None
             in
             renamed_arg, typ
-
-          ) else arg, typ
+          )
+          else arg, typ
         )
         in
         EdgeExp.Call (ret_typ, proc_name, renamed_args, loc)
-
-        (* match Location.Map.find_opt loc graph_data.call_summaries with
-        | Some call_summary -> (
-          debug_log "[Call] %a\n  [Complexity bound] %a\n" EdgeExp.pp call EdgeExp.pp call_summary.bound;
-          (match call_summary.return_bound with
-          | Some bound -> debug_log "  [Return bound] %a\n" EdgeExp.pp bound
-          | _ -> ());
-          debug_log "  [Complexity bound renamed]: %a\n" EdgeExp.pp renamed_bound;
-          call
-        )
-        | None -> call *)
       )
       | _ -> assert(false)
       ) edge_data.calls
@@ -766,24 +714,7 @@ let checker {Callbacks.exe_env; summary; } : Summary.t =
           )
           | _ -> EdgeExp.Max flattened_args, cache
           in
-
-
-          (* let max_args_unpacked = List.fold max_args ~init:[] ~f:(fun acc arg ->
-            match arg with
-            | EdgeExp.Max nested_args -> (
-              List.fold nested_args ~init:acc ~f:(fun acc nested_arg -> 
-                if List.mem acc nested_arg ~equal:EdgeExp.equal then acc else nested_arg :: acc
-              )
-            )
-            | _ -> if List.mem acc arg ~equal:EdgeExp.equal then acc else arg :: acc
-          )
-          in
-          let max_subexp = match List.length max_args_unpacked with
-          | 0 -> L.(die InternalError)"[VB] Missing max() arguments for [%a]!" EdgeExp.pp norm
-          | 1 -> List.hd_exn max_args_unpacked
-          | _ -> EdgeExp.Max max_args_unpacked 
-          in *)
-          (EdgeExp.add max_subexp increment_sum), cache
+          EdgeExp.add max_subexp increment_sum, cache
         )
         in
 
@@ -868,6 +799,81 @@ let checker {Callbacks.exe_env; summary; } : Summary.t =
         let payload_opt = Location.Map.find_opt loc graph_data.call_summaries in
         match payload_opt with
         | Some payload -> (
+          let formal_list = FormalMap.get_formals_indexes payload.formal_map in
+          (* let formal_list_sorted = List.sort formal_list ~compare:(fun (_, i1) (_, i2) -> Int.compare i1 i2) in *)
+          (* AccessPath.BaseMap.iter (fun access monotony -> 
+            match monotony with
+            | VariableMonotony.NonDecreasing -> debug_log "%a ---> Non decreasing\n" AccessPath.pp_base access;
+            | VariableMonotony.NonIncreasing -> debug_log "%a ---> Non increasing\n" AccessPath.pp_base access;
+            | VariableMonotony.NotMonotonic -> debug_log "%a ---> Not monotonic\n" AccessPath.pp_base access;
+          ) payload.monotony_map; *)
+
+          let evaluated_args, cache_acc = List.fold formal_list ~init:([], cache_acc) 
+          ~f:(fun (arg_list, cache_acc) (access_base, formal_idx) ->
+            let arg_exp, arg_typ = List.nth_exn args formal_idx in
+            let parameter_monotony_opt = AccessPath.BaseMap.find_opt access_base payload.monotony_map in
+            match parameter_monotony_opt with
+            | Some parameter_monotony -> (              
+              debug_log "Determining variable monotony for argument expression: %a\n" EdgeExp.pp arg_exp;
+              let arg_variable_monotony = EdgeExp.determine_monotony arg_exp tenv z3_ctx solver in
+
+              match parameter_monotony with
+              | VariableMonotony.NonDecreasing -> (
+                (* Bound increases with the increasing value of this parameter.
+                 * Maximize value of the argument expression *)
+                debug_log "%a ---> Non decreasing\n" EdgeExp.pp arg_exp;
+                let evaluated_arg, cache_acc = EdgeExp.map_accesses arg_exp ~f:(fun access cache_acc ->
+                  let access_base = fst access in
+                  let var_monotony = AccessPath.BaseMap.find access_base arg_variable_monotony in
+                  match var_monotony with
+                  | VariableMonotony.NonDecreasing -> (
+                    (* Maximize value of this argument expression variable *)
+                    variable_bound (EdgeExp.Access access) cache_acc
+                  )
+                  | VariableMonotony.NonIncreasing -> (
+                    (* Minimize value of this argument expression variable *)
+                    variable_bound (EdgeExp.Access access) cache_acc
+                  )
+                  | VariableMonotony.NotMonotonic -> (
+                    variable_bound (EdgeExp.Access access) cache_acc
+                  )
+                ) cache_acc
+                in
+                arg_list @ [(evaluated_arg, arg_typ)], cache_acc
+              )
+              | VariableMonotony.NonIncreasing -> (
+                (* Bound decreases with the increasing value of this parameter.
+                 * Minimize value of the argument expression *)
+                debug_log "%a ---> Non increasing\n" EdgeExp.pp arg_exp;
+                let evaluated_arg, cache_acc = EdgeExp.map_accesses arg_exp ~f:(fun access cache_acc ->
+                  let access_base = fst access in
+                  let var_monotony = AccessPath.BaseMap.find access_base arg_variable_monotony in
+                  match var_monotony with
+                  | VariableMonotony.NonDecreasing -> (
+                    (* Maximize value of this argument expression variable *)
+                    variable_bound (EdgeExp.Access access) cache_acc
+                  )
+                  | VariableMonotony.NonIncreasing -> (
+                    (* Minimize value of this argument expression variable *)
+                    variable_bound (EdgeExp.Access access) cache_acc
+                  )
+                  | VariableMonotony.NotMonotonic -> (
+                    variable_bound (EdgeExp.Access access) cache_acc
+                  )
+                ) cache_acc
+                in
+                arg_list @ [(evaluated_arg, arg_typ)], cache_acc
+              )
+              | VariableMonotony.NotMonotonic -> (
+                debug_log "%a ---> Not monotonic\n" EdgeExp.pp arg_exp;
+                (* arg_list @ [(arg_exp, arg_typ)], cache_acc *)
+                assert(false);
+              )
+            )
+            | None -> arg_list, cache_acc
+          )
+          in
+
           let subst_bound = EdgeExp.subst payload.bound args payload.formal_map in
           debug_log "  [CALL] %a : %a | %a\n" Procname.pp proc_name Domain.pp_summary payload Location.pp loc;
           (* debug_log "  [CALL] FormalMap: %a\n" FormalMap.pp payload.formal_map; *)
@@ -876,26 +882,12 @@ let checker {Callbacks.exe_env; summary; } : Summary.t =
 
           (* Replace each argument with its variable bound (coarse overapproximation?) *)
           let call_cost, new_cache = EdgeExp.map_accesses subst_bound ~f:(fun argument_access cache_acc -> 
-            let argument_bound, cache_acc = variable_bound (EdgeExp.Access argument_access) cache_acc in
-            argument_bound, cache_acc
+            variable_bound (EdgeExp.Access argument_access) cache_acc
           ) cache_acc
           in
           (EdgeExp.simplify call_cost) :: cost_list, new_cache
         )
         | None -> cost_list, cache_acc
-
-        (* match Location.Map.find_opt loc call_summaries with
-        | Some call_summary -> (
-          debug_log "  [Call] %a : %a | %a\n" Procname.pp proc_name Domain.pp_summary call_summary Location.pp loc;
-          (* Replace each argument with its variable bound (coarse overapproximation?) *)
-          let call_cost, new_cache = EdgeExp.map_accesses call_summary.bound ~f:(fun argument_access cache_acc -> 
-            let argument_bound, cache_acc = variable_bound (EdgeExp.Access argument_access) cache_acc in
-            argument_bound, cache_acc
-          ) cache_acc
-          in
-          (EdgeExp.simplify call_cost) :: cost_list, new_cache
-        )
-        | None -> cost_list, cache_acc *)
       )
       | _ -> assert(false)
     ) edge_data.calls ([], cache)
@@ -985,288 +977,13 @@ let checker {Callbacks.exe_env; summary; } : Summary.t =
   in
   debug_log "\n[Final bound] %a\n" EdgeExp.pp bound;
 
-  (* let param_sorts, param_symbols, bound_vars, bound_accesses, bound_vars_map = List.foldi bound_formals 
-  ~init:([], [], [], [], AccessPathMap.empty) 
-  ~f:(fun idx (sorts, symbols, bound_vars, accesses, bindings) exp ->
-    match exp with
-    | EdgeExp.Access access -> (
-      let access_str = F.asprintf "%a" AccessPath.pp access in
-      let access_symbol = Z3.Symbol.mk_string z3_ctx access_str in
-      (* let access_exp = Z3.Expr.mk_const z3_ctx access_symbol z3_int_sort in *)
-      let de_bruijn_index = (List.length bound_formals) - idx - 1 in
-      (* let de_bruijn_index = idx in *)
-      let bound_var = Z3.Quantifier.mk_bound z3_ctx de_bruijn_index z3_int_sort in
-      match AccessPath.get_typ access tenv with
-      | Some typ when Typ.is_int typ -> (
-        sorts @ [z3_int_sort], 
-        symbols @ [access_symbol],
-        bound_vars @ [bound_var],
-        accesses @ [access],
-        AccessPathMap.add access bound_var bindings
-      )
-      | _ -> assert(false)
-    )
-    | _ -> assert(false)
-  )
-  in *)
-
-
-
-  (* let monotony_map = try
-    let bound_formals = EdgeExp.Set.elements (EdgeExp.get_accesses bound) in
-    let real_sort = Z3.Arithmetic.Real.mk_sort z3_ctx in
-    let param_sorts, param_symbols, bound_accesses = List.fold bound_formals ~init:([], [], [])
-    ~f:(fun (sorts, symbols, accesses) exp ->
-      match exp with
-      | EdgeExp.Access access -> (
-        let access_str = F.asprintf "%a" AccessPath.pp access in
-        let access_symbol = Z3.Symbol.mk_string z3_ctx access_str in
-        match AccessPath.get_typ access tenv with
-        | Some typ when Typ.is_int typ -> (
-          sorts @ [real_sort], 
-          symbols @ [access_symbol],
-          accesses @ [access]
-        )
-        | _ -> assert(false)
-      )
-      | _ -> assert(false)
-    )
-    in
-
-    if EdgeExp.is_const bound then EdgeExp.Map.empty
-    else (
-      debug_log "[Determining monotony of variables]\n";
-      let bound_func_decl = Z3.FuncDecl.mk_func_decl_s z3_ctx "bound_function" param_sorts real_sort in
-      let params = List.map param_symbols ~f:(fun symbol -> Z3.Expr.mk_const z3_ctx symbol real_sort) in
-      let func_app = Z3.Expr.mk_app z3_ctx bound_func_decl params in
-      let q_bound_var = Z3.Quantifier.mk_bound z3_ctx 0 real_sort in
-
-      let tmp_var_symbol = Z3.Symbol.mk_string z3_ctx "tmp_var" in
-      let tmp_var_exp = Z3.Expr.mk_const z3_ctx tmp_var_symbol real_sort in
-
-      List.foldi param_symbols ~init:EdgeExp.Map.empty ~f:(fun replace_idx acc current_symbol ->
-        let formal_exp = List.nth_exn bound_formals replace_idx in
-        let param_access = List.nth_exn bound_accesses replace_idx in
-        let param_sort = List.nth_exn param_sorts replace_idx in
-        let param_name = Z3.Symbol.to_string current_symbol in
-        let param_expr = Z3.Expr.mk_const z3_ctx current_symbol real_sort in
-
-        let new_params = List.mapi params ~f:(fun param_idx param ->
-          if Int.equal param_idx replace_idx then tmp_var_exp else param
-        )
-        in
-        let z3_func_app_2 = Z3.Expr.mk_app z3_ctx bound_func_decl new_params in
-
-        (* Construct Z3 bound with bound variable for the current parameter *)
-        let bound_access_map access = if AccessPath.equal access param_access 
-        then Some q_bound_var 
-        else None
-        in
-        let z3_bound = EdgeExp.to_z3_expr bound tenv z3_ctx (Some bound_access_map) |> fst in
-        let type_constraints = EdgeExp.to_z3_expr bound tenv z3_ctx None |> snd |> Z3ExprSet.elements in
-
-        (* Use constructed bound in quantified expression to define function over all arguments *)
-        let args = List.mapi params ~f:(fun param_idx param ->
-          if Int.equal param_idx replace_idx then q_bound_var else param
-        )
-        in
-
-        (* ForAll[x]: bound_func(.., x, ..) = bound_expr *)
-        let q_func_app = Z3.Expr.mk_app z3_ctx bound_func_decl args in
-        let q_body = Z3.Boolean.mk_eq z3_ctx q_func_app z3_bound in
-        let quantifier = Z3.Quantifier.mk_forall z3_ctx [param_sort] [current_symbol] q_body None [] [] None None in
-        let quantifier_expr = Z3.Expr.simplify (Z3.Quantifier.expr_of_quantifier quantifier) None in
-        let solver_base_assertions = quantifier_expr :: type_constraints in
-
-        (* debug_log "\n  [Z3 Quantifier body] %s\n" (Z3.Expr.to_string quantifier_body);
-        debug_log "\n  [Z3 Bound function] %s\n" (Z3.Expr.to_string func_constraint); *)
-        
-        let antecedent = Z3.Arithmetic.mk_gt z3_ctx tmp_var_exp param_expr in
-        let non_decreasing_consequent = Z3.Arithmetic.mk_ge z3_ctx z3_func_app_2 func_app in
-        let non_decreasing_implication = Z3.Boolean.mk_implies z3_ctx antecedent non_decreasing_consequent in
-        let non_decreasing_goal = Z3.Expr.simplify (Z3.Boolean.mk_not z3_ctx non_decreasing_implication) None in
-
-        let non_increasing_consequent = Z3.Arithmetic.mk_le z3_ctx z3_func_app_2 func_app in
-        let non_increasing_implication = Z3.Boolean.mk_implies z3_ctx antecedent non_increasing_consequent in
-        let non_increasing_goal = Z3.Expr.simplify (Z3.Boolean.mk_not z3_ctx non_increasing_implication) None in
-
-        (* debug_log "  [Z3 Goal] %s\n" (Z3.Expr.to_string goal); *)
-        (* List.iter type_constraints ~f:(fun expr -> 
-          debug_log "  [Z3 Type constraint] %s\n" (Z3.Expr.to_string expr);
-        ); *)
-
-        try
-          (* Check for non-decreasing property first *)
-          Z3.Solver.reset solver;
-          Z3.Solver.add solver (non_decreasing_goal :: solver_base_assertions);
-
-          match Z3.Solver.check solver [] with
-          | Z3.Solver.UNSATISFIABLE -> (
-            debug_log "  [Variable: %s] Non-decreasing\n" param_name;
-            EdgeExp.Map.add formal_exp VariableMonotony.NonDecreasing acc
-          )
-          | Z3.Solver.SATISFIABLE -> (
-            let decreasing_model = match Z3.Solver.get_model solver with
-            | Some model -> Z3.Model.to_string model
-            | None -> assert(false)
-            in
-
-            (* Check for non-increasing property next *)
-            Z3.Solver.reset solver;
-            Z3.Solver.add solver (non_increasing_goal :: solver_base_assertions);
-
-            match Z3.Solver.check solver [] with
-            | Z3.Solver.UNSATISFIABLE -> (
-              debug_log "  [Variable: %s] Non-increasing\n" param_name;
-              EdgeExp.Map.add formal_exp VariableMonotony.NonDecreasing acc
-            )
-            | Z3.Solver.SATISFIABLE -> (
-              debug_log "  [Variable: %s] Not Monotonic\n" param_name;
-              EdgeExp.Map.add formal_exp VariableMonotony.NotMonotonic acc
-            ) 
-            | Z3.Solver.UNKNOWN -> (
-              (* EdgeExp.Map.add formal_exp FormalBoundMonotony.NotMonotonic acc *)
-              L.die InternalError "[Monotony Check] Unknown Z3 result: %s\n" (Z3.Solver.get_reason_unknown solver)
-            )
-          )
-          | Z3.Solver.UNKNOWN -> (
-            (* EdgeExp.Map.add formal_exp FormalBoundMonotony.NotMonotonic acc *)
-            L.die InternalError "[Monotony Check] Unknown Z3 result: %s\n" (Z3.Solver.get_reason_unknown solver)
-          )
-        with Z3.Error str -> (
-          (* This should hopefully be only caused by potential Z3 timeout *)
-          (* EdgeExp.Map.add formal_exp FormalBoundMonotony.NonDecreasing acc *)
-          L.die InternalError "[Z3 Error] %s\n" str
-        )
-      )
-    );
-  with Z3.Error str -> (
-    L.die InternalError "[Z3 Error] %s\n" str
-  )
-  in *)
-
   debug_log "========[Determining monotony of bound variables]========\n";
   let monotony_map = EdgeExp.determine_monotony bound tenv z3_ctx solver in
-  EdgeExp.Map.iter (fun variable monotony -> match monotony with
-    | VariableMonotony.NonDecreasing -> debug_log "[Variable: %a] Non-decreasing\n" EdgeExp.pp variable;
-    | VariableMonotony.NonIncreasing -> debug_log "[Variable: %a] Non-increasing\n" EdgeExp.pp variable;
-    | VariableMonotony.NotMonotonic -> debug_log "[Variable: %a] Not Monotonic\n" EdgeExp.pp variable;
+  AccessPath.BaseMap.iter (fun variable monotony -> match monotony with
+    | VariableMonotony.NonDecreasing -> debug_log "[Variable: %a] Non-decreasing\n" AccessPath.pp_base variable;
+    | VariableMonotony.NonIncreasing -> debug_log "[Variable: %a] Non-increasing\n" AccessPath.pp_base variable;
+    | VariableMonotony.NotMonotonic -> debug_log "[Variable: %a] Not Monotonic\n" AccessPath.pp_base variable;
   ) monotony_map;
-
-  (* (* This is kind of stupid but it seems there's no good way to avoid
-   * converting to Z3 expression twice: once with bound variables for quantified
-   * expression and once with free variables for type constraint expressions *)
-  let bound_access_map access = AccessPathMap.find access bound_vars_map, Z3ExprSet.empty in
-  let z3_bound = EdgeExp.to_z3_expr bound tenv z3_ctx (Some bound_access_map) |> fst in
-  let type_constraints = EdgeExp.to_z3_expr bound tenv z3_ctx None |> snd |> Z3ExprSet.elements in
-
-  debug_log "[Determining monotony of variables]\n";
-
-  (* Create quantified expression for function declaration, which defines the value of the
-   * function for all possible arguments, i.e., ForAll[params]: func_decl(params) = bound *)
-  try
-    let z3_zero_const = Z3.Arithmetic.Integer.mk_numeral_i z3_ctx 0 in
-    let z3_bound_func_decl = Z3.FuncDecl.mk_func_decl_s z3_ctx "bound_function" param_sorts z3_int_sort in
-    let params = List.map param_symbols ~f:(fun symbol -> Z3.Expr.mk_const z3_ctx symbol z3_int_sort) in
-    (* let type_constraints = List.map params ~f:(fun param ->
-      Z3.Arithmetic.mk_ge z3_ctx param z3_zero_const
-    ) in *)
-
-    let z3_func_app = Z3.Expr.mk_app z3_ctx z3_bound_func_decl params in
-    let z3_quant_func_app = Z3.Expr.mk_app z3_ctx z3_bound_func_decl bound_vars in
-    let quantifier_body = Z3.Boolean.mk_eq z3_ctx z3_quant_func_app z3_bound in
-    let quantified_func = Z3.Quantifier.mk_forall z3_ctx param_sorts param_symbols quantifier_body None [] [] None None in
-    let func_constraint = Z3.Expr.simplify (Z3.Quantifier.expr_of_quantifier quantified_func) None in
-    let solver_base_assertions = func_constraint :: type_constraints in
-    (* let solver_base_assertions = func_constraint :: [] in *)
-
-    debug_log "\n  [Z3 Quantifier body] %s\n" (Z3.Expr.to_string quantifier_body);
-    debug_log "\n  [Z3 Bound function] %s\n" (Z3.Expr.to_string func_constraint);
-
-    List.iteri param_symbols ~f:(fun replace_idx current_symbol ->
-      let param_name = Z3.Symbol.to_string current_symbol in
-      debug_log "  [Variable: %s]" param_name;
-      
-      (* Check for non-decreasing property *)
-      let symbol_name = param_name ^ "_2" in
-      let symbol = Z3.Symbol.mk_string z3_ctx symbol_name in
-      let symbol_exp = Z3.Expr.mk_const z3_ctx symbol z3_int_sort in
-      let old_symbol_exp = Z3.Expr.mk_const z3_ctx current_symbol z3_int_sort in
-
-      let new_param_symbols = List.mapi param_symbols ~f:(fun param_idx param_symbol ->
-        if Int.equal param_idx replace_idx then symbol else param_symbol
-      )
-      in
-
-
-      let new_quantified_func = Z3.Quantifier.mk_forall z3_ctx param_sorts new_param_symbols quantifier_body None [] [] None None in
-      let new_func_constraint = Z3.Expr.simplify (Z3.Quantifier.expr_of_quantifier new_quantified_func) None in
-
-      let new_params = List.mapi params ~f:(fun param_idx param ->
-        if Int.equal param_idx replace_idx then symbol_exp else param
-      )
-      in
-      let z3_func_app_2 = Z3.Expr.mk_app z3_ctx z3_bound_func_decl new_params in
-
-      let antecedent = Z3.Arithmetic.mk_gt z3_ctx symbol_exp old_symbol_exp in
-      let non_decreasing_consequent = Z3.Arithmetic.mk_ge z3_ctx z3_func_app_2 z3_func_app in
-      let non_decreasing_implication = Z3.Boolean.mk_implies z3_ctx antecedent non_decreasing_consequent in
-      let non_decreasing_goal = Z3.Expr.simplify (Z3.Boolean.mk_not z3_ctx non_decreasing_implication) None in
-
-      (* debug_log "  [Z3 Goal] %s\n" (Z3.Expr.to_string goal); *)
-      (* List.iter type_constraints ~f:(fun expr -> 
-        debug_log "  [Z3 Type constraint] %s\n" (Z3.Expr.to_string expr);
-      ); *)
-
-      Z3.Solver.reset solver;
-      Z3.Solver.add solver (solver_base_assertions @ [non_decreasing_goal]);
-
-      match Z3.Solver.check solver [] with
-      | Z3.Solver.UNSATISFIABLE -> (
-        debug_log " Non-decreasing\n";
-        let assertions = Z3.Solver.get_assertions solver in
-        List.iter assertions ~f:(fun expr -> 
-          debug_log "  [Z3 Solver Assertion] %s\n" (Z3.Expr.to_string expr);
-        );
-      )
-      | Z3.Solver.SATISFIABLE -> (
-        debug_log " DECREASING\n";
-        debug_log "  [Variable: %s]" param_name;
-        let decreasing_model = match Z3.Solver.get_model solver with
-        | Some model -> Z3.Model.to_string model
-        | None -> assert(false)
-        in
-
-        (* Check for non-increasing property *)
-        let non_increasing_consequent = Z3.Arithmetic.mk_le z3_ctx z3_func_app_2 z3_func_app in
-        let non_increasing_implication = Z3.Boolean.mk_implies z3_ctx antecedent non_increasing_consequent in
-        let non_increasing_goal = Z3.Expr.simplify (Z3.Boolean.mk_not z3_ctx non_increasing_implication) None in
-
-        Z3.Solver.reset solver;
-        Z3.Solver.add solver (non_increasing_goal :: solver_base_assertions);
-        match Z3.Solver.check solver [] with
-        | Z3.Solver.UNSATISFIABLE -> (
-          debug_log " Non-increasing\n";
-        )
-        | Z3.Solver.SATISFIABLE -> (
-          debug_log " Not Monotonic\n";
-        ) 
-        | Z3.Solver.UNKNOWN -> (
-          let assertions = Z3.Solver.get_assertions solver in
-          List.iter assertions ~f:(fun expr -> 
-            debug_log "  [Z3 Solver Assertion] %s\n" (Z3.Expr.to_string expr);
-          );
-          L.die InternalError "[Monotony Check] Unknown Z3 result: %s\n" (Z3.Solver.get_reason_unknown solver)
-        )
-      )
-      | Z3.Solver.UNKNOWN -> (
-        let assertions = Z3.Solver.get_assertions solver in
-        List.iter assertions ~f:(fun expr -> 
-          debug_log "  [Z3 Solver Assertion] %s\n" (Z3.Expr.to_string expr);
-        );
-        L.die InternalError "[Monotony Check] Unknown Z3 result: %s\n" (Z3.Solver.get_reason_unknown solver)
-      )
-    ); *)
 
   let ret_type = Procdesc.get_ret_type proc_desc in
   let return_bound = match ret_type.desc with

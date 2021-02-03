@@ -413,50 +413,28 @@ module EdgeExp = struct
 
   (* TODO: figure out what to do floats *)
   let rec to_z3_expr exp tenv smt_ctx access_map_func = 
-    (* let int_sort = Z3.Arithmetic.Integer.mk_sort smt_ctx in *)
     let real_sort = Z3.Arithmetic.Real.mk_sort smt_ctx in
     let zero_const = Z3.Arithmetic.Real.mk_numeral_i smt_ctx 0 in
 
-    (* let create_condition expr_z3 (typ : Typ.t) =
-      match typ.desc with
-      | Typ.Tint ikind when Typ.ikind_is_unsigned ikind -> [Z3.Arithmetic.mk_ge smt_ctx expr_z3 zero_const]
-      | Typ.Tint _
-      | Typ.Tfloat _ -> []
-      | _ -> L.(die InternalError)"[EdgeExp.to_z3_expr] Unsupported type '%a' of expression '%s'" Typ.(pp Pp.text) typ (Z3.Expr.to_string expr_z3)
-    in *)
-
     let rec make_access_term name (typ : Typ.t) = match typ.desc with
     | Tptr (ptr_type, _) -> (
-      log "Tptr: %s, Type: %a\n" name Typ.(pp Pp.text) ptr_type;
+      (* log "Tptr: %s, Type: %a\n" name Typ.(pp Pp.text) ptr_type; *)
       make_access_term name ptr_type
     )
     | Typ.Tint ikind -> (
-      log "Tint: %s\n" name;
+      (* log "Tint: %s\n" name; *)
       let expr = Z3.Expr.mk_const_s smt_ctx name real_sort in
       if Typ.ikind_is_unsigned ikind then expr, Z3ExprSet.singleton (Z3.Arithmetic.mk_ge smt_ctx expr zero_const)
       else expr, Z3ExprSet.empty
     )
     | Typ.Tfloat _ -> Z3.Expr.mk_const_s smt_ctx name real_sort, Z3ExprSet.empty
-    | Tstruct _ -> (
-      Z3.Expr.mk_const_s smt_ctx name real_sort, Z3ExprSet.empty
-      (* let lookup = Tenv.lookup tenv in
-      let fieldname_str = String.rtake_while name ~f:(fun c -> Char.equal c '.' |> not) in
-      log "Tstruct: %s (%a)\n" name Typ.Name.pp struct_name;
-      log "Field: %s\n" fieldname_str;
-      let fieldname = Fieldname.make struct_name fieldname_str in
-      let field_info = Struct.get_field_info ~lookup fieldname typ in
-      match field_info with
-      | Some info -> make_access_term name info.typ
-      | None -> (
-        L.(die InternalError)"[EdgeExp.to_z3_expr] Missing struct field type information for '%s' access!" name
-      ) *)
-    )
+    | Tstruct _ -> Z3.Expr.mk_const_s smt_ctx name real_sort, Z3ExprSet.empty
     | TVar var_name -> (
-      log "TVar: %s (%s)\n" name var_name;
+      (* log "TVar: %s (%s)\n" name var_name; *)
       assert(false)
     )
     | Tarray {elt; length; stride} -> (
-      log "Tarray: %s, Element type: %a\n" name Typ.(pp Pp.text) elt;
+      (* log "Tarray: %s, Element type: %a\n" name Typ.(pp Pp.text) elt; *)
       make_access_term name elt
     )
     | _ -> (
@@ -491,22 +469,10 @@ module EdgeExp = struct
         | _ -> assert(false)
       )
     )
-    (* | Access (((_, typ), access_list) as access) -> (
-      match access_map_func with
-      | Some func -> func access
-      | None -> (
-        List.iter access_list ~f:(fun sub_access -> log "Sub-access: %a\n" AccessPath.pp_access sub_access);
-        make_access_term (F.asprintf "%a" AccessPath.pp access) typ
-      )
-    ) *)
     | BinOp (op, lexp, rexp) -> (
       let z3_lexp, z3_lexp_constraints = to_z3_expr lexp tenv smt_ctx access_map_func in
       let z3_rexp, z3_rexp_constraints = to_z3_expr rexp tenv smt_ctx access_map_func in
       
-      (* let aux expr_z3 (typ_opt : Typ.ikind option) = match typ_opt with
-      | Some ikind when Typ.ikind_is_unsigned ikind -> expr_z3, [Z3.Arithmetic.mk_ge smt_ctx expr_z3 zero_const]
-      | _ -> expr_z3, []
-      in *)
       let aux expr_z3 (typ_opt : Typ.ikind option) = match typ_opt with
       | Some ikind when Typ.ikind_is_unsigned ikind -> expr_z3, Z3ExprSet.empty
       | _ -> expr_z3, Z3ExprSet.empty
@@ -533,21 +499,17 @@ module EdgeExp = struct
       | Binop.MinusA ikind_opt -> aux (Z3.Arithmetic.mk_sub smt_ctx [z3_lexp; z3_rexp]) ikind_opt
       | Binop.PlusA ikind_opt -> aux (Z3.Arithmetic.mk_add smt_ctx [z3_lexp; z3_rexp]) ikind_opt
       | Binop.Mult ikind_opt -> aux (Z3.Arithmetic.mk_mul smt_ctx [z3_lexp; z3_rexp]) ikind_opt
-      | Binop.Div  -> Z3.Arithmetic.mk_div smt_ctx z3_lexp z3_rexp, Z3ExprSet.empty
+      | Binop.Div  -> Z3.Arithmetic.mk_div smt_ctx z3_lexp z3_rexp, Z3ExprSet.singleton (Z3.Arithmetic.mk_gt smt_ctx z3_rexp zero_const)
       | Binop.Shiftrt -> (
         (* Assumption: valid unsigned shifting *)
         let rexp = eval_power rexp in
-        (* let two_const = Z3.Arithmetic.Integer.mk_numeral_i smt_ctx 2 in
-        let rexp = Z3.Arithmetic.mk_power smt_ctx two_const z3_rexp in *)
         let expr_z3 = Z3.Arithmetic.mk_div smt_ctx z3_lexp rexp in
-        (* expr_z3, [Z3.Arithmetic.mk_ge smt_ctx expr_z3 zero_const] *)
         expr_z3, Z3ExprSet.empty
       )
       | Binop.Shiftlt -> (
         (* Assumption: valid unsigned shifting *)
         let rexp = eval_power rexp in
         let expr_z3 = Z3.Arithmetic.mk_mul smt_ctx [z3_lexp; rexp] in
-        (* expr_z3, [Z3.Arithmetic.mk_ge smt_ctx expr_z3 zero_const] *)
         expr_z3, Z3ExprSet.empty
       )
       | _ -> L.(die InternalError)"[EdgeExp.to_z3_expr] Expression '%a' contains invalid binary operator!" pp exp
@@ -748,136 +710,242 @@ module EdgeExp = struct
 
 
   let determine_monotony exp tenv z3_ctx solver =
-    try
-      let exp_variables = Set.elements (get_accesses exp) in
-      let real_sort = Z3.Arithmetic.Real.mk_sort z3_ctx in
-      let param_sorts, param_symbols, bound_accesses = List.fold exp_variables ~init:([], [], [])
-      ~f:(fun (sorts, symbols, accesses) variable ->
-        match variable with
-        | Access access -> (
-          let access_str = F.asprintf "%a" AccessPath.pp access in
-          let access_symbol = Z3.Symbol.mk_string z3_ctx access_str in
-          match AccessPath.get_typ access tenv with
-          | Some typ when Typ.is_int typ -> (
-            sorts @ [real_sort], 
-            symbols @ [access_symbol],
-            accesses @ [access]
+    let rec transform_exp exp = match exp with
+    | Const _ -> None
+    | Access _ -> Some exp
+    | UnOp (unop, subexp, typ) -> (
+      match unop with
+      | Unop.Neg -> (
+        match transform_exp subexp with
+        | Some subexp -> Some (UnOp (unop, subexp, typ))
+        | None -> Some (UnOp (unop, one, typ))
+      )
+      | _ -> assert(false)
+    )
+    | BinOp (op, lexp, rexp) -> (
+      let lexp_opt, rexp_opt = transform_exp lexp, transform_exp rexp in
+      match op with
+      | Binop.PlusA _ -> (
+        match lexp_opt, rexp_opt with
+        | Some lexp, Some rexp -> Some (BinOp (op, lexp, rexp))
+        | Some exp, None | None, Some exp -> Some exp
+        | None, None -> None
+      )
+      | Binop.MinusA _ -> (
+        match lexp_opt, rexp_opt with
+        | Some lexp, Some rexp -> Some (BinOp (op, lexp, rexp))
+        | Some lexp, None -> Some lexp
+        | None, Some rexp -> Some (UnOp (Unop.Neg, rexp, None))
+        | None, None -> None
+      )
+      | Binop.Mult _ -> (
+        match lexp_opt, rexp_opt with
+        | Some lexp, Some rexp -> Some (BinOp (op, lexp, rexp))
+        | Some exp, None | None, Some exp -> Some exp
+        | None, None -> None
+      )
+      | Binop.Div -> (
+        match lexp_opt, rexp_opt with
+        | Some lexp, Some rexp -> Some (BinOp (op, lexp, rexp))
+        | Some lexp, None -> Some lexp
+        | None, Some rexp -> Some (BinOp (op, one, rexp))
+        | None, None -> None
+      )
+      | Binop.Shiftrt -> (
+        (* Transform x >> y into x / y which should preserve
+         * monotonicity of both variables over integers with
+         * y >= 0 *)
+        match lexp_opt, rexp_opt with
+        | Some lexp, Some rexp -> Some (BinOp (Binop.Div, lexp, rexp))
+        | Some lexp, None -> Some lexp
+        | None, Some rexp -> Some (BinOp (Binop.Div, one, rexp))
+        | None, None -> None
+      )
+      | Binop.Shiftlt -> (
+        (* Transform x << y into x * y which should preserve
+         * monotonicity of both variables over integers. *)
+        match lexp_opt, rexp_opt with
+        | Some lexp, Some rexp -> Some (BinOp (Binop.Mult None, lexp, rexp))
+        | Some lexp, None -> Some lexp
+        | None, Some rexp -> Some rexp
+        | None, None -> None
+      )
+      | _ -> Some exp
+    )
+    | Max args -> (
+      let transformed_args = List.fold args ~init:[] ~f:(fun acc arg -> 
+        match transform_exp arg with
+        | Some exp -> exp :: acc
+        | None -> acc
+      )
+      in
+      if List.is_empty transformed_args then None
+      else Some (Max transformed_args)
+    )
+    | Min args -> (
+      let transformed_args = List.fold args ~init:[] ~f:(fun acc arg -> 
+        match transform_exp arg with
+        | Some exp -> exp :: acc
+        | None -> acc
+      )
+      in
+      if List.is_empty transformed_args then None
+      else Some (Min transformed_args)
+    )
+    | Call _ -> assert(false)
+    | Inf -> assert(false)
+    in
+
+    log "[Pre-transform] %a\n" pp exp;
+
+    match transform_exp exp with
+    | Some exp -> (
+      log "[Post-transform] %a\n" pp exp;
+      
+      try
+        let exp_variables = Set.elements (get_accesses exp) in
+        let real_sort = Z3.Arithmetic.Real.mk_sort z3_ctx in
+        let param_sorts, param_symbols, bound_accesses = List.fold exp_variables ~init:([], [], [])
+        ~f:(fun (sorts, symbols, accesses) variable ->
+          match variable with
+          | Access access -> (
+            let access_str = F.asprintf "%a" AccessPath.pp access in
+            let access_symbol = Z3.Symbol.mk_string z3_ctx access_str in
+            match AccessPath.get_typ access tenv with
+            | Some typ when Typ.is_int typ -> (
+              sorts @ [real_sort], 
+              symbols @ [access_symbol],
+              accesses @ [access]
+            )
+            | _ -> assert(false)
           )
           | _ -> assert(false)
         )
-        | _ -> assert(false)
-      )
-      in
+        in
 
-      if is_const exp then Map.empty
-      else (
-        let bound_func_decl = Z3.FuncDecl.mk_func_decl_s z3_ctx "bound_function" param_sorts real_sort in
-        let params = List.map param_symbols ~f:(fun symbol -> Z3.Expr.mk_const z3_ctx symbol real_sort) in
-        let func_app = Z3.Expr.mk_app z3_ctx bound_func_decl params in
-        let q_bound_var = Z3.Quantifier.mk_bound z3_ctx 0 real_sort in
+        if is_const exp then AccessPath.BaseMap.empty
+        else (
+          let bound_func_decl = Z3.FuncDecl.mk_func_decl_s z3_ctx "bound_function" param_sorts real_sort in
+          let params = List.map param_symbols ~f:(fun symbol -> Z3.Expr.mk_const z3_ctx symbol real_sort) in
+          let func_app = Z3.Expr.mk_app z3_ctx bound_func_decl params in
+          let q_bound_var = Z3.Quantifier.mk_bound z3_ctx 0 real_sort in
 
-        let tmp_var_symbol = Z3.Symbol.mk_string z3_ctx "tmp_var" in
-        let tmp_var_exp = Z3.Expr.mk_const z3_ctx tmp_var_symbol real_sort in
+          let tmp_var_symbol = Z3.Symbol.mk_string z3_ctx "tmp_var" in
+          let tmp_var_exp = Z3.Expr.mk_const z3_ctx tmp_var_symbol real_sort in
 
-        List.foldi param_symbols ~init:Map.empty ~f:(fun replace_idx acc current_symbol ->
-          let current_variable_exp = List.nth_exn exp_variables replace_idx in
-          let param_access = List.nth_exn bound_accesses replace_idx in
-          let param_sort = List.nth_exn param_sorts replace_idx in
-          let param_name = Z3.Symbol.to_string current_symbol in
-          let param_expr = Z3.Expr.mk_const z3_ctx current_symbol real_sort in
+          List.foldi param_symbols ~init:AccessPath.BaseMap.empty ~f:(fun replace_idx acc current_symbol ->
+            (* let current_variable_exp = List.nth_exn exp_variables replace_idx in *)
+            let param_access = List.nth_exn bound_accesses replace_idx in
+            let param_sort = List.nth_exn param_sorts replace_idx in
+            let param_name = Z3.Symbol.to_string current_symbol in
+            let param_expr = Z3.Expr.mk_const z3_ctx current_symbol real_sort in
+            let access_base = fst param_access in
 
-          let new_params = List.mapi params ~f:(fun param_idx param ->
-            if Int.equal param_idx replace_idx then tmp_var_exp else param
-          )
-          in
-          let z3_func_app_2 = Z3.Expr.mk_app z3_ctx bound_func_decl new_params in
-
-          (* Construct Z3 bound with bound variable for the current parameter *)
-          let bound_access_map access = if AccessPath.equal access param_access 
-          then Some q_bound_var 
-          else None
-          in
-          let z3_bound = to_z3_expr exp tenv z3_ctx (Some bound_access_map) |> fst in
-          let type_constraints = to_z3_expr exp tenv z3_ctx None |> snd |> Z3ExprSet.elements in
-
-          (* Use constructed bound in quantified expression to define function over all arguments *)
-          let args = List.mapi params ~f:(fun param_idx param ->
-            if Int.equal param_idx replace_idx then q_bound_var else param
-          )
-          in
-
-          (* ForAll[x]: bound_func(.., x, ..) = bound_expr *)
-          let q_func_app = Z3.Expr.mk_app z3_ctx bound_func_decl args in
-          let q_body = Z3.Boolean.mk_eq z3_ctx q_func_app z3_bound in
-          let quantifier = Z3.Quantifier.mk_forall z3_ctx [param_sort] [current_symbol] q_body None [] [] None None in
-          let quantifier_expr = Z3.Expr.simplify (Z3.Quantifier.expr_of_quantifier quantifier) None in
-          let solver_base_assertions = quantifier_expr :: type_constraints in
-
-          (* debug_log "\n  [Z3 Quantifier body] %s\n" (Z3.Expr.to_string quantifier_body);
-          debug_log "\n  [Z3 Bound function] %s\n" (Z3.Expr.to_string func_constraint); *)
-          
-          let antecedent = Z3.Arithmetic.mk_gt z3_ctx tmp_var_exp param_expr in
-          let non_decreasing_consequent = Z3.Arithmetic.mk_ge z3_ctx z3_func_app_2 func_app in
-          let non_decreasing_implication = Z3.Boolean.mk_implies z3_ctx antecedent non_decreasing_consequent in
-          let non_decreasing_goal = Z3.Expr.simplify (Z3.Boolean.mk_not z3_ctx non_decreasing_implication) None in
-
-          let non_increasing_consequent = Z3.Arithmetic.mk_le z3_ctx z3_func_app_2 func_app in
-          let non_increasing_implication = Z3.Boolean.mk_implies z3_ctx antecedent non_increasing_consequent in
-          let non_increasing_goal = Z3.Expr.simplify (Z3.Boolean.mk_not z3_ctx non_increasing_implication) None in
-
-          (* debug_log "  [Z3 Goal] %s\n" (Z3.Expr.to_string goal); *)
-          (* List.iter type_constraints ~f:(fun expr -> 
-            debug_log "  [Z3 Type constraint] %s\n" (Z3.Expr.to_string expr);
-          ); *)
-
-          try
-            (* Check for non-decreasing property first *)
-            Z3.Solver.reset solver;
-            Z3.Solver.add solver (non_decreasing_goal :: solver_base_assertions);
-
-            match Z3.Solver.check solver [] with
-            | Z3.Solver.UNSATISFIABLE -> (
-              log "  [Variable: %s] Non-decreasing\n" param_name;
-              Map.add current_variable_exp VariableMonotony.NonDecreasing acc
+            let new_params = List.mapi params ~f:(fun param_idx param ->
+              if Int.equal param_idx replace_idx then tmp_var_exp else param
             )
-            | Z3.Solver.SATISFIABLE -> (
-              let decreasing_model = match Z3.Solver.get_model solver with
-              | Some model -> Z3.Model.to_string model
-              | None -> assert(false)
-              in
+            in
+            let z3_func_app_2 = Z3.Expr.mk_app z3_ctx bound_func_decl new_params in
 
-              (* Check for non-increasing property next *)
+            (* Construct Z3 bound with bound variable for the current parameter *)
+            let bound_access_map access = if AccessPath.equal access param_access 
+            then Some q_bound_var 
+            else None
+            in
+            let z3_bound = to_z3_expr exp tenv z3_ctx (Some bound_access_map) |> fst in
+            let type_constraints = to_z3_expr exp tenv z3_ctx None |> snd |> Z3ExprSet.elements in
+
+            (* Use constructed bound in quantified expression to define function over all arguments *)
+            let args = List.mapi params ~f:(fun param_idx param ->
+              if Int.equal param_idx replace_idx then q_bound_var else param
+            )
+            in
+
+            (* ForAll[x]: bound_func(.., x, ..) = bound_expr *)
+            let q_func_app = Z3.Expr.mk_app z3_ctx bound_func_decl args in
+            let q_body = Z3.Boolean.mk_eq z3_ctx q_func_app z3_bound in
+            let quantifier = Z3.Quantifier.mk_forall z3_ctx [param_sort] [current_symbol] q_body None [] [] None None in
+            let quantifier_expr = Z3.Expr.simplify (Z3.Quantifier.expr_of_quantifier quantifier) None in
+            let solver_base_assertions = quantifier_expr :: type_constraints in
+
+            (* debug_log "\n  [Z3 Quantifier body] %s\n" (Z3.Expr.to_string quantifier_body);
+            debug_log "\n  [Z3 Bound function] %s\n" (Z3.Expr.to_string func_constraint); *)
+            
+            let antecedent = Z3.Arithmetic.mk_gt z3_ctx tmp_var_exp param_expr in
+            let non_decreasing_consequent = Z3.Arithmetic.mk_ge z3_ctx z3_func_app_2 func_app in
+            let non_decreasing_implication = Z3.Boolean.mk_implies z3_ctx antecedent non_decreasing_consequent in
+            let non_decreasing_goal = (Z3.Boolean.mk_not z3_ctx non_decreasing_implication) in
+
+            let non_increasing_consequent = Z3.Arithmetic.mk_le z3_ctx z3_func_app_2 func_app in
+            let non_increasing_implication = Z3.Boolean.mk_implies z3_ctx antecedent non_increasing_consequent in
+            let non_increasing_goal = (Z3.Boolean.mk_not z3_ctx non_increasing_implication) in
+            (* debug_log "  [Z3 Goal] %s\n" (Z3.Expr.to_string goal); *)
+            (* List.iter type_constraints ~f:(fun expr -> 
+              debug_log "  [Z3 Type constraint] %s\n" (Z3.Expr.to_string expr);
+            ); *)
+
+            try
+              (* Check for non-decreasing property first *)
               Z3.Solver.reset solver;
-              Z3.Solver.add solver (non_increasing_goal :: solver_base_assertions);
+              Z3.Solver.add solver (non_decreasing_goal :: solver_base_assertions);
 
               match Z3.Solver.check solver [] with
               | Z3.Solver.UNSATISFIABLE -> (
-                log "  [Variable: %s] Non-increasing\n" param_name;
-                Map.add current_variable_exp VariableMonotony.NonIncreasing acc
+                log "  [Variable: %s] Non-decreasing\n" param_name;
+                let assertions = Z3.Solver.get_assertions solver in
+                List.iter assertions ~f:(fun z3_exp -> 
+                    log "[Z3 Assertion] %s\n" (Z3.Expr.to_string z3_exp);
+                );
+                AccessPath.BaseMap.add access_base VariableMonotony.NonDecreasing acc
               )
               | Z3.Solver.SATISFIABLE -> (
-                log "  [Variable: %s] Not Monotonic\n" param_name;
-                Map.add current_variable_exp VariableMonotony.NotMonotonic acc
-              ) 
+                let decreasing_model = match Z3.Solver.get_model solver with
+                | Some model -> Z3.Model.to_string model
+                | None -> assert(false)
+                in
+
+                (* Check for non-increasing property next *)
+                Z3.Solver.reset solver;
+                Z3.Solver.add solver (non_increasing_goal :: solver_base_assertions);
+
+                match Z3.Solver.check solver [] with
+                | Z3.Solver.UNSATISFIABLE -> (
+                  log "  [Variable: %s] Non-increasing\n" param_name;
+                  AccessPath.BaseMap.add access_base VariableMonotony.NonIncreasing acc
+                )
+                | Z3.Solver.SATISFIABLE -> (
+                  log "  [Variable: %s] Not Monotonic\n" param_name;
+                  AccessPath.BaseMap.add access_base VariableMonotony.NotMonotonic acc
+                ) 
+                | Z3.Solver.UNKNOWN -> (
+                  (* EdgeExp.Map.add formal_exp FormalBoundMonotony.NotMonotonic acc *)
+                  let assertions = Z3.Solver.get_assertions solver in
+                  List.iter assertions ~f:(fun z3_exp -> 
+                    log "[Z3 Assertion] %s\n" (Z3.Expr.to_string z3_exp);
+                  );
+                  L.die InternalError "[Monotony Check] Unknown Z3 result: %s\n" (Z3.Solver.get_reason_unknown solver)
+                )
+              )
               | Z3.Solver.UNKNOWN -> (
                 (* EdgeExp.Map.add formal_exp FormalBoundMonotony.NotMonotonic acc *)
+                let assertions = Z3.Solver.get_assertions solver in
+                List.iter assertions ~f:(fun z3_exp -> 
+                  log "[Z3 Assertion] %s\n" (Z3.Expr.to_string z3_exp);
+                );
                 L.die InternalError "[Monotony Check] Unknown Z3 result: %s\n" (Z3.Solver.get_reason_unknown solver)
               )
+            with Z3.Error str -> (
+              (* This should hopefully be only caused by potential Z3 timeout *)
+              (* EdgeExp.Map.add formal_exp FormalBoundMonotony.NonDecreasing acc *)
+              L.die InternalError "[Z3 Error] %s\n" str
             )
-            | Z3.Solver.UNKNOWN -> (
-              (* EdgeExp.Map.add formal_exp FormalBoundMonotony.NotMonotonic acc *)
-              L.die InternalError "[Monotony Check] Unknown Z3 result: %s\n" (Z3.Solver.get_reason_unknown solver)
-            )
-          with Z3.Error str -> (
-            (* This should hopefully be only caused by potential Z3 timeout *)
-            (* EdgeExp.Map.add formal_exp FormalBoundMonotony.NonDecreasing acc *)
-            L.die InternalError "[Z3 Error] %s\n" str
           )
-        )
-      );
-    with Z3.Error str -> (
-      L.die InternalError "[Z3 Error] %s\n" str
+        );
+      with Z3.Error str -> (
+        L.die InternalError "[Z3 Error] %s\n" str
+      )
     )
+    | None -> AccessPath.BaseMap.empty
 
 
   let add e1 e2 = match is_zero e1, is_zero e2 with
@@ -1202,34 +1270,6 @@ module DCP = struct
         if Pvar.Set.mem base_pvar formals then Some (EdgeExp.Access lhs_access) else None
       )
       in
-
-      (* let process_assignment lhs_access rhs = match rhs with
-        | EdgeExp.BinOp (op, (EdgeExp.Access _ as rhs_access_exp), EdgeExp.Const Const.Cint rhs_const) -> (
-            let const_part = match op with
-            | Binop.MinusA _ -> IntLit.neg rhs_const
-            | Binop.PlusA _ -> rhs_const
-            | _ -> assert(false)
-            in
-            rhs_access_exp, Some (Binop.PlusA None, const_part)
-        )
-        | EdgeExp.BinOp (op, EdgeExp.Const Const.Cint rhs_const, (EdgeExp.Access _ as rhs_access_exp)) -> (
-          (* TODO: fix this for MinusA *)
-            match op with
-            | Binop.MinusA _ | Binop.PlusA _ -> rhs_access_exp, Some (Binop.PlusA None, rhs_const)
-            | _ -> assert(false)
-        )
-        | EdgeExp.BinOp (_, EdgeExp.Access _, EdgeExp.Access _) -> (
-          (* TODO *)
-          rhs, None
-        )
-        | EdgeExp.BinOp _ -> EdgeExp.separate2 rhs
-        | EdgeExp.Const (Const.Cint const) -> EdgeExp.zero, Some (Binop.PlusA None, const)
-        | EdgeExp.Max _
-        | EdgeExp.Min _
-        | EdgeExp.Access _
-        | EdgeExp.Call _ -> rhs, None
-        | _ -> L.(die InternalError)"[TODO] Unsupported asssignment: %a = %a" AccessPath.pp lhs_access EdgeExp.pp rhs
-      in *)
 
       let rec derive_rhs norm = match norm with
         | EdgeExp.Access access -> get_assignment access
@@ -1712,7 +1752,7 @@ let output_graph filepath graph output_fun =
 
 type summary = {
   formal_map: FormalMap.t;
-  monotony_map: VariableMonotony.t EdgeExp.Map.t;
+  monotony_map: VariableMonotony.t AccessPath.BaseMap.t;
   bound: EdgeExp.t;
   return_bound: EdgeExp.t option;
 }

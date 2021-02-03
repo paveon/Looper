@@ -104,7 +104,7 @@ module EdgeExp : sig
 
    val normalize_condition : t -> Tenv.t -> t
 
-   val determine_monotony : t -> Tenv.t -> Z3.context -> Z3.Solver.solver -> VariableMonotony.t Map.t
+   val determine_monotony : t -> Tenv.t -> Z3.context -> Z3.Solver.solver -> VariableMonotony.t AccessPath.BaseMap.t
 
    val add : t -> t -> t
 
@@ -362,7 +362,7 @@ val output_graph : string -> 'a ->(Out_channel.t -> 'a -> unit) -> unit
 
 type summary = {
    formal_map: FormalMap.t;
-   monotony_map: VariableMonotony.t EdgeExp.Map.t;
+   monotony_map: VariableMonotony.t AccessPath.BaseMap.t;
    bound: EdgeExp.t;
    return_bound: EdgeExp.t option;
 }
