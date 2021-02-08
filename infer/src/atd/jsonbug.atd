@@ -147,3 +147,17 @@ type cost_item = {
 }
 
 type costs_report = cost_item list
+
+
+type bound_info = {
+  bound : string;
+  return_bound : string option;
+}
+
+type looper_item = {
+  hash : string;
+  loc : loc;
+  procedure_name : string;
+  procedure_id : string;
+  bounds : bound_info;
+}

@@ -90,6 +90,9 @@ module OnDisk : sig
     f:(Procname.t -> Location.t -> CostDomain.summary option -> Errlog.t -> unit) -> unit
   (** Iterates over all analysis artefacts listed above, for each procedure *)
 
+  val iter_looper_summaries_from_config :
+    f:(Procname.t -> Location.t -> LooperDomain.summary option -> unit) -> unit
+
   val pp_specs_from_config : Format.formatter -> unit
   (** pretty print all stored summaries *)
 end

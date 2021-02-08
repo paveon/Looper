@@ -291,6 +291,37 @@ module JsonCostsPrinter = MakeJsonListPrinter (struct
         None
 end)
 
+type json_looper_printer_typ =
+  {loc: Location.t; proc_name: Procname.t; looper_opt: LooperDomain.summary option}
+
+module JsonLooperPrinter = MakeJsonListPrinter (struct
+  type elt = json_looper_printer_typ
+
+  let to_string {loc; proc_name; looper_opt} = match looper_opt with
+    | Some {bound; return_bound } -> (
+      let return_bound_opt = match return_bound with 
+      | Some return_bound -> Some (LooperDomain.EdgeExp.to_string return_bound)
+      | None -> None
+      in
+      let bound_info : Jsonbug_t.bound_info = { 
+        bound= LooperDomain.EdgeExp.to_string bound; return_bound = return_bound_opt}
+      in
+
+      let file = SourceFile.to_rel_path loc.Location.file in
+      let looper_item : Jsonbug_t.looper_item = { 
+        hash= compute_hash ~severity:"" ~bug_type:"" ~proc_name ~file ~qualifier:"";
+        loc= {file; lnum= loc.Location.line; cnum= loc.Location.col; enum= -1};
+        procedure_name= Procname.get_method proc_name;
+        procedure_id= procedure_id_of_procname proc_name;
+        bounds= bound_info 
+      }
+      in
+      Some (Jsonbug_j.string_of_looper_item looper_item) 
+    )
+    | None -> None
+end)
+
+
 let mk_error_filter filters proc_name file error_name =
   (Config.write_html || not (IssueType.(equal skip_function) error_name))
   && filters.Inferconfig.path_filter file
@@ -307,6 +338,10 @@ let collect_issues proc_name proc_location err_log issues_acc =
 let write_costs proc_name loc cost_opt (outfile : Utils.outfile) =
   if not (Cost.is_report_suppressed proc_name) then
     JsonCostsPrinter.pp outfile.fmt {loc; proc_name; cost_opt}
+
+
+let write_looper proc_name loc looper_opt (outfile : Utils.outfile) =
+  JsonLooperPrinter.pp outfile.fmt {loc; proc_name; looper_opt}
 
 
 (** Process lint issues of a procedure *)
@@ -339,8 +374,13 @@ let process_all_summaries_and_issues ~issues_outf ~costs_outf =
       IssueLog.load dir_name |> IssueLog.iter ~f:(write_lint_issues filters issues_outf linereader) ) ;
   ()
 
+let process_all_looper_summaries ~looper_outf =
+  Summary.OnDisk.iter_looper_summaries_from_config ~f:(fun proc_name loc looper_opt ->
+    write_looper proc_name loc looper_opt looper_outf;
+  )
 
-let write_reports ~issues_json ~costs_json =
+
+let write_reports ~issues_json ~costs_json ~looper_json =
   let mk_outfile fname =
     match Utils.create_outfile fname with
     | None ->
@@ -352,7 +392,12 @@ let write_reports ~issues_json ~costs_json =
   IssuesJson.pp_open issues_outf.fmt () ;
   let costs_outf = mk_outfile costs_json in
   JsonCostsPrinter.pp_open costs_outf.fmt () ;
-  process_all_summaries_and_issues ~issues_outf ~costs_outf ;
+  let looper_outf = mk_outfile looper_json in
+  JsonLooperPrinter.pp_open looper_outf.fmt () ;
+  process_all_summaries_and_issues ~issues_outf ~costs_outf;
+  process_all_looper_summaries ~looper_outf;
+  JsonLooperPrinter.pp_close looper_outf.fmt () ;
+  Utils.close_outf looper_outf ;
   JsonCostsPrinter.pp_close costs_outf.fmt () ;
   Utils.close_outf costs_outf ;
   IssuesJson.pp_close issues_outf.fmt () ;

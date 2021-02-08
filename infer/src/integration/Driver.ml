@@ -170,7 +170,8 @@ let execute_analyze ~changed_files =
 
 let report ?(suppress_console = false) () =
   let issues_json = ResultsDir.get_path ReportJson in
-  JsonReports.write_reports ~issues_json ~costs_json:(ResultsDir.get_path ReportCostsJson) ;
+  let looper_json = ResultsDir.get_path ReportLooperJson in
+  JsonReports.write_reports ~issues_json ~costs_json:(ResultsDir.get_path ReportCostsJson) ~looper_json;
   (* Post-process the report according to the user config. By default, calls report.py to create a
      human-readable report.
 
