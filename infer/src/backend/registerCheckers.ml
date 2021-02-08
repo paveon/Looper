@@ -193,6 +193,10 @@ let all_checkers =
            interprocedural Payloads.Fields.config_checks_between_markers
              ConfigChecksBetweenMarkers.checker
          in
+         [(checker, Clang); (checker, Java)] ) }
+  ; { checker= Looper
+    ; callbacks=
+        (let checker = interprocedural Payloads.Fields.looper LooperAnalysis.analyze_procedure in
          [(checker, Clang); (checker, Java)] ) } ]
 
 

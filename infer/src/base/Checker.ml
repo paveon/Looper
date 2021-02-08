@@ -38,6 +38,7 @@ type t =
   | ToplOnBiabduction
   | ToplOnPulse
   | Uninit
+  | Looper
 [@@deriving equal, enumerate]
 
 type support = NoSupport | ExperimentalSupport | Support
@@ -401,6 +402,17 @@ let config_unsafe checker =
       ; short_documentation= "Warns when values are used before having been initialized."
       ; cli_flags= Some {deprecated= []; show_in_help= true}
       ; enabled_by_default= true
+      ; activates= [] }
+  | Looper ->
+      { id= "looper"
+      ; kind=
+          UserFacing
+            { title= "Looper"
+            ; markdown_body= "See https://github.com/paveon/Looper/wiki/Looper:-A-Worst-Case-Cost-Analyser"}
+      ; support= supports_clang_and_java
+      ; short_documentation= "Loop complexity analysis."
+      ; cli_flags= Some {deprecated= []; show_in_help= true}
+      ; enabled_by_default= false
       ; activates= [] }
 
 

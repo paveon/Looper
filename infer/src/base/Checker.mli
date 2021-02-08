@@ -37,6 +37,7 @@ type t =
   | ToplOnBiabduction
   | ToplOnPulse
   | Uninit
+  | Looper
 [@@deriving equal, enumerate]
 
 (** per-language support for each checker *)

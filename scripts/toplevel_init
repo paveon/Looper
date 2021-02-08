@@ -28,6 +28,7 @@ open Nullsafe;;
 open Pulselib;;
 open Checkers;;
 open Costlib;;
+open Looper;;
 open Quandary;;
 open TOPLlib;;
 open Concurrency;;

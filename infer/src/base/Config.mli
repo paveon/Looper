@@ -138,6 +138,8 @@ val trace_absarray : bool
 
 val unsafe_unret : string
 
+val disable_vfg_renaming : bool
+
 val incremental_analysis : bool
 
 val weak : string
