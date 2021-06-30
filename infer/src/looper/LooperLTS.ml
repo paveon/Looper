@@ -8,11 +8,7 @@ module L = Logging
 module Domain = LooperDomain
 
 
-(* let log : F.formatter -> ('a, Format.formatter, unit) format -> 'a = fun fmt format -> F.fprintf fmt format *)
-
 let debug_log : ('a, Format.formatter, unit) format -> 'a = fun fmt -> F.fprintf (List.hd_exn !Domain.debug_fmt) fmt
-
-(* let debug_log : ('a, Format.formatter, unit) format -> 'a = fun fmt -> F.fprintf !Domain.debug_fmt fmt *)
 
 
 module GraphData = struct
@@ -58,7 +54,6 @@ module GraphData = struct
       formals, type_map
     )
     in
-    (* log "Locals: %a\n" Pvar.Set.pp locals; *)
     {
       last_node = start_node;
       loophead_stack = Stack.create ();
@@ -210,38 +205,9 @@ module GraphConstructor = struct
 
         debug_log "[STORE] (%a) | %a = %a\n" Location.pp loc EdgeExp.pp lhs_access_exp EdgeExp.pp rhs_exp;
 
-        (* let rhs_exp = match rhs_exp with
-        | EdgeExp.BinOp (Binop.PlusA _, EdgeExp.Access rhs_access, (EdgeExp.Const (Const.Cint rhs_int) as rhs_c)) -> (
-          (* [BINOP] Access + Const *)
-          match (DCP.EdgeData.get_assignment_rhs graph_data.edge_data rhs_access) with
-          | EdgeExp.Access _ as assignment_rhs -> EdgeExp.BinOp (Binop.PlusA None, assignment_rhs, rhs_c)
-          | EdgeExp.BinOp (Binop.PlusA _, lexp, EdgeExp.Const (Const.Cint assignment_rhs_int)) -> (
-            (* [BINOP] (PVAR + C1) + C2 -> PVAR + (C1 + C2) *)
-            let const = EdgeExp.Const (Const.Cint (IntLit.add rhs_int assignment_rhs_int)) in
-            EdgeExp.BinOp (Binop.PlusA None, lexp, const)
-          )
-          | assigned -> (
-            (* L.(die InternalError)"Unsupported exp substitution" *)
-            (* Substitute without simplifying *)
-            debug_log "[STORE] Substitution without simplification: %a -> %a\n" 
-              AccessPath.pp rhs_access EdgeExp.pp assigned;
-            EdgeExp.BinOp (Binop.PlusA None, assigned, rhs_c)
-          )
-        )
-        | EdgeExp.BinOp (op, EdgeExp.Access rhs_access1, EdgeExp.Access rhs_access2) -> (
-          let rhs_subst1 = DCP.EdgeData.get_assignment_rhs graph_data.edge_data rhs_access1 in
-          let rhs_subst2 = DCP.EdgeData.get_assignment_rhs graph_data.edge_data rhs_access2 in
-          EdgeExp.BinOp (op, rhs_subst1, rhs_subst2)
-        )
-        | EdgeExp.Access rhs_access -> (
-          DCP.EdgeData.get_assignment_rhs graph_data.edge_data rhs_access
-        )
-        | _ -> rhs_exp
-        in *)
-
-
         let is_plus_minus_op op = match op with
-        | Binop.PlusA _ | Binop.MinusA _ -> true | _ -> false
+        | Binop.PlusA _ | Binop.MinusA _ -> true 
+        | _ -> false
         in
 
         (* Check if we can add new norm to the norm set *)
@@ -392,14 +358,6 @@ module GraphConstructor = struct
         (arg, arg_typ) :: args, if Typ.is_int arg_typ then EdgeExp.Set.union arg_norms norms else norms
       )
       in
-
-      (* let args, arg_norms = List.fold args ~f:(fun (args, norms) (arg, arg_typ) ->
-        let arg = EdgeExp.of_exp arg graph_data.ident_map arg_typ graph_data.type_map in
-        debug_log "Simplify argument expression: %a\n" EdgeExp.pp arg;
-        let arg = EdgeExp.simplify (substitute graph_data.edge_data arg) in
-        (arg, arg_typ) :: args, if Typ.is_int arg_typ then EdgeExp.Set.add arg norms else norms
-      ) ~init:([], EdgeExp.Set.empty)
-      in *)
 
       let args = List.rev args in
       let call = EdgeExp.Call (ret_typ, callee_pname, args, loc) in

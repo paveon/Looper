@@ -52,7 +52,6 @@ let analyze_procedure (analysis_data : Domain.Summary.t InterproceduralAnalysis.
   let proc_name = Procdesc.get_proc_name proc_desc in
   let proc_name_str = String.drop_suffix (Procname.to_simplified_string proc_name) 2 in
   let proc_graph_dir = graphs_dir ^/ proc_name_str in
-  (* (proc_graph_dir ^/ name) *)
 
   Utils.create_dir (F.asprintf "%s/%s/" looper_dir source_file_str);
 
@@ -60,18 +59,6 @@ let analyze_procedure (analysis_data : Domain.Summary.t InterproceduralAnalysis.
   let log_file = mk_outfile debug_log_fname in
   debug_fmt := log_file.fmt :: !debug_fmt;
   let debug_log format = F.fprintf log_file.fmt format in
-
-  (* let cfg = [("model", "true"); ("proof", "false"); ("timeout", "5000")] in
-  let z3_ctx = (Z3.mk_context cfg) in
-  (* let nlqsat_tactic = Z3.Tactic.mk_tactic z3_ctx "nlqsat" in *)
-  let solver = (Z3.Solver.mk_solver z3_ctx None) in
-  let tactics = Z3.Tactic.get_tactic_names z3_ctx in
-  List.iter tactics ~f:(fun name ->
-    debug_log "[Tactic] %s: %s\n" name (Z3.Tactic.get_tactic_description z3_ctx name)
-  ); *)
-  
-  (* let pid = ProcessPoolState.get_pid () in *)
-  (* console_log "=========== PROCESS ID: %i, %B ===========\n" (Pid.to_int pid) !ProcessPoolState.has_running_children; *)
 
 
   let prover_map : prover_data ProverMap.t = if ProverMap.is_empty !why3_data then (
@@ -123,127 +110,7 @@ let analyze_procedure (analysis_data : Domain.Summary.t InterproceduralAnalysis.
   active_prover.vars <- StringMap.empty;
 
 
-
-  let zero : Why3.Term.term = Why3.Term.t_real_const (Why3.BigInt.of_int 0) in
-  let one : Why3.Term.term = Why3.Term.t_real_const (Why3.BigInt.of_int 1) in
-  let two : Why3.Term.term = Why3.Term.t_real_const (Why3.BigInt.of_int 2) in
-  let four : Why3.Term.term = Why3.Term.t_real_const (Why3.BigInt.of_int 4) in
-  let plus_symbol : Why3.Term.lsymbol = Why3.Theory.ns_find_ls active_prover.theory.th_export ["infix +"] in
-  let div_symbol : Why3.Term.lsymbol = Why3.Theory.ns_find_ls active_prover.theory.th_export ["infix /"] in
-  let ge_symbol = Why3.Theory.ns_find_ls active_prover.theory.th_export ["infix >="] in
-  let gt_symbol = Why3.Theory.ns_find_ls active_prover.theory.th_export ["infix >"] in
-  let le_symbol = Why3.Theory.ns_find_ls active_prover.theory.th_export ["infix <="] in
-  let two_plus_two : Why3.Term.term = Why3.Term.t_app_infer plus_symbol [two;two] in
-  let fmla3 : Why3.Term.term = Why3.Term.t_equ two_plus_two four in
-  (* console_log "@[formula 3 is:@ %a@]@." Why3.Pretty.print_term fmla3; *)
-
-  let param_types = [Why3.Ty.ty_real;Why3.Ty.ty_real] in
-  let fsymbol = Why3.Term.create_fsymbol (Why3.Ident.id_fresh "bound_func") param_types Why3.Ty.ty_real in
-  
-  let x1 = Why3.Term.create_vsymbol (Why3.Ident.id_fresh "x1") Why3.Ty.ty_real in
-  let x2 = Why3.Term.create_vsymbol (Why3.Ident.id_fresh "x2") Why3.Ty.ty_real in
-  let x1_term = Why3.Term.t_var x1 in
-  let x2_term = Why3.Term.t_var x2 in
-
-  let y1 = Why3.Term.create_vsymbol (Why3.Ident.id_fresh "y1") Why3.Ty.ty_real in
-  let y2 = Why3.Term.create_vsymbol (Why3.Ident.id_fresh "y2") Why3.Ty.ty_real in
-  let y1_term = Why3.Term.t_var y1 in
-  let y2_term = Why3.Term.t_var y2 in
-
-  let make_attribute (name: string) = Why3.Ident.create_attribute ("model_trace:" ^ name) in
-  let x_dummy_loc = Why3.Loc.dummy_position  in
-  let x_attrs = Why3.Ident.Sattr.singleton (make_attribute "my_X") in
-
-  let x = Why3.Term.create_vsymbol (Why3.Ident.id_fresh ~attrs:x_attrs ~loc:x_dummy_loc "x") Why3.Ty.ty_real in
-  let y = Why3.Term.create_vsymbol (Why3.Ident.id_fresh "y") Why3.Ty.ty_real in
-
-  let x_term = Why3.Term.t_var x in
-  let y_term = Why3.Term.t_var y in
-  let div_term = Why3.Term.t_app_infer div_symbol [one;y_term] in
-  let plus_fmla = Why3.Term.t_app_infer plus_symbol [x_term;div_term] in
-
-  (* let param_decl = Why3.Decl.create_param_decl fsymbol in *)
-  let decl = Why3.Decl.make_ls_defn fsymbol [x;y] plus_fmla in
-
-  (* let lhs_fmla = Why3.Term.t_app_infer plus_symbol [x2_term;div_term] in
-  let rhs_fmla = Why3.Term.t_app_infer plus_symbol [x1_term;div_term] in *)
-
-  (* let bound_app = Why3.Term.t_app_infer fsymbol [x_term;y_term] in *)
-  (* let bound_eq = Why3.Term.t_equ bound_app plus_fmla in *)
-  (* let function_def = Why3.Term.t_forall_close [x;y] [] bound_eq in *)
-
-  let bound_app1 = Why3.Term.t_app_infer fsymbol [Why3.Term.t_var x;Why3.Term.t_var y1] in
-  let bound_app2 = Why3.Term.t_app_infer fsymbol [Why3.Term.t_var x;Why3.Term.t_var y2] in
-  let y_gt_zero = Why3.Term.t_app_infer gt_symbol [Why3.Term.t_var y;zero] in
-  let y1_gt_zero = Why3.Term.t_app_infer gt_symbol [y1_term; zero] in
-  let antecedent = Why3.Term.t_app_infer ge_symbol [y2_term; y1_term] in
-  let antecedent = Why3.Term.t_and antecedent y1_gt_zero in
-  (* let antecedent2 = Why3.Term.t_app_infer le_symbol [Why3.Term.t_var x2; Why3.Term.t_var x1] in *)
-  let consequent = Why3.Term.t_app_infer le_symbol [bound_app2; bound_app1] in
-  let implication = Why3.Term.t_implies antecedent consequent in
-  let not_impl = Why3.Term.t_not implication in
-
-  let quantified_fmla = Why3.Term.t_forall_close [y2;y1;x] [] implication in
-  (* console_log "@[quantified formula is:@ %a@]@." Why3.Pretty.print_term quantified_fmla; *)
-
-  let task3 = None in
-  let task3 = Why3.Task.use_export task3 active_prover.theory in
-  (* let task3 = Why3.Task.add_param_decl task3 fsymbol in *)
-  let task3 = Why3.Task.add_logic_decl task3 [decl] in
-  (* let goal_id3 = Why3.Decl.create_prsymbol (Why3.Ident.id_fresh "goal3") in *)
-  let non_decreasing_goal = Why3.Decl.create_prsymbol (Why3.Ident.id_fresh "non_decreasing") in
-  (* let func_axiom = Why3.Decl.create_prsymbol (Why3.Ident.id_fresh "func_axiom") in *)
-  (* let task3 = Why3.Task.add_prop_decl task3 Why3.Decl.Pgoal goal_id3 fmla3 in *)
-  (* let axiom_symbol = Why3.Decl.create_prsymbol (Why3.Ident.id_fresh "positive_axiom") in *)
-
-  (* let task3 = Why3.Task.add_prop_decl task3 Why3.Decl.Paxiom axiom_symbol axiom_term in *)
-  (* let task3 = Why3.Task.add_prop_decl task3 Why3.Decl.Paxiom func_axiom function_def in *)
-
-  (* Why3.Term.t_attr_set *)
-  let fmla_loc = Why3.Loc.dummy_position in
-  let fmla_attrs = Why3.Ident.Sattr.singleton Why3.Ity.annot_attr in
-  let quantified_fmla2 = Why3.Term.t_forall_close [x] [] (Why3.Term.t_neq x_term zero) in
-  let quantified_fmla2 = Why3.Term.t_attr_set ~loc:fmla_loc fmla_attrs quantified_fmla2 in
-  let task3 = Why3.Task.add_prop_decl task3 Why3.Decl.Pgoal non_decreasing_goal quantified_fmla2 in
-  (* console_log "@[task 3 is:@\n%a@]@." Why3.Pretty.print_task task3; *)
-
-
-  (* console_log "Z3 prover command: %s\n" why3.prover.command; *)
-  (* console_log "Z3 task: %a\n" Why3.Driver.(print_task active_prover.driver) task3; *)
-
-  let prover_call = Why3.Driver.prove_task ~command:active_prover.prover_conf.command
-        ~limit:{Why3.Call_provers.empty_limit with limit_time = 60} active_prover.driver task3
-  in
-
-  (* let result3 = Why3.Call_provers.wait_on_call prover_call in *)
-
-  let answer_to_str answer = match answer with
-  | Why3.Call_provers.Valid -> "valid"
-  | Why3.Call_provers.Invalid -> "invalid"
-  | Why3.Call_provers.Timeout -> "timeout"
-  | Why3.Call_provers.OutOfMemory -> "out of memory"
-  | Why3.Call_provers.StepLimitExceeded -> "step limit exceeded"
-  | Why3.Call_provers.Unknown str -> "unknown: " ^ str
-  | Why3.Call_provers.Failure str -> "failure: " ^ str
-  | Why3.Call_provers.HighFailure -> "high failure"
-  in
-
-  (* console_log "@[On task 3, prover answers: %s in %5.2f seconds@." 
-    (answer_to_str result3.pr_answer) result3.pr_time; *)
-
-  (* console_log "@[On task 3, prover answers: %s (%s) in %5.2f seconds@." 
-    (answer_to_str result3.pr_answer) result3.pr_output result3.pr_time; *)
-
-  (* console_log "@[On task 3, answers %a@." (Why3.Call_provers.print_prover_result ~json_model:false) result3;
-  console_log "Model is %t@." 
-    (fun fmt -> (
-      if Why3.Model_parser.is_model_empty result3.pr_model then (
-        Why3.Model_parser.print_model ?me_name_trans:None ~print_attrs:true fmt result3.pr_model
-      ) else console_log "unavailable")
-    ); *)
-
   debug_log "[LOOPER] Source: %s, Procedure '%s' [%a]\n\n" source_file_str proc_name_str Location.pp (Procdesc.get_loc proc_desc);
-
   debug_log "---------------------------------\n\
             - LTS CONSTRUCTION\n\
             ---------------------------------\n";
@@ -264,7 +131,6 @@ let analyze_procedure (analysis_data : Domain.Summary.t InterproceduralAnalysis.
   debug_log "\n---------------------------------\n\
               - PERFORMING ANALYSIS \n\
               ---------------------------------\n";
-  (* log "%a" pp post; *)
 
   (* Draw dot graph, use nodes and edges stored in graph_data *)
   debug_log "[POTENTIAL NORMS]\n";
@@ -277,37 +143,6 @@ let analyze_procedure (analysis_data : Domain.Summary.t InterproceduralAnalysis.
   DCP.NodeSet.iter (fun node ->
     DCP.add_vertex dcp node;
   ) graph_data.nodes;
-
-  
-  (* Derive difference constraints for each edge for each norm until we
-   * process all norms. Additional norms are generated during this process *)
-  (* let rec compute_norm_set unprocessed processed = if EdgeExp.Set.is_empty unprocessed
-  then processed
-  else (
-    let norm = EdgeExp.Set.min_elt unprocessed in
-    let unprocessed = EdgeExp.Set.remove norm unprocessed in
-    let processed = EdgeExp.Set.add norm processed in
-    debug_log "[DC derivation] Processing norm: %a\n" EdgeExp.pp norm;
-
-    let unprocessed = if EdgeExp.is_const norm then unprocessed
-    else DCP.EdgeSet.fold (fun ((src, _, dst) as edge) unprocessed ->
-      let all_norms = EdgeExp.Set.union processed unprocessed in
-      (* let derived_norms = DCP.EdgeData.derive_constraint edge norm all_norms graph_data.formals in *)
-      let derived_norms = if EdgeExp.is_variable norm graph_data.formals then (
-        (* console_log "%a ---> %a, deriving for: %a\n" DCP.Node.pp src DCP.Node.pp dst EdgeExp.pp norm; *)
-        DCP.EdgeData.derive_constraint edge norm all_norms graph_data.formals
-      )
-      else EdgeExp.Set.empty
-      in
-      
-      (* Remove already processed norms and add new norms to unprocessed set *)
-      let new_norms = EdgeExp.Set.diff derived_norms processed in
-      EdgeExp.Set.union new_norms unprocessed
-    ) graph_data.edges unprocessed
-    in
-    compute_norm_set unprocessed processed
-  )
-  in *)
 
 
   let rec compute_norm_set unprocessed processed = if UnprocessedNormSet.is_empty unprocessed
@@ -360,12 +195,12 @@ let analyze_procedure (analysis_data : Domain.Summary.t InterproceduralAnalysis.
   EdgeExp.Set.iter (fun norm -> debug_log "  %a\n" EdgeExp.pp norm) final_norm_set;
 
   (* All DCs and norms are derived, now derive guards.
-    * Use Z3 SMT solver to check which norms on which
-    * transitions are guaranted to be greater than 0
-    * based on conditions that hold on specified transition.
-    * For example if transition is guarded by conditions
-    * [x >= 0] and [y > x] then we can prove that
-    * norm [x + y] > 0 thus it is a guard on this transition *)
+   * Use SMT solver to check which norms on which
+   * transitions are guaranted to be greater than 0
+   * based on conditions that hold on specified transition.
+   * For example if transition is guarded by conditions
+   * [x >= 0] and [y > x] then we can prove that
+   * norm [x + y] > 0 thus it is a guard on this transition *)
   debug_log "\n==========[Deriving guards]=======================\n";
 
 
@@ -373,11 +208,10 @@ let analyze_procedure (analysis_data : Domain.Summary.t InterproceduralAnalysis.
   DCP.EdgeSet.iter (fun (src, edge_data, dst) ->
     debug_log "[Guard Derivation] %a ---> %a\n" DCP.Node.pp src DCP.Node.pp dst;
     edge_data.edge_type <- GuardedDCP;
-    (* DCP.EdgeData.derive_guards edge_data final_norm_set tenv z3_ctx solver; *)
     DCP.EdgeData.derive_guards_why3 edge_data final_norm_set tenv active_prover;
-    List.iter (EdgeExp.Set.elements edge_data.guards) ~f:(fun guard -> 
-      debug_log "\t%s > 0\n" (EdgeExp.to_string guard);
-    );
+    
+    EdgeExp.Set.iter (fun guard -> debug_log "\t%s > 0\n" (EdgeExp.to_string guard)) edge_data.guards;
+
     DCP.add_edge_e dcp (src, edge_data, dst);
   ) graph_data.edges;
 
@@ -485,8 +319,6 @@ let analyze_procedure (analysis_data : Domain.Summary.t InterproceduralAnalysis.
           let dc_rhs = EdgeExp.Max [rhs_norm], op, rhs_const in
           DC.Map.add (EdgeExp.Max [lhs]) dc_rhs acc
         )
-        (* let dc_rhs = rhs_norm, op, rhs_const in
-        DC.Map.add (lhs) dc_rhs acc *)
       ) edge_data.constraints DC.Map.empty
       in
       edge_data.constraints <- constraints;
@@ -515,7 +347,6 @@ let analyze_procedure (analysis_data : Domain.Summary.t InterproceduralAnalysis.
     let vfg = VFG.create () in
     let used_variables = DCP.EdgeSet.fold (fun (src, edge_data, dst) acc -> 
       DC.Map.fold (fun lhs_norm (rhs_norm, _, _) inner_acc ->
-        (* not (EdgeExp.equal lhs_norm rhs_norm && IntLit.iszero c) && *)
         if (EdgeExp.Set.mem lhs_norm variables) && (EdgeExp.Set.mem rhs_norm variables) then (
           let vfg_add_node node = if not (VFG.mem_vertex vfg node) then (
             VFG.add_vertex vfg node
@@ -553,14 +384,14 @@ let analyze_procedure (analysis_data : Domain.Summary.t InterproceduralAnalysis.
 
 
     (* Construct VFG name map, create fresh variable 'v' for each SCC
-    * and map each VFG node to this fresh variable. *)
+     * and map each VFG node to this fresh variable. *)
     debug_log "\n==========[Creating VFG mapping]==================\n";
     let vfg_components = VFG_SCC.scc_list vfg in
 
     let get_vfg_scc_edges vfg vfg_components scc_graph =
       List.fold vfg_components ~init:VFG.EdgeSet.empty ~f:(fun acc component ->
         (* Iterate over all combinations of SCC nodes and check if there
-        * are edges between them in both directions *)
+         * are edges between them in both directions *)
         List.fold component ~init:acc ~f:(fun acc node ->
           VFG.add_vertex scc_graph node;
 
@@ -661,41 +492,7 @@ let analyze_procedure (analysis_data : Domain.Summary.t InterproceduralAnalysis.
               )
             ) None
             in
-
             renamed_arg, typ
-
-
-            (* let renamed_arg = if EdgeExp.is_symbolic_const arg graph_data.formals then arg
-            else (
-              console_log "%a  ---> %a  | ARG: %a\n" DCP.Node.pp dcp_src DCP.Node.pp dcp_dst EdgeExp.pp arg;
-
-              (* A little hack-around, need to figure out how to deal with this later *)
-              let possible_keys = [
-                (EdgeExp.Max [arg], dcp_dst);
-                (EdgeExp.Max [arg], dcp_src);
-                (arg, dcp_dst);
-                (arg, dcp_src)] 
-              in
-              let rec find_vfg_variable keys = match keys with
-              | [] -> (
-                (* This case should occur only for SSA variables which are constant after initialization *)
-                match EdgeExp.Map.find_opt arg ssa_variables_map with
-                | Some ssa_init_rhs -> ssa_init_rhs
-                | None -> assert(false)
-                (* let ssa_init_rhs = EdgeExp.Map.find arg ssa_variables_map in
-                ssa_init_rhs *)
-              )
-              | vfg_node :: xs -> (match VFG.Map.find_opt vfg_node vfg_map with
-                | Some vfg_var -> vfg_var
-                | None -> (
-                  find_vfg_variable xs
-                )
-              )
-              in
-              find_vfg_variable possible_keys
-            )
-            in
-            renamed_arg, typ *)
           )
           else arg, typ
         )
@@ -706,51 +503,17 @@ let analyze_procedure (analysis_data : Domain.Summary.t InterproceduralAnalysis.
       ) edge_data.calls
       in
 
-
-      (* let calls_renamed_args = EdgeExp.Set.map (fun call -> match call with
-      | EdgeExp.Call (ret_typ, proc_name, args, loc) -> (
-        let renamed_args = List.map args ~f:(fun (arg, typ) ->
-          if Typ.is_int typ then (
-            let renamed_arg, _ = EdgeExp.map_accesses arg ~f:(fun access _ ->
-              let access = EdgeExp.Access access in
-              if EdgeExp.is_formal access graph_data.formals then access, None
-              else (
-                match VFG.Map.find_opt (access, dcp_dst) vfg_map, VFG.Map.find_opt (access, dcp_src) vfg_map with
-                | Some dst_map, Some _ -> dst_map, None
-                | Some dst_map, None -> dst_map, None
-                | None, Some src_map -> src_map, None
-                | _ -> (
-                  (* This case should occur only for SSA variables which are constant after initialization *)
-                  console_log "VFG ACCESS: %a, SRC: %a, DST: %a\n" EdgeExp.pp access DCP.Node.pp dcp_src DCP.Node.pp dcp_dst;
-                  let ssa_init_rhs = EdgeExp.Map.find access ssa_variables_map in
-                  ssa_init_rhs, None
-                )
-              )
-            ) None
-            in
-            renamed_arg, typ
-          )
-          else arg, typ
-        )
-        in
-        EdgeExp.Call (ret_typ, proc_name, renamed_args, loc)
-      )
-      | _ -> assert(false)
-      ) edge_data.calls
-      in *)
-
       edge_data.calls <- calls_renamed_args;
       edge_data.constraints <- constraints;
       edge_data.edge_type <- DCP;
     ) graph_data.edges;
 
-
     output_graph (proc_graph_dir ^/ ssa_dcp_fname) dcp DCP_Dot.output_graph;
-
     vfg_norm_set
   ) 
   else final_norm_set
   in
+
 
   (* Reset graph construction, must be performed after VFG renaming phase *)
   debug_log "\n==========[Creating Reset Graph]==================\n";
@@ -773,7 +536,7 @@ let analyze_procedure (analysis_data : Domain.Summary.t InterproceduralAnalysis.
   output_graph (proc_graph_dir ^/ rg_fname) reset_graph RG_Dot.output_graph;
 
   (* Suboptimal way to find all SCC edges, the ocamlgraph library for some
-    * reason does not have a function that returns edges of SCCs.  *)
+   * reason does not have a function that returns edges of SCCs.  *)
   let get_scc_edges dcp scc_graph =
     let components = DCP_SCC.scc_list dcp in
     
@@ -793,8 +556,8 @@ let analyze_procedure (analysis_data : Domain.Summary.t InterproceduralAnalysis.
 
   debug_log "\n==========[Determining Local Bounds]==============\n";
   (* Edges that are not part of any SCC can be executed only once,
-    * thus their local bound mapping is 1 and consequently their
-    * transition bound TB(t) is 1 *)
+   * thus their local bound mapping is 1 and consequently their
+   * transition bound TB(t) is 1 *)
   let dcp_scc_graph = DCP.create () in
   let scc_edges = get_scc_edges dcp dcp_scc_graph in
   let non_scc_edges = DCP.EdgeSet.diff graph_data.edges scc_edges in
@@ -1051,7 +814,7 @@ let analyze_procedure (analysis_data : Domain.Summary.t InterproceduralAnalysis.
           debug_log "\n";
 
           (* Deduplicate and unpack nested max expressions
-            * TODO: unpacking should be done only if certain conditions are met, should think about it later *)
+           * TODO: unpacking should be done only if certain conditions are met, should think about it later *)
           let rec flatten_nested_max args acc_set = List.fold args ~init:acc_set ~f:(fun acc arg ->
             match arg with
             | EdgeExp.Max nested_args -> flatten_nested_max nested_args acc
@@ -1067,7 +830,6 @@ let analyze_procedure (analysis_data : Domain.Summary.t InterproceduralAnalysis.
             let is_always_positive, cache = match EdgeExp.Map.find_opt arg cache.positivity with
             | Some value -> value, cache
             | None -> (
-              (* let value = EdgeExp.always_positive arg tenv z3_ctx solver in *)
               let value = EdgeExp.always_positive_why3 arg tenv active_prover in
               value, { cache with positivity = EdgeExp.Map.add arg value cache.positivity }
             )
@@ -1080,18 +842,9 @@ let analyze_procedure (analysis_data : Domain.Summary.t InterproceduralAnalysis.
         )
         in
 
-        var_bound, { cache with variable_bounds = EdgeExp.Map.add norm var_bound cache.variable_bounds }
+        var_bound, {cache with variable_bounds = EdgeExp.Map.add norm var_bound cache.variable_bounds}
       ) 
-      else (
-        (* let always_positive = EdgeExp.always_positive_why3 norm tenv active_prover in
-        debug_log "   [Always positive] %a: %B\n" EdgeExp.pp norm always_positive;
-        let bound = if always_positive then norm else EdgeExp.Max [norm] in *)
-        norm, { 
-          cache with 
-          variable_bounds = EdgeExp.Map.add norm norm cache.variable_bounds;
-          (* positivity = EdgeExp.Map.add norm always_positive cache.positivity; *)
-        }
-      )
+      else norm, {cache with variable_bounds = EdgeExp.Map.add norm norm cache.variable_bounds}
     )
     in
     debug_log "   [VB(%a)] %a\n" EdgeExp.pp norm EdgeExp.pp bound;
@@ -1156,17 +909,9 @@ let analyze_procedure (analysis_data : Domain.Summary.t InterproceduralAnalysis.
         )
         in
 
-        var_bound, { cache with lower_bounds = EdgeExp.Map.add norm var_bound cache.lower_bounds }
+        var_bound, {cache with lower_bounds = EdgeExp.Map.add norm var_bound cache.lower_bounds}
       ) 
-      else (
-        (* let always_positive = EdgeExp.always_positive_why3 norm tenv active_prover in
-        debug_log "   [Always positive] %a: %B\n" EdgeExp.pp norm always_positive;
-        let bound = if always_positive then norm else EdgeExp.Max [norm] in *)
-        norm, { cache with 
-          lower_bounds = EdgeExp.Map.add norm norm cache.lower_bounds;
-          (* positivity = EdgeExp.Map.add norm always_positive cache.positivity;  *)
-        }
-      )
+      else norm, {cache with lower_bounds = EdgeExp.Map.add norm norm cache.lower_bounds}
     )
     in
     debug_log "   [LB(%a)] %a\n" EdgeExp.pp norm EdgeExp.pp bound;
@@ -1175,7 +920,7 @@ let analyze_procedure (analysis_data : Domain.Summary.t InterproceduralAnalysis.
 
   and transition_bound (src, (edge_data : DCP.EdgeData.t), dst) cache =
     (* For variable norms: TB(t) = IncrementSum + ResetSum 
-      * For constant norms: TB(t) = constant *)
+     * For constant norms: TB(t) = constant *)
     debug_log "[TB] %a -- %a\n" DCP.Node.pp src DCP.Node.pp dst;
     match edge_data.bound with
     | Some bound -> bound, cache
@@ -1216,7 +961,6 @@ let analyze_procedure (analysis_data : Domain.Summary.t InterproceduralAnalysis.
             (EdgeExp.add increment_sum reset_sum), cache
           )
           else norm, cache
-        (* | _ -> L.(die InternalError)"[Bound] Unsupported norm expression [%a]!" EdgeExp.pp norm *)
         in
         
         debug_log "[Edge bound (%a)] %a\n" EdgeExp.pp norm EdgeExp.pp bound;
@@ -1225,34 +969,22 @@ let analyze_procedure (analysis_data : Domain.Summary.t InterproceduralAnalysis.
       )
       | None -> L.(die InternalError)"[Bound] edge has no bound norm!"
     )
-
-    (* match edge_data.bound with
-    | EdgeExp.Inf when edge_data.computing_bound -> raise Exit
-    | EdgeExp.Inf -> (
-
-      (* let cache = calculate_exec_cost edge_data cache in
-      log "   [Execution cost] %a\n" EdgeExp.pp edge_data.execution_cost; *)
-    )
-    | _ -> cache *)
   in
 
 
+  (* Sum together the cost of all functions called on this transition *)
   let instantiate_function_calls (edge_data : DCP.EdgeData.t) cache =
-    (* Sum together the cost of all functions called on this transition *)
-
     EdgeExp.Set.fold (fun call_exp (calls, cache_acc) -> match call_exp with
       | EdgeExp.Call (_, proc_name, args, loc) -> (
         let payload_opt = Location.Map.find_opt loc graph_data.call_summaries in
         match payload_opt with
         | Some payload -> (
-          (* let formal_list = FormalMap.get_formal_indices payload.formal_map in *)
           debug_log "[Summary Instantiation] %a | %a\n" Procname.pp proc_name Location.pp loc;
 
           let call_transitions, new_cache = Summary.instantiate payload args tenv active_prover cache
             ~upper_bound:variable_bound ~lower_bound:variable_lower_bound
           in
-          (* debug_log "  [CALL] Formal Bound: %a\n" EdgeExp.pp payload.bound; *)
-          (* debug_log "  [CALL] Instantiated Bound: %a\n" EdgeExp.pp call_cost; *)
+
           let instantiated_call : Summary.call = {
             name = proc_name;
             loc;
@@ -1313,21 +1045,9 @@ let analyze_procedure (analysis_data : Domain.Summary.t InterproceduralAnalysis.
         let instantiated_calls, cache = instantiate_function_calls edge_data cache in
         let bound, cache = transition_bound edge cache in
 
-        (* let call_bounds = List.fold call_costs ~f:(fun call_bounds call_cost ->
-          let monotony_map = if EdgeExp.is_const call_cost then AccessPathMap.empty
-          else EdgeExp.determine_monotony_why3 call_cost tenv active_prover
-          in
-          let bound : Summary.call = {
-            bound = call_cost; 
-            monotony_map;
-          }
-          in
-          bound :: call_bounds
-        ) ~init:[]
-        in *)
-
-        let monotony_map = if EdgeExp.is_const bound then AccessPathMap.empty
-          else EdgeExp.determine_monotony_why3 bound tenv active_prover
+        let monotony_map = if EdgeExp.is_const bound 
+        then AccessPathMap.empty
+        else EdgeExp.determine_monotony_why3 bound tenv active_prover
         in
 
         let transition : Summary.transition = {
@@ -1351,31 +1071,11 @@ let analyze_procedure (analysis_data : Domain.Summary.t InterproceduralAnalysis.
   let total_bound_exp = Summary.total_bound bounds in
   debug_log "\n[Final bound] %a\n" EdgeExp.pp total_bound_exp;
 
-  (* debug_log "\n[Final bound] %a\n" EdgeExp.pp bound; *)
-
-  (* Location.Map.iter (fun loc loc_bound -> 
-    debug_log "[Location bound] %a   ---   %a\n" EdgeExp.pp loc_bound Location.pp loc;
-  ) bound_map; *)
-
-  (* debug_log "========[Determining monotony of bound variables]========\n"; *)
-  (* let monotony_map = EdgeExp.determine_monotony bound tenv z3_ctx solver active_prover.theory in *)
-  (* let monotony_map = EdgeExp.determine_monotony_why3 bound tenv active_prover in
-  AccessPathMap.iter (fun variable monotony -> match monotony with
-    | VariableMonotony.NonDecreasing -> debug_log "[Variable: %a] Non-decreasing\n" AccessPath.pp variable;
-    | VariableMonotony.NonIncreasing -> debug_log "[Variable: %a] Non-increasing\n" AccessPath.pp variable;
-    | VariableMonotony.NotMonotonic -> debug_log "[Variable: %a] Not Monotonic\n" AccessPath.pp variable;
-  ) monotony_map; *)
-
   let ret_type = Procdesc.get_ret_type proc_desc in
   let return_bound = match ret_type.desc with
   | Tint _ -> (
     debug_log "[Return type] %a\n" Typ.(pp Pp.text) ret_type;
-    (* let edge_list = DCP.EdgeSet.elements graph_data.edges in *)
-    (* let _, return_edge, _ = List.find_exn edge_list ~f:(fun (_, edge, _) -> DCP.EdgeData.is_exit_edge edge) in *)
     let return_access = AccessPath.of_pvar (Procdesc.get_ret_var proc_desc) ret_type in
-    (* log "[Return access] %a\n" AccessPath.pp return_access; *)
-    (* let norm, _ = DC.Map.find (EdgeExp.Access return_access) return_edge.constraints in *)
-    (* log "[Return norm] %a\n" EdgeExp.pp norm; *)
     let return_norm = EdgeExp.Max [EdgeExp.Access return_access] in
     let return_bound, _ = variable_bound return_norm cache in
     debug_log "[Return bound] %a\n" EdgeExp.pp return_bound;
@@ -1397,5 +1097,4 @@ let analyze_procedure (analysis_data : Domain.Summary.t InterproceduralAnalysis.
 
   let summary_graph = Summary.to_graph payload proc_name begin_loc in
   output_graph (proc_graph_dir ^/ summary_graph_fname) summary_graph Summary.TreeGraph_Dot.output_graph;
-  (* debug_fmt := F.std_formatter; *)
   Some payload

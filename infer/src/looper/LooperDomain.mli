@@ -7,8 +7,6 @@ module F = Format
 
 val debug_fmt : (F.formatter list) ref
 
-
-
 module PvarMap : sig
   include module type of Caml.Map.Make(Pvar)
 
@@ -16,8 +14,6 @@ module PvarMap : sig
 
   val to_string : 'a t -> string
 end
-
-(* module IdentSet : Caml.Set.S with type elt = Why3.Ident.preid *)
 
 module StringMap : Caml.Map.S with type key = string
 
@@ -53,9 +49,11 @@ module VariableMonotony : sig
    [@@deriving compare]
 end
 
+
 val access_of_exp : include_array_indexes:bool -> Exp.t -> Typ.t -> f_resolve_id:(Var.t -> AccessPath.t option) -> AccessPath.t list
 
 val access_of_lhs_exp : include_array_indexes:bool -> Exp.t -> Typ.t -> f_resolve_id:(Var.t -> AccessPath.t option) -> AccessPath.t option
+
 
 module EdgeExp : sig
    type t =
@@ -130,11 +128,7 @@ module EdgeExp : sig
 
    val of_exp : Exp.t -> t Ident.Map.t -> Typ.t -> Typ.t PvarMap.t -> t
 
-   val to_z3_expr : t -> Tenv.t -> Z3.context -> (AccessPath.t -> Z3.Expr.expr option) option -> (Z3.Expr.expr * Z3ExprSet.t)
-
    val to_why3_expr : t -> Tenv.t -> prover_data -> (Why3.Term.term * Why3.Term.Sterm.t)
-
-   val always_positive : t -> Tenv.t -> Z3.context -> Z3.Solver.solver -> bool
 
    val always_positive_why3 : t -> Tenv.t -> prover_data -> bool
 
@@ -145,8 +139,6 @@ module EdgeExp : sig
    val subst : t -> (t * Typ.t) list -> FormalMap.t -> t
 
    val normalize_condition : t -> Tenv.t -> t
-
-   val determine_monotony : t -> Tenv.t -> Z3.context -> Z3.Solver.solver -> Why3.Theory.theory -> VariableMonotony.t AccessPathMap.t
 
    val determine_monotony_why3 : t -> Tenv.t -> prover_data -> VariableMonotony.t AccessPathMap.t
 
@@ -284,13 +276,9 @@ module DCP : sig
 
       val get_assignment_rhs : t -> AccessPath.t -> EdgeExp.t
 
-      val derive_guards : t -> EdgeExp.Set.t -> Tenv.t -> Z3.context -> Z3.Solver.solver -> unit
-
       val derive_guards_why3 : t -> EdgeExp.Set.t -> Tenv.t -> prover_data -> unit
 
-      (* Derive difference constraints "x <= y + c" based on edge assignments *)
-      (* val derive_constraint : (Node.t * t * Node.t) -> EdgeExp.t -> EdgeExp.Set.t -> Pvar.Set.t -> EdgeExp.Set.t *)
-
+      (* Derive difference constraint "x <= y + c" based on edge assignments *)
       val derive_constraint : t -> EdgeExp.t -> AccessSet.t -> Pvar.Set.t -> (EdgeExp.t * AccessSet.t) option
    end
 
@@ -426,15 +414,11 @@ val is_loop_prune : Sil.if_kind -> bool
 val output_graph : string -> 'a ->(Out_channel.t -> 'a -> unit) -> unit
 
 
-(* module CallBounds : Caml.Set.S with type elt = call_bound *)
-
-
 module Summary : sig
    type call = {
       name: Procname.t;
       loc: Location.t;
       bounds: transition list;
-      (* monotony_map: VariableMonotony.t AccessPathMap.t; *)
    }
 
    and transition = {
