@@ -4,6 +4,11 @@
 open! IStd
 module F = Format
 
+
+val debug_fmt : (F.formatter list) ref
+
+
+
 module PvarMap : sig
   include module type of Caml.Map.Make(Pvar)
 
@@ -11,6 +16,28 @@ module PvarMap : sig
 
   val to_string : 'a t -> string
 end
+
+(* module IdentSet : Caml.Set.S with type elt = Why3.Ident.preid *)
+
+module StringMap : Caml.Map.S with type key = string
+
+type prover_data = {
+  name: string;
+  prover_conf: Why3.Whyconf.config_prover;
+  driver: Why3.Driver.driver;
+  theory: Why3.Theory.theory;
+  mutable idents: Why3.Ident.preid StringMap.t;
+  mutable vars: Why3.Term.vsymbol StringMap.t;
+}
+
+type prover =
+  | Z3
+  | CVC4
+  | Vampire
+  [@@deriving compare]
+
+
+module ProverMap : Caml.Map.S with type key = prover
 
 module AccessSet : Caml.Set.S with type elt = AccessPath.t
 
@@ -70,23 +97,34 @@ module EdgeExp : sig
 
    val is_variable : t -> Pvar.Set.t -> bool
 
-   val is_int : t -> Typ.t PvarMap.t -> Tenv.t -> bool
+   val is_symbolic_const : t -> Pvar.Set.t -> bool
 
-   val is_formal : t -> Pvar.Set.t -> bool
+   val is_int : t -> Typ.t PvarMap.t -> Tenv.t -> bool
 
    val is_return : t -> bool
 
-   val eval : Binop.t -> IntLit.t -> IntLit.t -> t
+   val eval_consts : Binop.t -> IntLit.t -> IntLit.t -> IntLit.t
 
    val try_eval : Binop.t -> t -> t -> t
 
+   val evaluate : t -> float AccessPathMap.t -> float -> float
+
    val merge : t -> (Binop.t * IntLit.t) option -> t
+
+   (* Splits expression on +/- into terms *)
+   val split_exp : t -> t list
+
+   (* Merges terms into single expression *)
+   val merge_exp_parts : t list -> t
 
    val separate : t -> t * (Binop.t * IntLit.t) option
 
+   (* Tries to expand the expression on multiplications  *)
+   val expand_multiplication : t -> IntLit.t option -> t
+
    val simplify : t -> t
 
-   val simplify_const : t -> IntLit.t
+   val evaluate_const_exp : t -> IntLit.t option
 
    val access_path_id_resolver : t Ident.Map.t -> Var.t -> AccessPath.t option
 
@@ -94,7 +132,11 @@ module EdgeExp : sig
 
    val to_z3_expr : t -> Tenv.t -> Z3.context -> (AccessPath.t -> Z3.Expr.expr option) option -> (Z3.Expr.expr * Z3ExprSet.t)
 
+   val to_why3_expr : t -> Tenv.t -> prover_data -> (Why3.Term.term * Why3.Term.Sterm.t)
+
    val always_positive : t -> Tenv.t -> Z3.context -> Z3.Solver.solver -> bool
+
+   val always_positive_why3 : t -> Tenv.t -> prover_data -> bool
 
    val get_accesses: t -> Set.t
 
@@ -104,7 +146,9 @@ module EdgeExp : sig
 
    val normalize_condition : t -> Tenv.t -> t
 
-   val determine_monotony : t -> Tenv.t -> Z3.context -> Z3.Solver.solver -> VariableMonotony.t AccessPath.BaseMap.t
+   val determine_monotony : t -> Tenv.t -> Z3.context -> Z3.Solver.solver -> Why3.Theory.theory -> VariableMonotony.t AccessPathMap.t
+
+   val determine_monotony_why3 : t -> Tenv.t -> prover_data -> VariableMonotony.t AccessPathMap.t
 
    val add : t -> t -> t
 
@@ -131,11 +175,13 @@ module DC : sig
 
    val same_norms : t -> bool
 
+   val is_reset : t -> bool
+
    val is_decreasing : t -> bool
 
    val is_increasing : t -> bool
 
-   val to_string : t -> bool -> string
+   val to_string : t -> string
       
    val pp : F.formatter -> t -> unit
 
@@ -176,6 +222,8 @@ module DCP : sig
 
       val is_join : t -> bool
 
+      val get_location : t -> Location.t
+
       val to_string : t -> string
 
       val pp : F.formatter -> t -> unit
@@ -195,8 +243,7 @@ module DCP : sig
          mutable calls: EdgeExp.Set.t;
          mutable constraints: DC.rhs DC.Map.t;
          mutable guards: EdgeExp.Set.t;
-         mutable bound: EdgeExp.t;
-         mutable execution_cost: EdgeExp.t;
+         mutable bound: EdgeExp.t option;
          mutable bound_norm: EdgeExp.t option;
          mutable computing_bound: bool;
 
@@ -239,19 +286,24 @@ module DCP : sig
 
       val derive_guards : t -> EdgeExp.Set.t -> Tenv.t -> Z3.context -> Z3.Solver.solver -> unit
 
+      val derive_guards_why3 : t -> EdgeExp.Set.t -> Tenv.t -> prover_data -> unit
+
       (* Derive difference constraints "x <= y + c" based on edge assignments *)
-      val derive_constraint : (Node.t * t * Node.t) -> EdgeExp.t -> EdgeExp.Set.t -> Pvar.Set.t -> EdgeExp.Set.t
+      (* val derive_constraint : (Node.t * t * Node.t) -> EdgeExp.t -> EdgeExp.Set.t -> Pvar.Set.t -> EdgeExp.Set.t *)
+
+      val derive_constraint : t -> EdgeExp.t -> AccessSet.t -> Pvar.Set.t -> (EdgeExp.t * AccessSet.t) option
    end
 
    include module type of Graph.Imperative.Digraph.ConcreteBidirectionalLabeled(Node)(EdgeData)
    module NodeSet : module type of Caml.Set.Make(V)
    module EdgeSet : module type of Caml.Set.Make(E)
+   module EdgeMap : module type of Caml.Map.Make(E)
 
    include module type of DefaultDot
    val edge_label : EdgeData.t -> string
-   val vertex_attributes : Node.t -> [> `Label of string | `Shape of [> `Box ] ] list
+   val vertex_attributes : Node.t -> Graph.Graphviz.DotAttributes.vertex list
    val vertex_name : Node.t -> string
-   val edge_attributes : E.t -> [> `Color of int | `Label of string ] list
+   val edge_attributes : E.t -> Graph.Graphviz.DotAttributes.edge list
 end
 
 module DCP_Dot : module type of Graph.Graphviz.Dot(DCP)
@@ -272,10 +324,12 @@ module VFG : sig
    end
 
    include module type of Graph.Imperative.Digraph.ConcreteBidirectionalLabeled(Node)(Edge)
-   include module type of DefaultDot
+   module NodeSet : module type of Caml.Set.Make(V)
+   module EdgeSet : module type of Caml.Set.Make(E)
 
-   val edge_attributes : edge -> [> `Color of int | `Label of string ] list
-   val vertex_attributes : vertex -> [> `Label of string | `Shape of [> `Box ] ] list
+   include module type of DefaultDot
+   val edge_attributes : edge -> Graph.Graphviz.DotAttributes.edge list
+   val vertex_attributes : vertex -> Graph.Graphviz.DotAttributes.vertex list
    val vertex_name : vertex -> string
 
    module Map : module type of Caml.Map.Make(Node)
@@ -311,8 +365,8 @@ module RG : sig
 
    type graph = t
 
-   val edge_attributes : edge -> [> `Color of int | `Label of string ] list
-   val vertex_attributes : vertex -> [> `Label of string | `Shape of [> `Box ] ] list
+   val edge_attributes : edge -> Graph.Graphviz.DotAttributes.edge list
+   val vertex_attributes : vertex -> Graph.Graphviz.DotAttributes.vertex list
    val vertex_name : vertex -> string
 
    module Chain : sig
@@ -345,11 +399,22 @@ module RG_Dot : module type of Graph.Graphviz.Dot(RG)
 
 module Increments : Caml.Set.S with type elt = DCP.E.t * IntLit.t
 
+module Decrements : Caml.Set.S with type elt = DCP.E.t * IntLit.t
+
 module Resets : Caml.Set.S with type elt = DCP.E.t * EdgeExp.t * IntLit.t
 
+type norm_updates = {
+   increments: Increments.t;
+   decrements: Decrements.t;
+   resets: Resets.t
+}
+
+val empty_updates : norm_updates
+
 type cache = {
-  updates: (Increments.t * Resets.t) EdgeExp.Map.t;
+  updates: norm_updates EdgeExp.Map.t;
   variable_bounds: EdgeExp.t EdgeExp.Map.t;
+  lower_bounds: EdgeExp.t EdgeExp.Map.t;
   reset_chains: RG.Chain.Set.t EdgeExp.Map.t;
   positivity: bool EdgeExp.Map.t;
 }
@@ -360,11 +425,71 @@ val is_loop_prune : Sil.if_kind -> bool
 
 val output_graph : string -> 'a ->(Out_channel.t -> 'a -> unit) -> unit
 
-type summary = {
-   formal_map: FormalMap.t;
-   monotony_map: VariableMonotony.t AccessPath.BaseMap.t;
-   bound: EdgeExp.t;
-   return_bound: EdgeExp.t option;
-}
 
-val pp_summary : F.formatter -> summary -> unit
+(* module CallBounds : Caml.Set.S with type elt = call_bound *)
+
+
+module Summary : sig
+   type call = {
+      name: Procname.t;
+      loc: Location.t;
+      bounds: transition list;
+      (* monotony_map: VariableMonotony.t AccessPathMap.t; *)
+   }
+
+   and transition = {
+      src_node: DCP.Node.t;
+      dst_node: DCP.Node.t;
+      bound: EdgeExp.t;
+      monotony_map: VariableMonotony.t AccessPathMap.t;
+      calls: call list
+   }
+
+   and t = {
+      formal_map: FormalMap.t;
+      bounds: transition list;
+      return_bound: EdgeExp.t option;
+   }
+
+   val total_bound : transition list -> EdgeExp.t
+
+   val instantiate : t -> (EdgeExp.t * Typ.t) list 
+      -> upper_bound:(EdgeExp.t -> cache -> EdgeExp.t * cache)
+      -> lower_bound:(EdgeExp.t -> cache -> EdgeExp.t * cache)
+      -> Tenv.t -> prover_data -> cache -> transition list * cache
+
+   val pp : F.formatter -> t -> unit
+
+
+   module TreeGraph : sig
+      module Node : sig
+         type t = 
+         | CallNode of Procname.t * Location.t
+         | TransitionNode of DCP.Node.t * EdgeExp.t * DCP.Node.t
+         [@@deriving compare]
+         val hash : 'a -> int
+         val equal : t -> t -> bool
+      end
+   
+      module Edge : sig
+         type t = unit [@@deriving compare]
+         val hash : 'a -> int
+         val equal : t -> t -> bool
+         val default : unit
+      end
+
+      include module type of Graph.Imperative.Digraph.ConcreteBidirectionalLabeled(Node)(Edge)
+      include module type of DefaultDot
+
+      val edge_attributes : edge -> Graph.Graphviz.DotAttributes.edge list
+      val vertex_attributes : vertex -> Graph.Graphviz.DotAttributes.vertex list
+      val vertex_name : vertex -> string
+
+      module Map : module type of Caml.Map.Make(Node)
+   end
+
+   module TreeGraph_Dot : module type of Graph.Graphviz.Dot(TreeGraph)
+
+
+   val to_graph : t -> Procname.t -> Location.t -> TreeGraph.t
+end

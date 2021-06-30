@@ -136,7 +136,7 @@ module ReportSummary = struct
 end
 
 module LooperSummary = struct
-  type t = {loc: Location.t; looper_opt: LooperDomain.summary option}
+  type t = {loc: Location.t; looper_opt: LooperDomain.Summary.t option}
 
   let of_full_summary (f : full_summary) =
     ({loc= get_loc f; looper_opt= f.payloads.Payloads.looper} : t)

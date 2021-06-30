@@ -29,7 +29,7 @@ include sig
     ; starvation: StarvationDomain.summary option
     ; nullsafe: NullsafeSummary.t option
     ; uninit: UninitDomain.Summary.t option
-    ; looper: LooperDomain.summary option }
+    ; looper: LooperDomain.Summary.t option }
   [@@deriving fields, yojson_of]
 end
 

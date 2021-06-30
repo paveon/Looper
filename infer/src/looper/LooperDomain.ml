@@ -5,7 +5,14 @@ open! IStd
 module F = Format
 module L = Logging
 
-let log : ('a, Format.formatter, unit) format -> 'a = fun fmt -> F.printf fmt
+
+let debug_fmt = ref [F.std_formatter]
+
+let debug_log : ('a, Format.formatter, unit) format -> 'a = fun fmt -> F.fprintf (List.hd_exn !debug_fmt) fmt
+
+let console_log : ('a, Format.formatter, unit) format -> 'a = fun fmt -> F.printf fmt
+
+(* let debug_log : ('a, Format.formatter, unit) format -> 'a = fun fmt -> F.printf fmt *)
 
 
 module PvarMap = struct
@@ -16,6 +23,46 @@ module PvarMap = struct
 
   let pp fmt map = F.fprintf fmt "%s" (to_string map)
 end
+
+
+module StringMap = Caml.Map.Make(struct
+  type nonrec t = string
+  let compare = compare_string
+end)
+
+
+(* module IdentSet = Caml.Set.Make(struct
+  let compare_preid (x : Why3.Ident.preid) (y : Why3.Ident.preid) = 
+    let result = compare_string x.pre_name y.pre_name in
+    if result <> 0 then result else
+    let result = Why3.Ident.Sattr.compare x.pre_attrs y.pre_attrs in
+    if result <> 0 then result else
+    Option.compare Why3.Loc.compare x.pre_loc y.pre_loc
+ 
+  type nonrec t = Why3.Ident.preid
+  let compare = compare_preid
+end) *)
+
+type prover_data = {
+  name: string;
+  prover_conf: Why3.Whyconf.config_prover;
+  driver: Why3.Driver.driver;
+  theory: Why3.Theory.theory;
+  mutable idents: Why3.Ident.preid StringMap.t;
+  mutable vars: Why3.Term.vsymbol StringMap.t;
+}
+
+type prover =
+  | Z3
+  | CVC4
+  | Vampire
+  [@@deriving compare]
+
+
+module ProverMap = Caml.Map.Make(struct
+  type nonrec t = prover
+  let compare = compare_prover
+end)
 
 module AccessSet = Caml.Set.Make(struct
   type nonrec t = AccessPath.t
@@ -134,9 +181,10 @@ module EdgeExp = struct
     | Max args -> if Int.equal (List.length args) 1 then (
       let arg = List.hd_exn args in
       let str = to_string arg in
-      match arg with 
+      F.sprintf "[%s]" str
+      (* match arg with 
       | Access _ -> F.sprintf "[%s]" str
-      | _ -> F.sprintf "max(%s, 0)" str
+      | _ -> F.sprintf "max(%s, 0)" str *)
     ) else (
       if List.is_empty args then assert(false)
       else F.asprintf "max(%s)" (String.concat ~sep:", " (List.map args ~f:(fun arg -> to_string arg)))
@@ -161,16 +209,11 @@ module EdgeExp = struct
 
   let of_int64 value = Const (Const.Cint (IntLit.of_int64 value))
 
-  let is_zero = function Const const -> Const.iszero_int_float const | _ -> false
+  let is_zero = function Const const -> Const.iszero_int_float const 
+    | UnOp (Unop.Neg, Const const, _) -> Const.iszero_int_float const
+    | _ -> false
 
   let is_one = function Const (Const.Cint const) -> IntLit.isone const | _ -> false
-
-  let rec is_const exp = match exp with
-    | Const _ -> true
-    | BinOp (_, lexp, rexp) -> is_const lexp && is_const rexp
-    | UnOp (_, exp, _) -> is_const exp
-    | Max args | Min args -> List.for_all args ~f:is_const
-    | _ -> false
 
   let is_variable norm formals =
     let rec traverse_exp = function
@@ -180,9 +223,12 @@ module EdgeExp = struct
     )
     | BinOp (_, lexp, rexp) -> (traverse_exp lexp) || (traverse_exp rexp)
     | UnOp (_, exp, _) -> (traverse_exp exp)
+    | Max args | Min args -> List.exists args ~f:traverse_exp
     | _ -> false
     in
     traverse_exp norm
+
+  let is_symbolic_const norm formals = not (is_variable norm formals)
 
   let rec is_int exp type_map tenv = match exp with
     | BinOp (_, lexp, rexp) -> is_int lexp type_map tenv && is_int rexp type_map tenv
@@ -198,16 +244,12 @@ module EdgeExp = struct
     | Call (ret_typ, _, _, _) -> Typ.is_int ret_typ
     | _ -> false
 
-  let is_formal exp formals = match exp with
-    | Access ((var, _), _) -> (match Var.get_pvar var with
-      | Some pvar -> Pvar.Set.mem pvar formals
-      | None -> false
-    )
-    | _ -> false
 
-  let is_return exp = match exp with
-  | Access ((var, _), _) -> Pvar.is_return (Option.value_exn (Var.get_pvar var))
+  let rec is_return exp = match exp with
+  | Access ((var, _), _) -> Var.is_return var
+  | Max [arg] -> is_return arg
   | _ -> false
+
 
   let eval_consts op c1 c2 = match op with
     | Binop.PlusA _ -> IntLit.add c1 c2
@@ -220,12 +262,12 @@ module EdgeExp = struct
     | Binop.Shiftlt -> IntLit.shift_left c1 c2
     | _ -> L.(die InternalError)"[EdgeExp.eval_consts] Unsupported operator %a %s %a" IntLit.pp c1 (Binop.str Pp.text op) IntLit.pp c2
 
-  let eval op c1 c2 = Const (Const.Cint (eval_consts op c1 c2))
+  (* let eval op c1 c2 = Const (Const.Cint (eval_consts op c1 c2)) *)
     (* | _ -> BinOp (op, Const (Const.Cint c1), Const (Const.Cint c2)) *)
 
 
   let try_eval op e1 e2 = match e1, e2 with
-    | Const (Const.Cint c1), Const (Const.Cint c2) -> eval op c1 c2
+    | Const (Const.Cint c1), Const (Const.Cint c2) -> Const (Const.Cint (eval_consts op c1 c2))
     | Const (Const.Cint c), exp when IntLit.iszero c -> (match op with
       | Binop.PlusA _ -> exp
       | Binop.MinusA _ -> UnOp (Unop.Neg, exp, None)
@@ -241,22 +283,99 @@ module EdgeExp = struct
     | _ -> BinOp (op, e1, e2)
 
 
+  let rec evaluate exp value_map default_value = match exp with
+    | Access path -> (
+      match AccessPathMap.find_opt path value_map with
+      | Some value -> value
+      | None -> default_value
+    )
+    | Const (Const.Cint c) -> IntLit.to_float c
+    | BinOp (op, lexp, rexp) -> (
+      let l_value = evaluate lexp value_map default_value in
+      let r_value = evaluate rexp value_map default_value in
+      match op with
+      | Binop.PlusA _ -> l_value +. r_value
+      | Binop.MinusA _ -> l_value -. r_value
+      | Binop.Mult _ -> l_value *. r_value
+      | Binop.Div -> l_value /. r_value
+      | _ -> assert(false)
+    )
+    | UnOp (Unop.Neg, subexp, _) -> -.(evaluate subexp value_map default_value)
+    | Max args -> (
+      let values = List.map args ~f:(fun arg -> evaluate arg value_map default_value) in
+      Option.value_exn (List.max_elt values ~compare:Float.compare)
+    )
+    | Min args -> (
+      let values = List.map args ~f:(fun arg -> evaluate arg value_map default_value) in
+      Option.value_exn (List.min_elt values ~compare:Float.compare)
+    )
+    | _ -> assert(false)
+
+
   let merge exp const_opt = match const_opt with
     | Some (op, const) -> (
-      if IntLit.isnegative const then (
-        let const_neg = (Const (Const.Cint (IntLit.neg const))) in
+      if is_zero exp then (
         match op with
-        | Binop.MinusA kind -> try_eval (Binop.PlusA kind) exp const_neg
-        | Binop.PlusA kind -> try_eval (Binop.MinusA kind) exp const_neg
-        | _ -> try_eval op exp (Const (Const.Cint const))
+        | Binop.PlusA _ -> Const (Const.Cint const)
+        | Binop.MinusA _ -> Const (Const.Cint (IntLit.neg const))
+        | _ -> assert(false)
       )
-      else try_eval op exp (Const (Const.Cint const))
+      else (
+        if IntLit.isnegative const then (
+          let const_neg = (Const (Const.Cint (IntLit.neg const))) in
+          match op with
+          | Binop.MinusA kind -> try_eval (Binop.PlusA kind) exp const_neg
+          | Binop.PlusA kind -> try_eval (Binop.MinusA kind) exp const_neg
+          | _ -> try_eval op exp (Const (Const.Cint const))
+        )
+        else try_eval op exp (Const (Const.Cint const))
+      )
     )
     | None -> exp
 
 
+  let split_exp exp = 
+    let rec aux exp last_op acc = match exp with
+    | BinOp (op, lexp, rexp) -> (
+      match op with
+      | Binop.PlusA _ -> (
+        match last_op with
+        | Binop.PlusA _ -> (aux lexp op acc) @ (aux rexp op acc)
+        | Binop.MinusA _ -> (aux lexp last_op acc) @ (aux rexp last_op acc)
+        | _ -> assert(false)
+      )
+      | Binop.MinusA typ -> (
+        match last_op with
+        | Binop.PlusA _ -> (aux lexp (Binop.PlusA typ) acc) @ (aux rexp op acc)
+        | Binop.MinusA _ -> (aux lexp op acc) @ (aux rexp (Binop.PlusA typ) acc)
+        | _ -> assert(false)
+      )
+      | _ -> (
+        match last_op with
+        | Binop.MinusA _ -> UnOp (Unop.Neg, exp, None) :: acc
+        | _ -> exp :: acc
+      )
+    )
+    | subexp -> (
+      match last_op with
+      | Binop.MinusA _ -> UnOp (Unop.Neg, subexp, None) :: acc
+      | _ -> subexp :: acc
+    )
+    in
+    aux exp (Binop.PlusA None) []
+
+
+  let merge_exp_parts parts = Option.value (List.reduce parts ~f:(fun lhs rhs -> 
+    match lhs, rhs with
+    | UnOp (Unop.Neg, _, _), UnOp (Unop.Neg, rsubexp, _) -> try_eval (Binop.MinusA None) lhs rsubexp
+    | _, UnOp (Unop.Neg, rsubexp, _) -> try_eval (Binop.MinusA None) lhs rsubexp
+    | UnOp (Unop.Neg, lsubexp, _), _ -> try_eval (Binop.MinusA None) rhs lsubexp
+    | _ -> try_eval (Binop.PlusA None) lhs rhs
+    )) ~default:zero
+
+
   let rec separate exp = 
-    log "Separate: %a\n" pp exp;
+    (* debug_log "Separate: %a\n" pp exp; *)
     match exp with
     | Access _ -> exp, None
     | Const (Const.Cint c) -> zero, Some (Binop.PlusA None, c)
@@ -269,7 +388,12 @@ module EdgeExp = struct
           match l_op, r_op with
           | Binop.PlusA _, Binop.PlusA _ -> lexp_derived, rexp_derived, Some (Binop.PlusA None, IntLit.add l_const r_const)
           | Binop.MinusA _, Binop.PlusA _ -> lexp_derived, rexp_derived, Some (Binop.PlusA None, IntLit.sub r_const l_const)
-          | _ -> assert(false)
+          | Binop.MinusA typ, Binop.MinusA _ -> lexp_derived, rexp_derived, Some (Binop.MinusA typ, IntLit.add r_const l_const)
+          | Binop.Shiftrt, Binop.PlusA _ -> merge lexp_derived l_const_opt, rexp_derived, Some (Binop.PlusA None, r_const)
+          | _ -> (
+            (* debug_log "lop: %s, rop: %s\n" (Binop.str Pp.text l_op) (Binop.str Pp.text r_op); *)
+            assert(false)
+          )
         )
         | Some (l_op, l_const), None -> (
           match l_op with
@@ -279,6 +403,11 @@ module EdgeExp = struct
         | None, Some (r_op, r_const) -> (
           match r_op with
           | Binop.PlusA _ | Binop.MinusA _ -> lexp_derived, rexp_derived, Some (r_op, r_const)
+          | Binop.Shiftrt -> (
+            lexp_derived, merge rexp_derived r_const_opt, None
+            (* debug_log "LEXP: %a   REXP: %a\n" pp lexp_derived pp rexp_derived; *)
+            (* assert(false) *)
+          )
           | _ -> assert(false)
         )
         | None, None -> lexp_derived, rexp_derived, None
@@ -320,7 +449,17 @@ module EdgeExp = struct
             lexp_merged, rexp_derived, Some (Binop.Shiftrt, r_const) *)
           )
         )
-        | Some (_, _), None -> assert(false)
+        | Some (l_op, _), None -> (
+          match l_op with
+          | Binop.PlusA _ -> (
+            (* (x + c) >> y  *)
+            merge lexp_derived l_const_opt, rexp_derived, None
+          )
+          | _ -> (
+            (* TODO *)
+            assert(false)
+          )
+        )
         | None, Some (r_op, r_const) -> (
           match r_op with
           | Binop.PlusA _ -> (
@@ -336,6 +475,7 @@ module EdgeExp = struct
       in
       (* zero, None *)
 
+      (* debug_log "LEXP_DERIVED: %a   |   REXP_DERIVED: %a\n" pp lexp_derived pp rexp_derived; *)
       match is_zero lexp_derived, is_zero rexp_derived with
       | true, true -> zero, const_part
       | false, true -> lexp_derived, const_part
@@ -352,6 +492,10 @@ module EdgeExp = struct
           | Binop.MinusA _ -> zero, const_part
           | Binop.PlusA _ 
           | Binop.Shiftrt -> try_eval op lexp_derived rexp_derived, const_part
+          | Binop.Mult _ -> (
+            (* TODO: need to make sure if this is correct? *)
+            try_eval op lexp_derived rexp_derived, const_part
+          )
           | _ -> assert(false)
         else (
           match op with
@@ -364,10 +508,10 @@ module EdgeExp = struct
             try_eval op lexp_derived rexp_derived, const_part
           )
           | _ -> (
-            log "%a %s %a\n" pp lexp_derived (Binop.str Pp.text op) pp rexp_derived;
+            debug_log "%a %s %a\n" pp lexp_derived (Binop.str Pp.text op) pp rexp_derived;
             match const_part with
             | Some (const_op, rhs_const) -> (
-              log "Const part: %s %a\n" (Binop.str Pp.text const_op) IntLit.pp rhs_const;
+              debug_log "Const part: %s %a\n" (Binop.str Pp.text const_op) IntLit.pp rhs_const;
               assert(false)
             )
             | None -> assert(false)
@@ -397,30 +541,355 @@ module EdgeExp = struct
     | _ -> exp, None
 
 
+  (* let rec expand_multiplication exp const_opt = match exp with
+    | Const (Const.Cint c) -> (
+      match const_opt with
+      | Some const -> Const (Const.Cint (IntLit.mul c const)), Set.empty
+      | None -> exp, Set.empty
+    )
+    | Max args -> (
+      match args with
+      | [arg] -> (
+        let exp, conditions = expand_multiplication arg const_opt in
+        exp, Set.add (BinOp (Binop.Ge, arg, zero)) conditions
+      )
+      | _ -> assert(false)
+    )
+    | BinOp (Binop.Mult _, Const (Const.Cint c), subexp)
+    | BinOp (Binop.Mult _, subexp, Const (Const.Cint c)) -> (
+      let const = match const_opt with
+      | Some old_const -> eval_consts (Binop.Mult None) c old_const
+      | None -> c
+      in
+      expand_multiplication subexp (Some const)
+    )
+    | BinOp (Binop.Mult _ as op, lexp, rexp) -> (
+      let lexp, lexp_conditions = expand_multiplication lexp None in
+      let rexp, rexp_conditions = expand_multiplication rexp None in
+      let conditions = Set.union lexp_conditions rexp_conditions in
+
+      let rec multiply_sub_exps x y =
+        let x_parts = split_exp x in
+        let y_parts = split_exp y in
+        let multiplied_parts, conditions = List.fold x_parts ~init:([], Set.empty) ~f:(fun acc x_part ->
+          List.fold y_parts ~init:acc ~f:(fun (parts_acc, conditions_acc) y_part ->
+            let mult_exp, conditions = match x_part, y_part with
+            | Const (Const.Cint _), _ 
+            | _, Const (Const.Cint _) -> (
+              expand_multiplication (try_eval op x_part y_part) const_opt
+            )
+            | BinOp (Binop.Div, lexp_numer, lexp_denom), BinOp (Binop.Div, rexp_numer, rexp_denom) -> (
+              let numerator, num_conditions = multiply_sub_exps lexp_numer rexp_numer in
+              let denominator, denom_conditions = multiply_sub_exps lexp_denom rexp_denom in
+              let numerator_parts = split_exp numerator in
+              let parts = List.map numerator_parts ~f:(fun part -> 
+                match part with
+                | UnOp (Unop.Neg, subexp, typ) -> UnOp (Unop.Neg, BinOp (Binop.Div, subexp, denominator), typ)
+                | _ -> BinOp (Binop.Div, part, denominator)
+              )
+              in
+              merge_exp_parts parts, Set.empty
+            )
+            | _ -> (
+              let mult_exp = try_eval op x_part y_part in
+              let mult_exp = match const_opt with
+              | Some const -> try_eval op mult_exp (Const (Const.Cint const))
+              | None -> mult_exp
+              in
+              mult_exp, Set.empty
+            )
+            in
+            mult_exp :: parts_acc, Set.union conditions_acc conditions
+          )
+        ) 
+        in
+        let exp = merge_exp_parts multiplied_parts in
+        assert(not (equal exp zero));
+        exp, conditions
+      in
+      let exp, parts_conditions = multiply_sub_exps lexp rexp in
+      exp, Set.union parts_conditions conditions
+
+    )
+    | BinOp (op, lexp, rexp) -> (
+      let process_div lexp rexp const_opt = match const_opt with
+      | Some acc_const -> (
+        match rexp with
+        | Const (Const.Cint rexp_const) -> (
+          if IntLit.iszero (IntLit.rem acc_const rexp_const) then (
+            let acc_const = IntLit.div acc_const rexp_const in
+            let acc_const = if IntLit.isone acc_const then None else Some acc_const in
+            expand_multiplication lexp acc_const
+          ) else (
+            (* what the hell? fix this *)
+            assert(false);
+            (* expand_multiplication lexp None *)
+          )
+        )
+        | _ -> (
+          let lexp, lexp_conditions = expand_multiplication lexp const_opt in
+          let rexp, rexp_conditions = expand_multiplication rexp None in
+          let exp = BinOp (Binop.Div, lexp, rexp) in
+          exp, Set.union lexp_conditions rexp_conditions
+        )
+      )
+      | None -> (
+        let lexp, lexp_conditions = expand_multiplication lexp None in
+        let rexp, rexp_conditions = expand_multiplication rexp None in
+        let exp = BinOp (Binop.Div, lexp, rexp) in
+        exp, Set.union lexp_conditions rexp_conditions
+      )
+      in
+
+      match op with
+      | Binop.PlusA _ | Binop.MinusA _ -> (
+        let lexp, lexp_conditions = expand_multiplication lexp const_opt in
+        let rexp, rexp_conditions = expand_multiplication rexp const_opt in
+        let exp = BinOp (op, lexp, rexp) in
+        exp, Set.union lexp_conditions rexp_conditions
+      )
+      | Binop.Div -> (
+        process_div lexp rexp const_opt
+      )
+      | Binop.Shiftrt -> (
+        (* Transform to division *)
+        let rexp = match rexp with
+        | Const (Const.Cint power_value) -> (
+          Const (Const.Cint (IntLit.of_int (Int.pow 2 (IntLit.to_int_exn power_value))))
+        )
+        | _ -> rexp
+        in
+        process_div lexp rexp const_opt
+      )
+      | _ -> (
+        match const_opt with
+        | Some const -> try_eval (Binop.Mult None) (Const (Const.Cint const)) exp, Set.empty
+        | None -> exp, Set.empty
+      )
+    )
+    | subexp -> (
+      match const_opt with
+      | Some const -> try_eval (Binop.Mult None) (Const (Const.Cint const)) subexp, Set.empty
+      | None -> subexp, Set.empty
+    ) *)
+
+
+  let rec expand_multiplication exp const_opt =
+    let process_div lexp rexp const_opt = match const_opt with
+    | Some acc_const -> (
+      match rexp with
+      | Const (Const.Cint rexp_const) -> (
+        if IntLit.iszero (IntLit.rem acc_const rexp_const) then (
+          let acc_const = IntLit.div acc_const rexp_const in
+          let acc_const = if IntLit.isone acc_const then None else Some acc_const in
+          expand_multiplication lexp acc_const
+        ) else (
+          (* what the hell? fix this *)
+          assert(false);
+          (* expand_multiplication lexp None *)
+        )
+      )
+      | _ -> (
+        let lexp = expand_multiplication lexp const_opt in
+        let rexp = expand_multiplication rexp None in
+        BinOp (Binop.Div, lexp, rexp)
+      )
+    )
+    | None -> (
+      let lexp = expand_multiplication lexp None in
+      let rexp = expand_multiplication rexp None in
+      BinOp (Binop.Div, lexp, rexp)
+    )
+    in
+
+    match exp with
+    | Const (Const.Cint c) -> (
+      match const_opt with
+      | Some const -> Const (Const.Cint (IntLit.mul c const))
+      | None -> exp
+    )
+    | Max [arg] -> (
+      (* Max function can be removed later on when
+       * transforming shifts and collecting value conditions *)
+      Max [expand_multiplication arg const_opt]
+    )
+    | Max _ -> (
+      (* TODO: probably leave as is, in general we cannot simply multiply each
+           argument, i.e., C * max(arg_2,arg_2, ...) != max(C * arg_1, C * arg_2, ...) *)
+        assert(false)
+    )
+    | BinOp (Binop.Mult _, Const (Const.Cint c), subexp)
+    | BinOp (Binop.Mult _, subexp, Const (Const.Cint c)) -> (
+      let const = match const_opt with
+      | Some old_const -> eval_consts (Binop.Mult None) c old_const
+      | None -> c
+      in
+      expand_multiplication subexp (Some const)
+    )
+    | BinOp (Binop.Mult _ as op, lexp, rexp) -> (
+      let rec multiply_sub_exps x y =
+        let x_parts = split_exp x in
+        let y_parts = split_exp y in
+        let multiplied_parts = List.fold x_parts ~init:[] ~f:(fun acc x_part ->
+          List.fold y_parts ~init:acc ~f:(fun parts_acc y_part ->
+            let mult_exp = match x_part, y_part with
+            | Const (Const.Cint _), _ 
+            | _, Const (Const.Cint _) -> (
+              expand_multiplication (try_eval op x_part y_part) const_opt
+            )
+            | BinOp (Binop.Div, lexp_numer, lexp_denom), BinOp (Binop.Div, rexp_numer, rexp_denom) -> (
+              let numerator = multiply_sub_exps lexp_numer rexp_numer in
+              let denominator = multiply_sub_exps lexp_denom rexp_denom in
+              let numerator_parts = split_exp numerator in
+              let parts = List.map numerator_parts ~f:(fun part -> 
+                match part with
+                | UnOp (Unop.Neg, subexp, typ) -> UnOp (Unop.Neg, BinOp (Binop.Div, subexp, denominator), typ)
+                | _ -> BinOp (Binop.Div, part, denominator)
+              )
+              in
+              merge_exp_parts parts
+            )
+            | _ -> (
+              let mult_exp = try_eval op x_part y_part in
+              let mult_exp = match const_opt with
+              | Some const -> try_eval op mult_exp (Const (Const.Cint const))
+              | None -> mult_exp
+              in
+              mult_exp
+            )
+            in
+            mult_exp :: parts_acc
+          )
+        ) 
+        in
+        let exp = merge_exp_parts multiplied_parts in
+        assert(not (equal exp zero));
+        exp
+      in
+
+      let lexp = expand_multiplication lexp None in
+      let rexp = expand_multiplication rexp None in
+      multiply_sub_exps lexp rexp
+
+    )
+    | BinOp ((Binop.PlusA _) as op, lexp, rexp)
+    | BinOp ((Binop.MinusA _) as op, lexp, rexp) -> (
+      let lexp = expand_multiplication lexp const_opt in
+      let rexp = expand_multiplication rexp const_opt in
+      BinOp (op, lexp, rexp)
+    )
+    | BinOp (Binop.Div, lexp, rexp) -> process_div lexp rexp const_opt
+    | BinOp (Binop.Shiftrt, lexp, Const (Const.Cint power_value)) -> (
+      (* Transform to division *)
+      let divisor = IntLit.of_int (Int.pow 2 (IntLit.to_int_exn power_value)) in
+      process_div lexp (Const (Const.Cint divisor)) const_opt
+    )
+    | BinOp (Binop.Shiftrt, lexp, rexp) -> (
+      match const_opt with
+      | Some const -> (
+        (* C * (x >> y)  --->  (C * x) >> y
+         * this is probably incorrect in edge cases due to
+         * the order of operations which should matter? *)
+        let lexp = try_eval (Binop.Mult None) (Const (Const.Cint const)) lexp in
+        BinOp (Binop.Shiftrt, lexp, rexp)
+      )
+      | None -> exp
+    )
+    | _ -> (
+      match const_opt with
+      | Some const -> try_eval (Binop.Mult None) (Const (Const.Cint const)) exp
+      | None -> exp
+    )
+
+
   let simplify exp = 
-    (* log "[Simplify] Before: %a\n" pp exp; *)
-    let exp, const_opt = separate exp in
-    let simplified_exp = merge exp const_opt in
-    (* log "[Simplify] After: %a\n" pp simplified_exp; *)
+    debug_log "[Simplify] Before: %a\n" pp exp;
+    let expanded_exp = expand_multiplication exp None in
+    debug_log "[Simplify] After expansion: %a\n" pp expanded_exp;
+    let non_const_part, const_opt = separate expanded_exp in
+    let simplified_exp = merge non_const_part const_opt in
+    debug_log "[Simplify] After: %a\n" pp simplified_exp;
     simplified_exp
 
-  let rec simplify_const exp = match exp with
-    | Const (Const.Cint x) -> x
-    | BinOp (op, lexp, rexp) -> (
-      let lconst = simplify_const lexp in
-      let rconst = simplify_const rexp in
-      eval_consts op lconst rconst
+  let rec evaluate_const_exp exp = 
+    let rec get_min_max op args = match args with
+    | [] -> None
+    | [x] -> evaluate_const_exp x
+    | x::xs -> (
+      match evaluate_const_exp x, get_min_max op xs with
+      | Some x, Some y -> Some (op x y)
+      | _ -> None
     )
-    | UnOp (Unop.Neg, exp, _) -> simplify_const exp |> IntLit.neg
+    in
+
+    match exp with
+    | Const (Const.Cint x) -> Some x
+    | BinOp (op, lexp, rexp) -> (
+      let lconst_opt = evaluate_const_exp lexp in
+      let rconst_opt = evaluate_const_exp rexp in
+      match lconst_opt, rconst_opt with
+      | Some lconst, Some rconst -> Some (eval_consts op lconst rconst)
+      | _ -> None
+    )
+    | UnOp (Unop.Neg, exp, _) -> (
+      match evaluate_const_exp exp with
+      | Some value -> Some (IntLit.neg value)
+      | None -> None
+    )
     | Max args -> (
-      let simplified_args = List.map args ~f:(fun x -> simplify_const x) in
-      Option.value_exn (List.max_elt simplified_args ~compare:IntLit.compare_value)
+      get_min_max IntLit.max args
+      (* let simplified_args = List.map args ~f:(fun x -> evaluate_const_exp x) in
+      Option.value_exn (List.max_elt simplified_args ~compare:IntLit.compare_value) *)
     )
     | Min args -> (
-      let simplified_args = List.map args ~f:(fun x -> simplify_const x) in
-      Option.value_exn (List.min_elt simplified_args ~compare:IntLit.compare_value)
+      get_min_max IntLit.max args
+      (* let simplified_args = List.map args ~f:(fun x -> evaluate_const_exp x) in
+      Option.value_exn (List.min_elt simplified_args ~compare:IntLit.compare_value) *)
     )
-    | _ -> assert(false)
+    | _ -> None
+
+
+  let rec is_const exp = match evaluate_const_exp exp with
+    | Some _ -> true
+    | None -> false
+    (* | Const _ -> true
+    | BinOp (_, lexp, rexp) -> is_const lexp && is_const rexp
+    | UnOp (_, exp, _) -> is_const exp
+    | Max args | Min args -> List.for_all args ~f:is_const
+    | _ -> false *)
+
+
+  let rec transform_shifts exp = match exp with
+    | Max [arg] -> (
+      let arg, conditions = transform_shifts arg in
+      arg, Set.add (BinOp (Binop.Ge, arg, zero)) conditions
+    )
+    | BinOp (Binop.Shiftrt, lexp, rexp) -> (
+      let lexp, lexp_conditions = transform_shifts lexp in
+      match evaluate_const_exp rexp with
+      | Some rexp_value -> (
+        assert(IntLit.isnegative rexp_value |> not);
+
+        if IntLit.iszero rexp_value then (
+          lexp, lexp_conditions
+        ) else (
+          (* Transform to division *)
+          let divisor = IntLit.of_int (Int.pow 2 (IntLit.to_int_exn rexp_value)) in
+          BinOp (Binop.Div, lexp, Const (Const.Cint divisor)), lexp_conditions
+        )
+      )
+      | None -> (
+        let rexp, rexp_conditions = transform_shifts rexp in
+        let conditions = Set.union lexp_conditions rexp_conditions in
+        BinOp (Binop.Div, lexp, rexp), Set.add (BinOp (Binop.Ge, rexp, zero)) conditions
+      )
+    )
+    | BinOp (op, lexp, rexp) -> (
+      let lexp, lexp_conditions = transform_shifts lexp in
+      let rexp, rexp_conditions = transform_shifts rexp in
+      BinOp (op, lexp, rexp), Set.union lexp_conditions rexp_conditions
+    )
+    | _ -> exp, Set.empty
 
 
   let access_path_id_resolver ident_map var = match var with
@@ -437,7 +906,7 @@ module EdgeExp = struct
       let lexp = of_exp lexp ident_map typ type_map in
       let rexp = of_exp rexp ident_map typ type_map in
       match lexp, rexp with
-      | Const Const.Cint c1, Const Const.Cint c2 -> eval op c1 c2
+      | Const Const.Cint c1, Const Const.Cint c2 -> Const (Const.Cint (eval_consts op c1 c2))
       | _ -> BinOp (op, lexp, rexp)
     )
     | Exp.UnOp (Unop.Neg, Exp.Const Const.Cint c, _) -> (
@@ -472,11 +941,11 @@ module EdgeExp = struct
 
     let rec make_access_term name (typ : Typ.t) = match typ.desc with
     | Tptr (ptr_type, _) -> (
-      (* log "Tptr: %s, Type: %a\n" name Typ.(pp Pp.text) ptr_type; *)
+      (* debug_log "Tptr: %s, Type: %a\n" name Typ.(pp Pp.text) ptr_type; *)
       make_access_term name ptr_type
     )
     | Typ.Tint ikind -> (
-      (* log "Tint: %s\n" name; *)
+      (* debug_log "Tint: %s\n" name; *)
       let expr = Z3.Expr.mk_const_s smt_ctx name real_sort in
       if Typ.ikind_is_unsigned ikind then expr, Z3ExprSet.singleton (Z3.Arithmetic.mk_ge smt_ctx expr zero_const)
       else expr, Z3ExprSet.empty
@@ -484,15 +953,15 @@ module EdgeExp = struct
     | Typ.Tfloat _ -> Z3.Expr.mk_const_s smt_ctx name real_sort, Z3ExprSet.empty
     | Tstruct _ -> Z3.Expr.mk_const_s smt_ctx name real_sort, Z3ExprSet.empty
     | TVar _ -> (
-      (* log "TVar: %s (%s)\n" name var_name; *)
+      (* debug_log "TVar: %s (%s)\n" name var_name; *)
       assert(false)
     )
     | Tarray {elt} -> (
-      (* log "Tarray: %s, Element type: %a\n" name Typ.(pp Pp.text) elt; *)
+      (* debug_log "Tarray: %s, Element type: %a\n" name Typ.(pp Pp.text) elt; *)
       make_access_term name elt
     )
     | _ -> (
-      log "Unknown type: %s\n" name;
+      debug_log "Unknown type: %s\n" name;
       assert(false);
       (* Z3.Expr.mk_const_s smt_ctx name int_sort, [] *)
     )
@@ -604,6 +1073,189 @@ module EdgeExp = struct
     )
     | _ -> L.(die InternalError)"[EdgeExp.to_z3_expr] Expression '%a' contains invalid element!" pp exp
 
+  
+  let why3_get_vsymbol name prover_data = match StringMap.find_opt name prover_data.vars with
+    | Some vs -> vs
+    | None -> (
+      let new_symbol = Why3.Term.create_vsymbol (Why3.Ident.id_fresh name) Why3.Ty.ty_real in
+      prover_data.vars <- (StringMap.add name new_symbol prover_data.vars);
+      new_symbol
+    )
+
+
+  let rec is_typ_unsigned (typ : Typ.t) = match typ.desc with
+    | Typ.Tint ikind -> Typ.ikind_is_unsigned ikind
+    | Typ.Tfloat _ | Tstruct _ -> false
+    | Tarray {elt} -> is_typ_unsigned elt
+    | Tptr (ptr_type, _) -> is_typ_unsigned ptr_type
+    | _ -> (
+      debug_log "Unknown type: %s\n" (Typ.desc_to_string typ.desc);
+      assert(false);
+    )
+
+
+  let rec to_why3_expr exp tenv prover_data =
+    let plus_symbol : Why3.Term.lsymbol = Why3.Theory.ns_find_ls prover_data.theory.th_export ["infix +"] in
+    let minus_symbol : Why3.Term.lsymbol = Why3.Theory.ns_find_ls prover_data.theory.th_export ["infix -"] in
+    let unary_minus_symbol : Why3.Term.lsymbol = Why3.Theory.ns_find_ls prover_data.theory.th_export ["prefix -"] in
+    let mul_symbol : Why3.Term.lsymbol = Why3.Theory.ns_find_ls prover_data.theory.th_export ["infix *"] in
+    let div_symbol : Why3.Term.lsymbol = Why3.Theory.ns_find_ls prover_data.theory.th_export ["infix /"] in
+    let ge_symbol = Why3.Theory.ns_find_ls prover_data.theory.th_export ["infix >="] in
+    let gt_symbol = Why3.Theory.ns_find_ls prover_data.theory.th_export ["infix >"] in
+    let le_symbol = Why3.Theory.ns_find_ls prover_data.theory.th_export ["infix <="] in
+    let lt_symbol = Why3.Theory.ns_find_ls prover_data.theory.th_export ["infix <"] in
+
+    let two : Why3.Term.term = Why3.Term.t_real_const (Why3.BigInt.of_int 2) in
+    (* let four : Why3.Term.term = Why3.Term.t_real_const (Why3.BigInt.of_int 4) in *)
+    (* let two_plus_two : Why3.Term.term = Why3.Term.t_app_infer plus_symbol [two;two] in *)
+    (* let fmla3 : Why3.Term.term = Why3.Term.t_equ two_plus_two four in *)
+    (* fmla3, Why3.Term.Sterm.empty *)
+    (* console_log "@[formula 3 is:@ %a@]@." Why3.Pretty.print_term fmla3; *)
+
+    let zero_const = Why3.Term.t_real_const (Why3.BigInt.of_int 0) in
+
+    let why3_make_access_term name typ =
+      let var = why3_get_vsymbol name prover_data in
+      let var_term = Why3.Term.t_var var in
+      if is_typ_unsigned typ then (
+        let condition = Why3.Term.ps_app ge_symbol [var_term;zero_const] in
+        var_term, Why3.Term.Sterm.singleton condition
+      )
+      else var_term, Why3.Term.Sterm.empty
+    in
+
+    (* let rec make_access_term name (typ : Typ.t) = match typ.desc with
+    | Typ.Tint ikind -> (
+      (* debug_log "Tint: %s\n" name; *)
+      (* let expr = Z3.Expr.mk_const_s smt_ctx name real_sort in *)
+
+      (* let var = Why3.Term.create_vsymbol (get_id name) Why3.Ty.ty_real in *)
+      let var = why3_get_vsymbol name prover_data in
+      let var_term = Why3.Term.t_var var in
+      if Typ.ikind_is_unsigned ikind then (
+        let condition = Why3.Term.ps_app ge_symbol [var_term;zero_const] in
+        var_term, Why3.Term.Sterm.singleton condition
+      )
+      else var_term, Why3.Term.Sterm.empty
+    )
+    | Typ.Tfloat _ | Tstruct _ -> (
+      (* let var = Why3.Term.create_vsymbol (get_id name) Why3.Ty.ty_real in *)
+      let var = why3_get_vsymbol name prover_data in
+      let var_term = Why3.Term.t_var var in
+      var_term, Why3.Term.Sterm.empty
+    )
+    | Tarray {elt} -> make_access_term name elt
+    | Tptr (ptr_type, _) -> make_access_term name ptr_type
+    | _ -> (
+      debug_log "Unknown type: %s\n" name;
+      assert(false);
+      (* Z3.Expr.mk_const_s smt_ctx name int_sort, [] *)
+    )
+    (* | _ -> L.(die InternalError)"[EdgeExp.to_z3_expr] Unsupported access type '%a'" Typ.(pp Pp.text) typ *)
+    in *)
+
+    let mk_const_term value = Why3.Term.t_real_const (Why3.BigInt.of_int value) in
+
+    match exp with
+    | Const (Const.Cint const) -> mk_const_term (IntLit.to_int_exn const), Why3.Term.Sterm.empty
+    | Const (Const.Cfloat const) -> mk_const_term (int_of_float const), Why3.Term.Sterm.empty
+    | Call (typ, procname, _, _) -> (
+      (* Treat function without summary as constant *)
+      why3_make_access_term (Procname.to_string procname) typ
+    )
+    | Access access -> (
+      match AccessPath.get_typ access tenv with
+      | Some typ -> why3_make_access_term (F.asprintf "%a" AccessPath.pp access) typ
+      | _ -> assert(false)
+    )
+    | BinOp (op, lexp, rexp) -> (
+      let why3_lexp, why3_lexp_constraints = to_why3_expr lexp tenv prover_data in
+      let why3_rexp, why3_rexp_constraints = to_why3_expr rexp tenv prover_data in
+      
+      let aux expr_why3 (typ_opt : Typ.ikind option) = match typ_opt with
+      | Some ikind when Typ.ikind_is_unsigned ikind -> expr_why3, Why3.Term.Sterm.empty
+      | _ -> expr_why3, Why3.Term.Sterm.empty
+      in
+
+      let eval_power exp = match exp with
+      | Const (Const.Cint power_value) -> (
+        let divisor = mk_const_term (Int.pow 2 (IntLit.to_int_exn power_value)) in
+        divisor
+      )
+      | _ -> why3_rexp
+      in
+      
+      let expr_z3, constraints = match op with
+      | Binop.Lt -> Why3.Term.ps_app lt_symbol [why3_lexp;why3_rexp], Why3.Term.Sterm.empty
+      | Binop.Le -> Why3.Term.ps_app le_symbol [why3_lexp;why3_rexp], Why3.Term.Sterm.empty
+      | Binop.Gt -> Why3.Term.ps_app gt_symbol [why3_lexp;why3_rexp], Why3.Term.Sterm.empty
+      | Binop.Ge -> Why3.Term.ps_app ge_symbol [why3_lexp;why3_rexp], Why3.Term.Sterm.empty
+      | Binop.Eq -> Why3.Term.t_equ why3_lexp why3_rexp, Why3.Term.Sterm.empty
+      | Binop.Ne -> Why3.Term.t_neq why3_lexp why3_rexp, Why3.Term.Sterm.empty
+      | Binop.MinusA ikind_opt -> aux (Why3.Term.t_app_infer minus_symbol [why3_lexp; why3_rexp]) ikind_opt
+      | Binop.PlusA ikind_opt -> aux (Why3.Term.t_app_infer plus_symbol [why3_lexp; why3_rexp]) ikind_opt
+      | Binop.Mult ikind_opt -> aux (Why3.Term.t_app_infer mul_symbol [why3_lexp; why3_rexp]) ikind_opt
+      | Binop.Div -> (
+        let conditions = if is_const rexp then (
+          assert(not (is_zero rexp));
+          Why3.Term.Sterm.empty
+        )
+        else Why3.Term.Sterm.singleton (Why3.Term.t_neq_simp why3_rexp zero_const)
+        in
+        Why3.Term.t_app_infer div_symbol [why3_lexp; why3_rexp], conditions
+      )
+      | Binop.Shiftrt -> (
+        (* Assumption: valid unsigned shifting *)
+        let rexp = eval_power rexp in
+        let condition = Why3.Term.t_app_infer ge_symbol [why3_rexp; zero_const] in
+        let expr_why3 = Why3.Term.t_app_infer div_symbol [why3_lexp; rexp] in
+        expr_why3, Why3.Term.Sterm.singleton condition
+      )
+      | Binop.Shiftlt -> (
+        (* Assumption: valid unsigned shifting *)
+        let rexp = eval_power rexp in
+        let condition = Why3.Term.t_app_infer ge_symbol [why3_rexp; zero_const] in
+        let expr_why3 = Why3.Term.t_app_infer mul_symbol [why3_lexp; rexp] in
+        expr_why3, Why3.Term.Sterm.singleton condition
+      )
+      | _ -> L.(die InternalError)"[EdgeExp.to_z3_expr] Expression '%a' contains invalid binary operator!" pp exp
+      in
+      expr_z3, Why3.Term.Sterm.union constraints (Why3.Term.Sterm.union why3_lexp_constraints why3_rexp_constraints)
+    )
+    | UnOp (Unop.Neg, subexp, _) -> (
+      let subexp, conditions = to_why3_expr subexp tenv prover_data in
+      Why3.Term.t_app_infer unary_minus_symbol [subexp], conditions
+    )
+    | Max max_args -> (
+      let why3_args, type_constraints = List.fold max_args ~init:([], Why3.Term.Sterm.empty) ~f:(fun (args, constraints) arg ->
+        let why3_arg, arg_type_constraints = to_why3_expr arg tenv prover_data in
+        why3_arg :: args, Why3.Term.Sterm.union arg_type_constraints constraints
+      )
+      in
+      if List.length max_args < 2 then (
+        assert(List.length max_args > 0);
+        let arg = List.hd_exn why3_args in
+        let ite_condition = Why3.Term.ps_app ge_symbol [arg; zero_const] in
+        (* let max_expr = Z3.Boolean.mk_ite smt_ctx ite_condition arg zero_const in *)
+        (* max_expr, type_constraints *)
+
+        (* TODO: should we include conditions "x >= 0" for each "max(x, 0)" expression? *)
+        arg, Why3.Term.Sterm.add ite_condition type_constraints
+      ) else (
+        (* TODO: Could we potentially extract single max(...) argument based on
+         * currently examined bound parameter when checking monotony? (with some 
+         * exceptions of course) This could help use get rid of max expressions in
+         * Z3 altogether for those usecases.
+         * This seems to be necessary if we want to avoid Z3 loops and unknown results *)
+        let max_expr = List.reduce_exn why3_args ~f:(fun x y ->
+          Why3.Term.t_if (Why3.Term.ps_app ge_symbol [x; y]) x y
+        )
+        in
+        max_expr, type_constraints
+      )
+    )
+    | _ -> L.(die InternalError)"[EdgeExp.to_z3_expr] Expression '%a' contains invalid element!" pp exp
+
 
   let rec always_positive exp tenv smt_ctx solver =
     let aux = function 
@@ -631,8 +1283,9 @@ module EdgeExp = struct
     )
     | Min args -> List.for_all args ~f:aux
     | _ -> (
-      if is_const exp then IntLit.geq (simplify_const exp) IntLit.zero
-      else (
+      match evaluate_const_exp exp with
+      | Some const_value -> IntLit.geq const_value IntLit.zero
+      | None -> (
         let exp_z3, type_conditions = to_z3_expr exp tenv smt_ctx None in
         let zero_const = Z3.Arithmetic.Real.mk_numeral_i smt_ctx 0 in
         let rhs = Z3.Arithmetic.mk_ge smt_ctx exp_z3 zero_const in
@@ -652,6 +1305,65 @@ module EdgeExp = struct
       )
     )
 
+  let rec always_positive_why3 exp tenv prover_data =
+    let aux = function 
+    | Const (Const.Cint x) -> not (IntLit.isnegative x)
+    | Const (Const.Cfloat x) -> Float.(x >= 0.0)
+    | Access ((_, typ), _) -> (match typ.desc with
+      | Typ.Tint ikind -> Typ.ikind_is_unsigned ikind
+      | _ -> false
+    )
+    | x -> always_positive_why3 x tenv prover_data
+    in
+
+    match exp with
+    | Max args -> (
+      let sorted_args = List.sort args ~compare:(fun x y -> match x, y with
+      | Const _, Const _ | Access _, Access _ -> 0
+      | Const _, _ -> -1
+      | _, Const _ -> 1
+      | Access _, _ -> -1
+      | _, Access _ -> 1
+      | _ -> 0
+      ) 
+      in
+      List.exists sorted_args ~f:aux
+    )
+    | Min args -> List.for_all args ~f:aux
+    | _ -> (
+      match evaluate_const_exp exp with
+      | Some const_value -> IntLit.geq const_value IntLit.zero
+      | None -> (
+        let exp_why3, type_conditions = to_why3_expr exp tenv prover_data in
+        let zero_const = Why3.Term.t_real_const (Why3.BigInt.of_int 0) in
+        let ge_symbol = Why3.Theory.ns_find_ls prover_data.theory.th_export ["infix >="] in
+        let rhs = Why3.Term.t_app_infer ge_symbol [exp_why3; zero_const] in
+
+        let formula = if Why3.Term.Sterm.is_empty type_conditions then rhs
+        else (
+          let lhs = Why3.Term.Sterm.elements type_conditions |> Why3.Term.t_and_l in
+          Why3.Term.t_implies lhs rhs
+        )
+        in
+        let free_vars = Why3.Term.Mvs.keys (Why3.Term.t_vars formula) in
+        let quantified_fmla = Why3.Term.t_forall_close free_vars [] formula in
+
+        let goal_symbol = Why3.Decl.create_prsymbol (Why3.Ident.id_fresh "is_guard") in
+        let task = Why3.Task.use_export None prover_data.theory in
+        let task = Why3.Task.add_prop_decl task Why3.Decl.Pgoal goal_symbol quantified_fmla in
+
+        let prover_call = Why3.Driver.prove_task prover_data.driver task 
+          ~command:prover_data.prover_conf.command
+          ~limit:{Why3.Call_provers.empty_limit with limit_time = 5} 
+        in
+        let result = Why3.Call_provers.wait_on_call prover_call in
+        match result.pr_answer with
+        | Why3.Call_provers.Valid -> true
+        | Why3.Call_provers.Invalid | Why3.Call_provers.Unknown _ -> false
+        | _ -> assert(false)
+      )
+    )
+
 
   let get_accesses exp =
     let rec aux exp set = match exp with
@@ -665,6 +1377,7 @@ module EdgeExp = struct
     aux exp Set.empty
 
 
+  (* TODO: rewrite/get rid of *)
   let map_accesses bound ~f:f acc =
     let rec aux bound acc = match bound with
     | Access access -> f access acc
@@ -672,19 +1385,31 @@ module EdgeExp = struct
       let lexp, acc = aux lexp acc in
       let rexp, acc = aux rexp acc in
       try_eval op lexp rexp, acc
-      (* BinOp (op, lexp, rexp), acc *)
     )
-    | UnOp (op, exp, typ) -> (
+    | UnOp (Unop.Neg, exp, typ) -> (
       let exp, acc = aux exp acc in
-      UnOp (op, exp, typ), acc
+      match exp with
+      | UnOp (Unop.Neg, _, _) -> exp, acc
+      | Const (Const.Cint const) -> Const (Const.Cint (IntLit.neg const)), acc
+      | _ ->  UnOp (Unop.Neg, exp, typ), acc
     )
+    | UnOp (_, _, _) -> assert(false)
     | Max args -> (
       let args, acc = List.fold args ~init:([], acc) ~f:(fun (args, acc) arg ->
         let arg, acc = aux arg acc in
         args @ [arg], acc
       )
       in
-      Max args, acc
+
+      if List.for_all args ~f:is_const then (
+        let args = match args with
+        | [_] -> zero :: args
+        | _ -> args
+        in
+        Option.value_exn (List.max_elt args ~compare), acc
+      )
+      else Max args, acc
+      (* Max args, acc *)
     )
     | Min args -> (
       let args, acc = List.fold args ~init:([], acc) ~f:(fun (args, acc) arg ->
@@ -692,7 +1417,14 @@ module EdgeExp = struct
         args @ [arg], acc
       )
       in
-      Min args, acc
+      if List.for_all args ~f:is_const then (
+        let args = match args with
+        | [_] -> zero :: args
+        | _ -> args
+        in
+        Option.value_exn (List.min_elt args ~compare), acc
+      )
+      else Min args, acc
     )
     | _ -> bound, acc
     in
@@ -763,7 +1495,7 @@ module EdgeExp = struct
     BinOp (op, lexp, rexp)
 
 
-  let determine_monotony exp tenv z3_ctx solver =
+  let determine_monotony exp tenv z3_ctx solver why3_theory =
     let rec transform_exp exp = match exp with
     | Const _ -> None
     | Access _ -> Some exp
@@ -850,10 +1582,10 @@ module EdgeExp = struct
     | Inf -> assert(false)
     in
 
-    log "[Pre-transform] %a\n" pp exp;
+    debug_log "[Pre-transform] %a\n" pp exp;
     match transform_exp exp with
     | Some exp -> (
-      log "[Post-transform] %a\n" pp exp;
+      debug_log "[Post-transform] %a\n" pp exp;
       try
         let exp_variables = Set.elements (get_accesses exp) in
         let real_sort = Z3.Arithmetic.Real.mk_sort z3_ctx in
@@ -875,7 +1607,7 @@ module EdgeExp = struct
         )
         in
 
-        if is_const exp then AccessPath.BaseMap.empty
+        if is_const exp then AccessPathMap.empty
         else (
           let bound_func_decl = Z3.FuncDecl.mk_func_decl_s z3_ctx "bound_function" param_sorts real_sort in
           let params = List.map param_symbols ~f:(fun symbol -> Z3.Expr.mk_const z3_ctx symbol real_sort) in
@@ -885,13 +1617,12 @@ module EdgeExp = struct
           let tmp_var_symbol = Z3.Symbol.mk_string z3_ctx "tmp_var" in
           let tmp_var_exp = Z3.Expr.mk_const z3_ctx tmp_var_symbol real_sort in
 
-          List.foldi param_symbols ~init:AccessPath.BaseMap.empty ~f:(fun replace_idx acc current_symbol ->
+          List.foldi param_symbols ~init:AccessPathMap.empty ~f:(fun replace_idx acc current_symbol ->
             (* let current_variable_exp = List.nth_exn exp_variables replace_idx in *)
             let param_access = List.nth_exn bound_accesses replace_idx in
             let param_sort = List.nth_exn param_sorts replace_idx in
             let param_name = Z3.Symbol.to_string current_symbol in
             let param_expr = Z3.Expr.mk_const z3_ctx current_symbol real_sort in
-            let access_base = fst param_access in
 
             let new_params = List.mapi params ~f:(fun param_idx param ->
               if Int.equal param_idx replace_idx then tmp_var_exp else param
@@ -906,6 +1637,8 @@ module EdgeExp = struct
             in
             let z3_bound = to_z3_expr exp tenv z3_ctx (Some bound_access_map) |> fst in
             let type_constraints = to_z3_expr exp tenv z3_ctx None |> snd |> Z3ExprSet.elements in
+
+            (* let why3_bound = to_why3_expr exp tenv why3_theory in *)
 
             (* Use constructed bound in quantified expression to define function over all arguments *)
             let args = List.mapi params ~f:(fun param_idx param ->
@@ -943,12 +1676,12 @@ module EdgeExp = struct
 
               match Z3.Solver.check solver [] with
               | Z3.Solver.UNSATISFIABLE -> (
-                log "  [Variable: %s] Non-decreasing\n" param_name;
+                debug_log "  [Variable: %s] Non-decreasing\n" param_name;
                 let assertions = Z3.Solver.get_assertions solver in
                 List.iter assertions ~f:(fun z3_exp -> 
-                    log "[Z3 Assertion] %s\n" (Z3.Expr.to_string z3_exp);
+                    debug_log "[Z3 Assertion] %s\n" (Z3.Expr.to_string z3_exp);
                 );
-                AccessPath.BaseMap.add access_base VariableMonotony.NonDecreasing acc
+                AccessPathMap.add param_access VariableMonotony.NonDecreasing acc
               )
               | Z3.Solver.SATISFIABLE -> (
                 (* let decreasing_model = match Z3.Solver.get_model solver with
@@ -962,18 +1695,18 @@ module EdgeExp = struct
 
                 match Z3.Solver.check solver [] with
                 | Z3.Solver.UNSATISFIABLE -> (
-                  log "  [Variable: %s] Non-increasing\n" param_name;
-                  AccessPath.BaseMap.add access_base VariableMonotony.NonIncreasing acc
+                  debug_log "  [Variable: %s] Non-increasing\n" param_name;
+                  AccessPathMap.add param_access VariableMonotony.NonIncreasing acc
                 )
                 | Z3.Solver.SATISFIABLE -> (
-                  log "  [Variable: %s] Not Monotonic\n" param_name;
-                  AccessPath.BaseMap.add access_base VariableMonotony.NotMonotonic acc
+                  debug_log "  [Variable: %s] Not Monotonic\n" param_name;
+                  AccessPathMap.add param_access VariableMonotony.NotMonotonic acc
                 ) 
                 | Z3.Solver.UNKNOWN -> (
                   (* EdgeExp.Map.add formal_exp FormalBoundMonotony.NotMonotonic acc *)
                   let assertions = Z3.Solver.get_assertions solver in
                   List.iter assertions ~f:(fun z3_exp -> 
-                    log "[Z3 Assertion] %s\n" (Z3.Expr.to_string z3_exp);
+                    debug_log "[Z3 Assertion] %s\n" (Z3.Expr.to_string z3_exp);
                   );
                   L.die InternalError "[Monotony Check] Unknown Z3 result: %s\n" (Z3.Solver.get_reason_unknown solver)
                 )
@@ -982,7 +1715,7 @@ module EdgeExp = struct
                 (* EdgeExp.Map.add formal_exp FormalBoundMonotony.NotMonotonic acc *)
                 let assertions = Z3.Solver.get_assertions solver in
                 List.iter assertions ~f:(fun z3_exp -> 
-                  log "[Z3 Assertion] %s\n" (Z3.Expr.to_string z3_exp);
+                  debug_log "[Z3 Assertion] %s\n" (Z3.Expr.to_string z3_exp);
                 );
                 L.die InternalError "[Monotony Check] Unknown Z3 result: %s\n" (Z3.Solver.get_reason_unknown solver)
               )
@@ -997,7 +1730,374 @@ module EdgeExp = struct
         L.die InternalError "[Z3 Error] %s\n" str
       )
     )
-    | None -> AccessPath.BaseMap.empty
+    | None -> AccessPathMap.empty
+
+
+  let determine_monotony_why3 exp tenv (prover_data : prover_data) =
+
+    (* Basically expands two brackets and multiplies its terms *)
+    let multiply_exps lexp_parts rexp_parts = List.fold lexp_parts ~init:[] ~f:(fun acc lexp ->
+      List.fold rexp_parts ~init:acc ~f:(fun acc rexp ->
+        let multiplied_exp = match lexp, rexp with
+        | UnOp (Unop.Neg, lsubexp, _), UnOp (Unop.Neg, rsubexp, _) -> (
+          try_eval (Binop.Mult None) lsubexp rsubexp
+        )
+        | _, UnOp (Unop.Neg, rsubexp, _) -> (
+          UnOp (Unop.Neg, try_eval (Binop.Mult None) lexp rsubexp, None)
+        )
+        | UnOp (Unop.Neg, lsubexp, _), _ -> (
+          UnOp (Unop.Neg, try_eval (Binop.Mult None) lsubexp rexp, None)
+        )
+        | _ -> try_eval (Binop.Mult None) lexp rexp
+        in
+        multiplied_exp :: acc
+      )
+    )
+    in
+    
+
+    debug_log "[Pre-transform] %a\n" pp exp;
+    let transformed, conditions = transform_shifts exp in
+    let simplified = simplify transformed in
+    debug_log "[Simplified]\n%a\n" pp simplified;
+    debug_log "[Conditions]\n";
+    Set.iter (fun condition -> debug_log "\t%a\n" pp condition) conditions;
+
+    let variables = get_accesses simplified in
+
+    (* let merge_into_acc acc exp op = match acc with
+    | Some acc_exp -> BinOp (op, acc_exp, exp)
+    | None -> BinOp (op, zero, exp)
+    in *)
+
+    let rec partial_derivative exp var is_root = match exp with
+    | BinOp (Binop.Div, lexp, rexp) -> (
+      if not is_root then (
+        (* not supported yet *)
+        assert(false)
+      ) else (
+        let numerator_parts = split_exp lexp in
+        let divisor_parts = split_exp rexp in
+
+        let derivate_div_subexp subexp_parts = List.fold subexp_parts ~init:[] ~f:(fun acc part ->
+          match part with
+          | UnOp (Unop.Neg, subexp, typ) -> (
+            UnOp (Unop.Neg, partial_derivative subexp var false, typ) :: acc
+          )
+          | _ -> (partial_derivative part var false) :: acc
+        )
+        in
+
+        (* TODO: filter out "constant" exp if does not contain var *)
+
+        (* Derivate each part of numerator and divisor and apply quotient rule *)
+        let numerator_derivative = derivate_div_subexp numerator_parts in
+        let divisor_derivative = derivate_div_subexp divisor_parts in
+
+        (* TODO: use divisor op if it contains only single part, might be negative *)
+        let divisor_squared = multiply_exps divisor_parts divisor_parts |> merge_exp_parts in
+        let numerator_lhs = multiply_exps numerator_derivative divisor_parts |> merge_exp_parts in
+        let numerator_rhs = multiply_exps numerator_parts divisor_derivative |> merge_exp_parts in
+        match is_zero numerator_lhs, is_zero numerator_rhs with
+        | true, true -> zero
+        | true, false -> UnOp (Unop.Neg, BinOp (Binop.Div, numerator_rhs, divisor_squared), None)
+        | false, true -> BinOp (Binop.Div, numerator_lhs, divisor_squared)
+        | false, false -> (
+          let numerator = BinOp (Binop.MinusA None, numerator_lhs, numerator_rhs) in
+          BinOp (Binop.Div, numerator, divisor_squared)
+        )
+      )
+    )
+    | _ -> (
+      let rec get_degree exp root = match exp with
+      | Const _ -> 0, Some exp
+      | Access _ -> if equal exp var then 1, None else 0, Some exp
+      | UnOp (Unop.Neg, subexp, typ) -> (
+        assert(root);
+        let degree, remainder_opt = get_degree subexp false in
+        match remainder_opt with
+        | Some remainder -> degree, Some remainder
+        | None -> degree, Some (UnOp (Unop.Neg, one, typ))
+      )
+      | BinOp (Binop.Mult _, (Access _ as lexp), (Access _ as rexp)) -> (
+        match equal lexp var, equal rexp var with
+        | true, true -> 2, None
+        | true, false -> 1, Some rexp
+        | false, true -> 1, Some lexp
+        | _ -> 0, Some exp
+      )
+      | BinOp (Binop.Mult typ, (Access _ as access_exp), subexp)
+      | BinOp (Binop.Mult typ, subexp, (Access _ as access_exp)) -> (
+        let subexp_degree, subexp_opt = get_degree subexp false in
+        if equal access_exp var then (
+          subexp_degree + 1, subexp_opt
+        ) else (
+          match subexp_opt with
+          | Some subexp -> subexp_degree, Some (BinOp (Binop.Mult typ, access_exp, subexp))
+          | None -> subexp_degree, Some access_exp
+        )
+      )
+      | BinOp (Binop.Mult typ, lexp, rexp) -> (
+        let lexp_degree, lexp_opt = get_degree lexp false in
+        let rexp_degree, rexp_opt = get_degree rexp false in
+        let merged_exp = match lexp_opt, rexp_opt with
+        | Some lexp, Some rexp -> Some (BinOp (Binop.Mult typ, lexp, rexp))
+        | Some subexp, None 
+        | None, Some subexp -> Some subexp
+        | _ -> None
+        in
+        lexp_degree + rexp_degree, merged_exp
+      )
+      | _ -> (
+        (* TODO: implement remaining possible cases *)
+        assert(false)
+      )
+      in
+
+      let rec create_var_power var power = match power with
+      | 0 -> one
+      | 1 -> var
+      | _ -> BinOp (Binop.Mult None, var, create_var_power var (power - 1))
+      in
+
+      let degree, remainder_exp_opt = get_degree exp true in
+      match degree with
+      | 0 -> zero
+      | 1 -> Option.value remainder_exp_opt ~default:one
+      | _ -> (
+        let degree_const = of_int degree in
+        let var_power = create_var_power var (degree - 1) in
+        match remainder_exp_opt with
+        | Some remainder_exp -> (
+          let remainder_exp = simplify (BinOp (Binop.Mult None, degree_const, remainder_exp)) in
+          BinOp (Binop.Mult None, var_power, remainder_exp)
+        )
+        | None -> one
+      )
+    )
+    in
+
+    let parts = split_exp simplified in
+    debug_log "[Parts]\n";
+    List.iter parts ~f:(fun exp -> debug_log "  %a\n" pp exp);
+
+    let non_const_parts = List.filter parts ~f:(fun part -> not (is_const part)) in
+    debug_log "[Non-const parts]\n";
+    List.iter non_const_parts ~f:(fun exp -> debug_log "  %a\n" pp exp);
+
+    let derivatives = Set.fold (fun var acc ->
+      let derivative_parts = List.filter_map non_const_parts ~f:(fun part ->
+        let derivative = partial_derivative part var true in
+        if is_zero derivative then None else Some derivative
+      )
+      in
+      Map.add var (merge_exp_parts derivative_parts |> simplify) acc
+    ) variables Map.empty in
+
+    (* let var_type_constraints = Set.fold (fun var acc -> 
+      match var with
+      | Access var -> (
+        AccessPath.get_typ var tenv
+        acc
+      )
+      | _ -> assert(false)
+    )  variables Why3.Term.Sterm.empty
+    in *)
+
+    let why3_solve_task task =
+      let prover_call = Why3.Driver.prove_task ~command:prover_data.prover_conf.command
+        ~limit:{Why3.Call_provers.empty_limit with limit_time = 10} prover_data.driver task
+      in
+      Why3.Call_provers.wait_on_call prover_call
+    in
+
+    (* Try to check monotonicity property based if no root exists  *)
+    let check_monotonicity var_access monotony_map =
+      (* TODO: needs more robust solution, this is just a "heuristic" *)
+      let value_map_one = AccessPathMap.singleton var_access 1.0 in
+      let value_map_two = AccessPathMap.singleton var_access 2.0 in
+      let y1, y2 = List.fold non_const_parts ~init:(0.0, 0.0) ~f:(fun (y1, y2) part ->
+        let lhs_value = evaluate part value_map_one 1.0 in
+        let rhs_value = evaluate part value_map_two 1.0 in
+        y1 +. lhs_value, y2 +. rhs_value
+      )
+      in
+      match Float.compare y2 y1 with
+      | 0 -> (
+        (* TODO: function can be locally constant, must come up with some
+         * better way to determine if it is increasing/decreasing *)
+        assert(false)
+      )
+      | x when x > 0 -> (
+        debug_log "  [Variable: %a] Non-decreasing\n" AccessPath.pp var_access;
+        AccessPathMap.add var_access VariableMonotony.NonDecreasing monotony_map
+      )
+      | _ -> (
+        debug_log "  [Variable: %a] Non-increasing\n" AccessPath.pp var_access;
+        AccessPathMap.add var_access VariableMonotony.NonIncreasing monotony_map
+      )
+    in
+
+    let why3_conditions = Set.fold (fun condition acc -> 
+      let cond, _ = to_why3_expr condition tenv prover_data in
+      debug_log "[Why3 Condition] %a\n" Why3.Pretty.print_term cond;      
+      cond :: acc
+    ) conditions [] in
+
+    debug_log "[Partial derivatives]\n";
+    let zero_const = Why3.Term.t_real_const (Why3.BigInt.of_int 0) in
+    let ge_symbol = Why3.Theory.ns_find_ls prover_data.theory.th_export ["infix >="] in
+    let le_symbol = Why3.Theory.ns_find_ls prover_data.theory.th_export ["infix <="] in
+    let base_task = Why3.Task.use_export None prover_data.theory in
+    let nonzero_goal = Why3.Decl.create_prsymbol (Why3.Ident.id_fresh "nonzero_goal") in
+
+    Map.fold (fun var derivative acc ->
+      debug_log "Derivative of %a ---> %a\n" pp var pp derivative;
+      let var_access = match var with
+      | Access path -> path
+      | _ -> assert(false)
+      in
+
+      if is_const derivative then (
+        debug_log "  [Variable %a] --> Monotonic\n" pp var;
+        check_monotonicity var_access acc
+      )
+      else (
+        let why3_derivative, type_constraints = to_why3_expr derivative tenv prover_data in
+        let constraints = Why3.Term.t_and_simp_l ((Why3.Term.Sterm.elements type_constraints) @ why3_conditions) in
+        let positive_derivative = Why3.Term.t_app_infer ge_symbol [why3_derivative; zero_const] in
+        let negative_derivative = Why3.Term.t_app_infer le_symbol [why3_derivative; zero_const] in
+        let positive_implication = Why3.Term.t_implies_simp constraints positive_derivative in
+        let negative_implication = Why3.Term.t_implies_simp constraints negative_derivative in
+        let free_vars = Why3.Term.Mvs.keys (Why3.Term.t_vars positive_implication) in
+        let positive_forall = Why3.Term.t_forall_close_simp free_vars [] positive_implication in
+        let negative_forall = Why3.Term.t_forall_close_simp free_vars [] negative_implication in
+        let goal_formula = Why3.Term.t_or_simp positive_forall negative_forall in
+
+        (* let forall_body = Why3.Term.t_not (Why3.Term.t_and_l (eq_term :: constraints)) in
+        let forall_body_vars = Why3.Term.Mvs.keys (Why3.Term.t_vars forall_body) in
+        let implication = Why3.Term.t_implies_simp constraints in
+        let goal_formula = Why3.Term.t_forall_close_simp forall_body_vars [] forall_body in *)
+
+        let task = Why3.Task.add_prop_decl base_task Why3.Decl.Pgoal nonzero_goal goal_formula in
+        debug_log "@[Task formula:@ %a@]@." Why3.Pretty.print_term goal_formula;
+
+        debug_log "Task: %a\n" Why3.Driver.(print_task prover_data.driver) task;
+
+        let result = why3_solve_task task in
+
+        match result.pr_answer with
+        | Why3.Call_provers.Valid -> (
+          debug_log "  [Variable: %a] Root does not exist\n" pp var;
+          check_monotonicity var_access acc
+        )
+        | Why3.Call_provers.Invalid | Why3.Call_provers.Unknown _ -> (
+          debug_log "  [Variable: %a] Root might exist?\n" pp var;
+          AccessPathMap.add var_access VariableMonotony.NotMonotonic acc
+        )
+        | _ -> assert(false)
+      )
+    ) derivatives AccessPathMap.empty
+
+    (* match transform_exp exp with
+    | Some exp -> (
+      debug_log "[Post-transform] %a\n" pp exp;
+      let exp_variables = Set.elements (get_accesses exp) in
+      (* let real_sort = Z3.Arithmetic.Real.mk_sort z3_ctx in *)
+      let param_types, param_symbols, bound_accesses = List.fold exp_variables ~init:([], [], [])
+      ~f:(fun (param_types, symbols, accesses) variable ->
+        match variable with
+        | Access access -> (
+          let access_str = F.asprintf "%a" AccessPath.pp access in
+          let access_symbol = why3_get_vsymbol access_str prover_data in
+
+          match AccessPath.get_typ access tenv with
+          | Some typ when Typ.is_int typ -> (
+            param_types @ [Why3.Ty.ty_real], 
+            symbols @ [access_symbol],
+            accesses @ [access]
+          )
+          | _ -> assert(false)
+        )
+        | _ -> assert(false)
+      )
+      in
+      let param_terms = List.map param_symbols ~f:Why3.Term.t_var in
+
+      if is_const exp then AccessPathMap.empty
+      else (
+        let why3_bound, type_constraints = to_why3_expr exp tenv prover_data in
+        let func_symbol = Why3.Term.create_fsymbol (Why3.Ident.id_fresh "bound_func") param_types Why3.Ty.ty_real in
+        let func_def = Why3.Decl.make_ls_defn func_symbol param_symbols why3_bound in
+
+        let base_task = Why3.Task.use_export None prover_data.theory in
+        let base_task = Why3.Task.add_logic_decl base_task [func_def] in
+        let func_app_1 = Why3.Term.t_app_infer func_symbol param_terms in
+
+        let non_decreasing_goal = Why3.Decl.create_prsymbol (Why3.Ident.id_fresh "non_decreasing") in
+        let non_increasing_goal = Why3.Decl.create_prsymbol (Why3.Ident.id_fresh "non_increasing") in
+
+        let ge_symbol = Why3.Theory.ns_find_ls prover_data.theory.th_export ["infix >="] in
+        let gt_symbol = Why3.Theory.ns_find_ls prover_data.theory.th_export ["infix >"] in
+        let le_symbol = Why3.Theory.ns_find_ls prover_data.theory.th_export ["infix <="] in
+
+        List.foldi param_symbols ~init:AccessPathMap.empty ~f:(fun replace_idx acc current_symbol ->
+          (* let current_variable_exp = List.nth_exn exp_variables replace_idx in *)
+          let param_term = List.nth_exn param_terms replace_idx in
+          let param_access = List.nth_exn bound_accesses replace_idx in
+          let param_sort = List.nth_exn param_types replace_idx in
+          let param_name = F.asprintf "%a" Why3.Pretty.print_vs current_symbol in
+
+          let var_symbol = Why3.Term.create_vsymbol (Why3.Ident.id_fresh (param_name ^ "_new")) param_sort in
+          let var_term = Why3.Term.t_var var_symbol in
+
+          let new_params = List.mapi param_terms ~f:(fun param_idx param ->
+            if Int.equal param_idx replace_idx then var_term else param
+          )
+          in
+          let func_app_2 = Why3.Term.t_app_infer func_symbol new_params in
+
+          let antecedent = Why3.Term.t_app_infer ge_symbol [var_term; param_term] in
+          let antecedent = Why3.Term.t_and_l (antecedent :: (Why3.Term.Sterm.elements type_constraints)) in
+          let non_decreasing_consequent = Why3.Term.t_app_infer ge_symbol [func_app_2; func_app_1] in
+          let non_increasing_consequent = Why3.Term.t_app_infer le_symbol [func_app_2; func_app_1] in
+          let non_decreasing_implication = Why3.Term.t_implies antecedent non_decreasing_consequent in
+          let non_increasing_implication = Why3.Term.t_implies antecedent non_increasing_consequent in
+
+          (* Check for non-decreasing property first *)
+          let goal_formula = Why3.Term.t_forall_close (var_symbol :: param_symbols) [] non_decreasing_implication in
+
+          let task = Why3.Task.add_prop_decl base_task Why3.Decl.Pgoal non_decreasing_goal goal_formula in
+
+          let result = why3_solve_task task in
+
+          match result.pr_answer with
+          | Why3.Call_provers.Valid -> (
+            debug_log "  [Variable: %s] Non-decreasing\n" param_name;
+            AccessPathMap.add param_access VariableMonotony.NonDecreasing acc
+          )
+          | Why3.Call_provers.Invalid | Why3.Call_provers.Unknown _ -> (
+            (* Check for non-increasing property next *)
+            let goal_formula = Why3.Term.t_forall_close (var_symbol :: param_symbols) [] non_increasing_implication in
+            let task = Why3.Task.add_prop_decl base_task Why3.Decl.Pgoal non_increasing_goal goal_formula in
+            let result = why3_solve_task task in
+            match result.pr_answer with
+            | Why3.Call_provers.Valid -> (
+              debug_log "  [Variable: %s] Non-increasing\n" param_name;
+              AccessPathMap.add param_access VariableMonotony.NonIncreasing acc
+            )
+            | Why3.Call_provers.Invalid | Why3.Call_provers.Unknown _ -> (
+              debug_log "  [Variable: %s] Not Monotonic\n" param_name;
+              AccessPathMap.add param_access VariableMonotony.NotMonotonic acc
+            )
+            | _ -> assert(false)
+          )
+          | _ -> assert(false)
+        )
+      )
+    )
+    | None -> AccessPathMap.empty *)
+  
 
 
   let add e1 e2 = match is_zero e1, is_zero e2 with
@@ -1053,6 +2153,8 @@ module DC = struct
 
   let same_norms (lhs_norm, (rhs_norm, _, _)) = EdgeExp.equal lhs_norm rhs_norm
 
+  let is_reset dc = not (same_norms dc)
+
   let is_decreasing (_, (_, op, const)) = match op with
     | Binop.PlusA _ -> IntLit.isnegative const
     | _ -> false
@@ -1063,11 +2165,37 @@ module DC = struct
     | _ -> false
     (* | _ -> assert(false) *)
 
-  let to_string (lhs, (rhs_norm, op, rhs_const)) guarded =
-    let dc = if guarded then F.asprintf "%a' <= %a" EdgeExp.pp lhs EdgeExp.pp rhs_norm
-    else F.asprintf "[%a]' <= [%a]" EdgeExp.pp lhs EdgeExp.pp rhs_norm
+  let to_string (lhs, (rhs_norm, op, rhs_const)) =
+    (* let dc = F.asprintf "%a' <= %a" EdgeExp.pp lhs EdgeExp.pp rhs_norm in *)
+    let rhs_str = if EdgeExp.is_zero rhs_norm then (
+      match op with
+      | Binop.PlusA _ -> (
+        if IntLit.iszero rhs_const then "0"
+        else if IntLit.isnegative rhs_const then "-" ^ IntLit.to_string (IntLit.neg rhs_const)
+        else IntLit.to_string rhs_const
+      )
+      | Binop.Shiftrt -> "0"
+      | _ -> (
+        L.(die InternalError)"TODO: unsupported op: %s %a" (Binop.str Pp.text op) IntLit.pp rhs_const
+      )
+    ) else (
+      match op with
+      | Binop.PlusA _ -> (
+        if IntLit.iszero rhs_const then EdgeExp.to_string rhs_norm
+        else if IntLit.isnegative rhs_const then F.asprintf "%a - %a" EdgeExp.pp rhs_norm IntLit.pp (IntLit.neg rhs_const)
+        else F.asprintf "%a + %a" EdgeExp.pp rhs_norm IntLit.pp rhs_const
+      )
+      | Binop.Shiftrt -> (
+        if IntLit.iszero rhs_const then EdgeExp.to_string rhs_norm
+        else F.asprintf "%a >> %a" EdgeExp.pp rhs_norm IntLit.pp rhs_const
+      )
+      | _ -> (
+        L.(die InternalError)"TODO: unsupported op: %s %a" (Binop.str Pp.text op) IntLit.pp rhs_const
+      )
+    )
     in
-    match op with
+    F.asprintf "%a' <= %s" EdgeExp.pp lhs rhs_str
+    (* match op with
     | Binop.PlusA _ -> (
       if IntLit.iszero rhs_const then dc
       else if IntLit.isnegative rhs_const then dc ^ " - " ^ IntLit.to_string (IntLit.neg rhs_const)
@@ -1079,10 +2207,10 @@ module DC = struct
     )
     | _ -> (
       L.(die InternalError)"TODO: unsupported op: %s %a" (Binop.str Pp.text op) IntLit.pp rhs_const
-    )
+    ) *)
     
   let pp fmt dc = 
-    F.fprintf fmt "%s" (to_string dc false)
+    F.fprintf fmt "%s" (to_string dc)
 
   module Map = struct
     type dc = t
@@ -1113,7 +2241,7 @@ module DC = struct
 
     let to_string map =
       let tmp = fold (fun lhs_norm dc_rhs acc ->
-        acc ^ (to_string (lhs_norm, dc_rhs) false) ^ " "
+        acc ^ (to_string (lhs_norm, dc_rhs)) ^ " "
       ) map ""
       in
       "[" ^ (String.rstrip tmp) ^ "]"
@@ -1154,6 +2282,12 @@ module DCP = struct
 
     let is_join : t -> bool = function Join _ -> true | _ -> false
 
+    let get_location node = match node with
+      | Prune (_, loc, _)
+      | Start (_, loc)
+      | Join (loc, _) -> loc
+      | Exit -> Location.dummy
+
     let to_string loc = match loc with
       | Prune (kind, loc, node_id) -> 
         F.asprintf "[%s] %s (%a)" (Location.to_string loc) (Sil.if_kind_to_string kind) Procdesc.Node.pp_id node_id
@@ -1181,8 +2315,7 @@ module DCP = struct
       mutable calls: EdgeExp.Set.t;
       mutable constraints: DC.rhs DC.Map.t;
       mutable guards: EdgeExp.Set.t;
-      mutable bound: EdgeExp.t;
-      mutable execution_cost: EdgeExp.t;
+      mutable bound: EdgeExp.t option;
       mutable bound_norm: EdgeExp.t option;
       mutable computing_bound: bool;
 
@@ -1227,8 +2360,7 @@ module DCP = struct
       constraints = DC.Map.empty;
       calls = EdgeExp.Set.empty;
       guards = EdgeExp.Set.empty;
-      bound = EdgeExp.Inf;
-      execution_cost = EdgeExp.one;
+      bound = None;
       bound_norm = None;
       computing_bound = false;
       exit_edge = false;
@@ -1311,8 +2443,80 @@ module DCP = struct
         edge.guards <- guards;
       )
 
+    let derive_guards_why3 edge norms tenv prover_data =
+      let cond_expressions = EdgeExp.Set.fold (fun cond acc -> 
+        match cond with
+        | EdgeExp.BinOp (_, EdgeExp.Const _, EdgeExp.Const _) -> acc
+        | EdgeExp.BinOp _ -> (
+          let cond_why3, type_conditions = EdgeExp.to_why3_expr cond tenv prover_data in
+          (* debug_log "Condition: %a\n" Why3.Pretty.print_term cond_why3; *)
+          Why3.Term.Sterm.add cond_why3 (Why3.Term.Sterm.union type_conditions acc)
+        )
+        | _ -> L.(die InternalError)"[Guards] Condition of form '%a' is not supported" EdgeExp.pp cond
+      ) edge.conditions Why3.Term.Sterm.empty 
+      in
+      if Why3.Term.Sterm.is_empty cond_expressions then (
+        ()
+      ) else (
+        (* debug_log "LHS Conditions: ";
+        Why3.Term.Sterm.iter (fun cond -> debug_log "%a " Why3.Pretty.print_term cond) cond_expressions;
+        debug_log "\n"; *)
 
-    let derive_constraint (_, edge_data, _) norm existing_norms formals =
+        let lhs = Why3.Term.Sterm.elements cond_expressions |> Why3.Term.t_and_l in
+        let zero_const = Why3.Term.t_real_const (Why3.BigInt.of_int 0) in
+        let gt_symbol = Why3.Theory.ns_find_ls prover_data.theory.th_export ["infix >"] in
+        let goal_symbol = Why3.Decl.create_prsymbol (Why3.Ident.id_fresh "is_guard") in
+
+        let lhs_vars = Why3.Term.Mvs.keys (Why3.Term.t_vars lhs) in
+
+        let guards = EdgeExp.Set.fold (fun norm acc ->         
+          let solve_formula rhs =
+            let rhs = Why3.Term.t_app_infer gt_symbol [rhs;zero_const] in
+            let formula = Why3.Term.t_implies lhs rhs in
+
+            let rhs_vars = Why3.Term.Mvs.keys (Why3.Term.t_vars rhs) in
+            let free_vars = lhs_vars @ rhs_vars in
+            (* debug_log "@[Guard formula is:@ %a@]@." Why3.Pretty.print_term formula; *)
+
+            let quantified_fmla = Why3.Term.t_forall_close free_vars [] formula in
+
+            let task = Why3.Task.use_export None prover_data.theory in
+            let task = Why3.Task.add_prop_decl task Why3.Decl.Pgoal goal_symbol quantified_fmla in
+
+            let prover_call = Why3.Driver.prove_task prover_data.driver task 
+              ~command:prover_data.prover_conf.command
+              ~limit:{Why3.Call_provers.empty_limit with limit_time = 5} 
+            in
+            let result = Why3.Call_provers.wait_on_call prover_call in
+            match result.pr_answer with
+            | Why3.Call_provers.Valid -> (
+              (* Implication [conditions] => [norm > 0] always holds *)
+              EdgeExp.Set.add norm acc
+            )
+            | Why3.Call_provers.Invalid | Why3.Call_provers.Unknown _ -> acc
+            (* | Why3.Call_provers.Unknown str -> (
+              L.(die InternalError)"[Guards] Unknown solver result: %s" str
+            ) *)
+            | _ -> (
+              debug_log "Failed task: %a\n" Why3.Pretty.print_task task;
+              debug_log "Fail: %s\n" result.pr_output;
+              assert(false)
+            )
+          in
+          if EdgeExp.is_const norm then acc
+          else (
+            let rhs_expr = EdgeExp.to_why3_expr norm tenv prover_data |> fst in
+            solve_formula rhs_expr
+          )
+        ) norms EdgeExp.Set.empty
+        in
+        edge.guards <- guards;
+      )
+
+
+    (* let derive_constraint (_, edge_data, _) norm existing_norms formals =
+      debug_log "Deriving constraint for: %a\n" EdgeExp.pp norm;
+
       let dc_map = edge_data.constraints in
 
       let get_assignment lhs_access = match AccessPathMap.find_opt lhs_access edge_data.assignments with
@@ -1327,7 +2531,7 @@ module DCP = struct
         | EdgeExp.Access access -> get_assignment access
         | EdgeExp.Const (Const.Cint _) -> Some norm
         | EdgeExp.BinOp (op, lexp, rexp) -> (
-          log "Deriving for: %a %s %a\n" EdgeExp.pp lexp (Binop.str Pp.text op) EdgeExp.pp rexp;
+          (* debug_log "Deriving for: %a %s %a\n" EdgeExp.pp lexp (Binop.str Pp.text op) EdgeExp.pp rexp; *)
           match derive_rhs lexp, derive_rhs rexp with
           | Some lexp_derived, Some rexp_derived -> Some (EdgeExp.BinOp (op, lexp_derived, rexp_derived))
           | Some _, None
@@ -1386,20 +2590,194 @@ module DCP = struct
         | EdgeExp.Min _ -> false *)
       in
 
-      if EdgeExp.is_variable norm formals then (match derive_rhs norm with
+      (* let is_new_norm rhs = not (EdgeExp.Set.mem rhs existing_norms) in *)
+
+      let norm_unchanged () =
+        (* Norm doesn't change it's value on this edge *)
+        let updated_dc_map = DC.Map.add_dc norm (DC.make_rhs norm) dc_map in
+        edge_data.constraints <- updated_dc_map;
+        EdgeExp.Set.empty
+      in
+
+
+      if EdgeExp.is_variable norm formals then (
+        match derive_rhs norm with
         | Some derived_rhs -> (
+          if EdgeExp.equal derived_rhs norm then norm_unchanged ()
+          else (
+            let rhs_norm, rhs_const_opt = EdgeExp.separate derived_rhs in
+            let merged = EdgeExp.merge rhs_norm rhs_const_opt in
+            (* debug_log "Derived RHS: %a\n" EdgeExp.pp merged; *)
+
+            if EdgeExp.equal merged norm then norm_unchanged ()
+            else (
+              (* Derived RHS expression is not equal to the original norm *)
+              (* debug_log "Derived RHS is different\n"; *)
+              let lhs_norm, lhs_const_opt = EdgeExp.separate norm in
+              let rhs_norm, rhs_const_opt = if EdgeExp.is_zero rhs_norm then (
+                match rhs_const_opt with
+                | Some (rhs_op, rhs_const) -> (match rhs_op with
+                  | Binop.PlusA _ -> (EdgeExp.Const (Const.Cint rhs_const), None)
+                  | Binop.MinusA _ -> (EdgeExp.Const (Const.Cint (IntLit.neg rhs_const)), None)
+                  | _ -> assert(false)
+                )
+                | None -> (
+                  (* 0 + None *)
+                  EdgeExp.zero, None
+                )
+              )
+              else rhs_norm, rhs_const_opt
+              in
+
+              if EdgeExp.equal lhs_norm rhs_norm then (
+                (* debug_log "Derived lhs_norm == rhs_norm: %a == %a\n" EdgeExp.pp lhs_norm EdgeExp.pp rhs_norm; *)
+                let dc_rhs = match lhs_const_opt, rhs_const_opt with
+                | Some (lhs_op, lhs_const), Some (rhs_op, rhs_const) -> (
+                  assert(Binop.equal lhs_op rhs_op);
+                  match lhs_op with
+                  | Binop.PlusA _ -> (
+                    let diff = IntLit.sub rhs_const lhs_const in
+                    DC.make_rhs ~const_part:(lhs_op, diff) norm
+                  )
+                  | Binop.MinusA typ_opt -> (
+                    (* [lhs_norm] (-) lhs_const, [rhs_norm] (-) rhs_const --->  +(-(rhs_const - lhs_const)) *)
+                    let diff = IntLit.neg (IntLit.sub rhs_const lhs_const) in
+                    DC.make_rhs ~const_part:(Binop.PlusA typ_opt, diff) norm
+                  )
+                  | Binop.Shiftrt -> (
+                    let diff = IntLit.sub rhs_const lhs_const in
+                    DC.make_rhs ~const_part:(lhs_op, diff) norm
+                    (* DC.make_rhs merged *)
+                  )
+                  | _ -> assert(false)
+                )
+                | None, Some (rhs_op, rhs_const) -> (match rhs_op with
+                  | Binop.PlusA _ -> DC.make_rhs ~const_part:(rhs_op, rhs_const) norm
+                  | Binop.MinusA typ_opt -> DC.make_rhs ~const_part:(Binop.PlusA typ_opt, IntLit.neg rhs_const) norm
+                  | _ -> assert(false)
+                )
+                | _ -> assert(false)
+                in
+                let rhs_norm, op, rhs_const = dc_rhs in
+                (* debug_log "Adding DC: %a <= %a %s (%a)\n" EdgeExp.pp norm EdgeExp.pp rhs_norm (Binop.str Pp.text op) IntLit.pp rhs_const; *)
+                let updated_dc_map = DC.Map.add_dc norm dc_rhs dc_map in
+                edge_data.constraints <- updated_dc_map;
+                EdgeExp.Set.empty
+
+              ) else (
+                (* debug_log "Derived lhs_norm != rhs_norm: %a != %a\n" EdgeExp.pp lhs_norm EdgeExp.pp rhs_norm; *)
+                let rhs_norm, op, rhs_const = match rhs_const_opt with
+                | Some (rhs_op, rhs_const) -> (
+                  if EdgeExp.is_variable rhs_norm formals then (
+                    match rhs_op with
+                    | Binop.PlusA _ -> DC.make_rhs ~const_part:(rhs_op, rhs_const) rhs_norm
+                    | Binop.MinusA typ_opt -> DC.make_rhs ~const_part:(Binop.PlusA typ_opt, IntLit.neg rhs_const) rhs_norm
+                    | Binop.Shiftrt -> (
+                      (* TODO *)
+                      DC.make_rhs merged
+                    )
+                    | _ -> assert(false)
+                  )
+                  else DC.make_rhs merged
+                )
+                | None -> DC.make_rhs rhs_norm
+                in
+                let updated_dc_map = DC.Map.add_dc norm (rhs_norm, op, rhs_const) dc_map in
+                edge_data.constraints <- updated_dc_map;
+                let is_variable = EdgeExp.is_variable rhs_norm formals in
+                (* let is_new = is_variable && is_new_norm rhs_norm in *)
+                let is_new = is_new_norm rhs_norm in
+                debug_log "Derived: %a + (%a), [Variable norm: %B] [New norm: %B]\n" EdgeExp.pp rhs_norm IntLit.pp rhs_const is_variable is_new;
+                if is_new then (
+                  (* debug_log "Existing norms:\n"; *)
+                  (* EdgeExp.Set.iter (fun norm -> debug_log "  %a\n" EdgeExp.pp norm) existing_norms; *)
+                  EdgeExp.Set.singleton rhs_norm
+                ) else EdgeExp.Set.empty
+              )
+            )
+          )
+        )
+        | None -> EdgeExp.Set.empty
+      )
+      else EdgeExp.Set.empty *)
+
+
+    let derive_constraint edge_data norm used_assignments formals =
+      let get_assignment lhs_access = match AccessPathMap.find_opt lhs_access edge_data.assignments with
+      | Some rhs -> Some rhs
+      | None -> (
+        let base_pvar = Option.value_exn (Var.get_pvar (fst (fst lhs_access))) in
+        if Pvar.Set.mem base_pvar formals then Some (EdgeExp.Access lhs_access) else None
+      )
+      in
+
+      let rec derive_rhs norm = match norm with
+        | EdgeExp.Access access -> (
+          if AccessSet.mem access used_assignments
+          then AccessSet.empty, None
+          else AccessSet.singleton access, get_assignment access
+        )
+        | EdgeExp.Const (Const.Cint _) -> AccessSet.empty, Some norm
+        | EdgeExp.BinOp (op, lexp, rexp) -> (
+          let lexp_accesses, lexp_derived_opt = derive_rhs lexp in
+          let rexp_accesses, rexp_derived_opt = derive_rhs rexp in
+
+          AccessSet.union lexp_accesses rexp_accesses,
+          match lexp_derived_opt, rexp_derived_opt with
+          | Some lexp_derived, Some rexp_derived -> (
+            Some (EdgeExp.BinOp (op, lexp_derived, rexp_derived))
+          )
+          | Some _, None
+          | None, Some _ -> (
+            (* Some expression variable is not defined on this edge *)
+            None
+          )
+          | _ -> (
+            (* assert(false) *)
+            None
+          )
+        )
+        | EdgeExp.UnOp (Unop.Neg, exp, typ) -> (
+          let accesses, exp_derived_opt = derive_rhs exp in
+          accesses, match exp_derived_opt with
+          | Some exp_derived -> (
+            if EdgeExp.is_zero exp_derived 
+            then exp_derived_opt 
+            else Some (EdgeExp.UnOp (Unop.Neg, exp_derived, typ))
+          )
+          | None -> None
+        )
+        | EdgeExp.UnOp (_, _, _) -> assert(false)
+        | EdgeExp.Max _ -> assert(false)
+        | EdgeExp.Min _ -> assert(false)
+        | _ -> AccessSet.empty, Some norm
+      in
+
+
+      let add_derived_dc dc_rhs =
+        debug_log "[DC derivation] Adding new DC: %a\n" DC.pp (norm, dc_rhs);
+        let updated_dc_map = DC.Map.add_dc norm dc_rhs edge_data.constraints in
+        edge_data.constraints <- updated_dc_map;
+      in
+
+
+      let substituted_accesses, derived_rhs_opt = derive_rhs norm in
+      match derived_rhs_opt with
+      | Some derived_rhs -> (
+        if EdgeExp.equal derived_rhs norm then (
+          add_derived_dc (DC.make_rhs norm);
+          None
+        )
+        else (
           let rhs_norm, rhs_const_opt = EdgeExp.separate derived_rhs in
           let merged = EdgeExp.merge rhs_norm rhs_const_opt in
-          log "Derived RHS: %a\n" EdgeExp.pp merged;
+
           if EdgeExp.equal merged norm then (
-            (* Norm doesn't change it's value on this edge *)
-            let updated_dc_map = DC.Map.add_dc norm (DC.make_rhs norm) dc_map in
-            edge_data.constraints <- updated_dc_map;
-            EdgeExp.Set.empty
+            add_derived_dc (DC.make_rhs norm);
+            None
           )
           else (
             (* Derived RHS expression is not equal to the original norm *)
-            log "Derived RHS is different\n";
             let lhs_norm, lhs_const_opt = EdgeExp.separate norm in
             let rhs_norm, rhs_const_opt = if EdgeExp.is_zero rhs_norm then (
               match rhs_const_opt with
@@ -1415,8 +2793,8 @@ module DCP = struct
             )
             else rhs_norm, rhs_const_opt
             in
+
             if EdgeExp.equal lhs_norm rhs_norm then (
-              log "Derived lhs_norm == rhs_norm: %a == %a\n" EdgeExp.pp lhs_norm EdgeExp.pp rhs_norm;
               let dc_rhs = match lhs_const_opt, rhs_const_opt with
               | Some (lhs_op, lhs_const), Some (rhs_op, rhs_const) -> (
                 assert(Binop.equal lhs_op rhs_op);
@@ -1433,7 +2811,6 @@ module DCP = struct
                 | Binop.Shiftrt -> (
                   let diff = IntLit.sub rhs_const lhs_const in
                   DC.make_rhs ~const_part:(lhs_op, diff) norm
-                  (* DC.make_rhs merged *)
                 )
                 | _ -> assert(false)
               )
@@ -1444,15 +2821,12 @@ module DCP = struct
               )
               | _ -> assert(false)
               in
-              let rhs_norm, op, rhs_const = dc_rhs in
-              log "Adding DC: %a <= %a %s (%a)\n" EdgeExp.pp norm EdgeExp.pp rhs_norm (Binop.str Pp.text op) IntLit.pp rhs_const;
-              let updated_dc_map = DC.Map.add_dc norm dc_rhs dc_map in
-              edge_data.constraints <- updated_dc_map;
-              EdgeExp.Set.empty
 
-            ) else (
-              log "Derived lhs_norm != rhs_norm: %a != %a\n" EdgeExp.pp lhs_norm EdgeExp.pp rhs_norm;
-              let rhs_norm, op, rhs_const = match rhs_const_opt with
+              add_derived_dc dc_rhs;
+              None
+            ) 
+            else (
+              let dc_rhs = match rhs_const_opt with
               | Some (rhs_op, rhs_const) -> (
                 if EdgeExp.is_variable rhs_norm formals then (
                   match rhs_op with
@@ -1468,28 +2842,20 @@ module DCP = struct
               )
               | None -> DC.make_rhs rhs_norm
               in
-              let updated_dc_map = DC.Map.add_dc norm (rhs_norm, op, rhs_const) dc_map in
-              edge_data.constraints <- updated_dc_map;
-              let is_variable = EdgeExp.is_variable rhs_norm formals in
-              (* let is_new = is_variable && is_new_norm rhs_norm in *)
-              let is_new = is_new_norm rhs_norm in
-              log "Derived: %a + (%a), [Variable norm: %B] [New norm: %B]\n" EdgeExp.pp rhs_norm IntLit.pp rhs_const is_variable is_new;
-              if is_new then (
-                log "Existing norms:\n";
-                EdgeExp.Set.iter (fun norm -> log "  %a\n" EdgeExp.pp norm) existing_norms;
-                EdgeExp.Set.singleton rhs_norm
-              ) else EdgeExp.Set.empty
+
+              add_derived_dc dc_rhs;
+              Some (rhs_norm, substituted_accesses)
             )
           )
         )
-        | None -> EdgeExp.Set.empty
       )
-      else EdgeExp.Set.empty
+      | None -> None
   end
 
   include Graph.Imperative.Digraph.ConcreteBidirectionalLabeled(Node)(EdgeData)
   module NodeSet = Caml.Set.Make(V)
   module EdgeSet = Caml.Set.Make(E)
+  module EdgeMap = Caml.Map.Make(E)
 
   include DefaultDot
   let edge_label : EdgeData.t -> string = fun edge_data ->
@@ -1529,14 +2895,14 @@ module DCP = struct
     )
     | GuardedDCP -> (
       let guards = List.map (EdgeExp.Set.elements edge_data.guards) ~f:(fun guard -> F.asprintf "[GUARD] %s > 0" (EdgeExp.to_string guard)) in
-      let constraints = List.map (DC.Map.bindings edge_data.constraints) ~f:(fun dc -> (DC.to_string dc true)) in
+      let constraints = List.map (DC.Map.bindings edge_data.constraints) ~f:(fun dc -> (DC.to_string dc)) in
       let label = F.asprintf "%s\n%s\n%s\n%s" label 
       (String.concat ~sep:"\n" guards) 
       (String.concat ~sep:"\n" constraints) calls_str in
       [`Label label; `Color 4711]
     )
     | DCP -> (
-      let constraints = List.map (DC.Map.bindings edge_data.constraints) ~f:(fun dc -> (DC.to_string dc false)) in
+      let constraints = List.map (DC.Map.bindings edge_data.constraints) ~f:(fun dc -> (DC.to_string dc)) in
       let label = F.asprintf "%s\n%s\n%s" label (String.concat ~sep:"\n" constraints) calls_str in
       [`Label label; `Color 4711]
     )
@@ -1561,6 +2927,9 @@ module VFG = struct
     let default = ()
     end
   include Graph.Imperative.Digraph.ConcreteBidirectionalLabeled(Node)(Edge)
+  module NodeSet = Caml.Set.Make(V)
+  module EdgeSet = Caml.Set.Make(E)
+
   include DefaultDot
 
   let edge_attributes : E.t -> 'a list = fun _ -> [`Label ""; `Color 4711]
@@ -1577,7 +2946,7 @@ module VFG_Dot = Graph.Graphviz.Dot(VFG)
 
 
 (* Reset graph *)
-module RG = struct 
+module RG = struct
   module Node = struct
     type t = EdgeExp.t [@@deriving compare]
     let hash x = Hashtbl.hash_param 100 100 x
@@ -1774,14 +3143,32 @@ module Increments = Caml.Set.Make(struct
   [@@deriving compare]
 end)
 
+module Decrements = Caml.Set.Make(struct
+  type nonrec t = DCP.E.t * IntLit.t
+  [@@deriving compare]
+end)
+
 module Resets = Caml.Set.Make(struct
   type nonrec t = DCP.E.t * EdgeExp.t * IntLit.t
   [@@deriving compare]
 end)
 
+type norm_updates = {
+   increments: Increments.t;
+   decrements: Decrements.t;
+   resets: Resets.t
+}
+
+let empty_updates = { 
+  increments = Increments.empty;
+  decrements = Decrements.empty;
+  resets = Resets.empty;
+}
+
 type cache = {
-  updates: (Increments.t * Resets.t) EdgeExp.Map.t;
+  updates: norm_updates EdgeExp.Map.t;
   variable_bounds: EdgeExp.t EdgeExp.Map.t;
+  lower_bounds: EdgeExp.t EdgeExp.Map.t;
   reset_chains: RG.Chain.Set.t EdgeExp.Map.t;
   positivity: bool EdgeExp.Map.t;
 }
@@ -1789,6 +3176,7 @@ type cache = {
 let empty_cache = { 
   updates = EdgeExp.Map.empty; 
   variable_bounds = EdgeExp.Map.empty;
+  lower_bounds = EdgeExp.Map.empty;
   reset_chains = EdgeExp.Map.empty;
   positivity = EdgeExp.Map.empty;
 }
@@ -1802,11 +3190,413 @@ let output_graph filepath graph output_fun =
   Out_channel.close out_c
 
 
-type summary = {
-  formal_map: FormalMap.t;
-  monotony_map: VariableMonotony.t AccessPath.BaseMap.t;
-  bound: EdgeExp.t;
-  return_bound: EdgeExp.t option;
-}
+(* module CallBounds = Caml.Set.Make(struct
+  type nonrec t = call_bound
+  [@@deriving compare]
+end) *)
 
-let pp_summary fmt summary = EdgeExp.pp fmt summary.bound
+
+module Summary = struct
+  type call = {
+    name: Procname.t;
+    loc: Location.t;
+    bounds: transition list;
+    (* monotony_map: VariableMonotony.t AccessPathMap.t; *)
+  }
+
+  and transition = {
+    src_node: DCP.Node.t;
+    dst_node: DCP.Node.t;
+    bound: EdgeExp.t;
+    monotony_map: VariableMonotony.t AccessPathMap.t;
+    calls: call list
+  }
+
+  and t = {
+    formal_map: FormalMap.t;
+    bounds: transition list;
+    return_bound: EdgeExp.t option;
+  }
+
+
+
+    (* let total_bound_exp = List.fold bounds ~init:EdgeExp.zero ~f:(fun bound_sum (transition : Summary.transition) ->
+    let exec_cost = List.fold transition.call_bounds ~f:(fun sum (call_cost : Summary.call) ->
+      EdgeExp.add sum call_cost.bound
+    ) ~init:EdgeExp.zero
+    in
+    let total_edge_cost = if EdgeExp.is_zero exec_cost then (
+      debug_log "[Edge cost] %a ---> %a: %a\n" 
+      DCP.Node.pp transition.src_node DCP.Node.pp transition.dst_node 
+      EdgeExp.pp transition.bound;
+      transition.bound
+    ) 
+    else if EdgeExp.is_one exec_cost then (
+      let value = EdgeExp.mult transition.bound exec_cost in
+      debug_log "[Edge cost] %a ---> %a: %a * %a = %a\n" 
+      DCP.Node.pp transition.src_node DCP.Node.pp transition.dst_node 
+      EdgeExp.pp transition.bound EdgeExp.pp exec_cost EdgeExp.pp value;
+      value
+    )
+    else (
+      let value = EdgeExp.mult transition.bound (EdgeExp.add EdgeExp.one exec_cost) in
+      debug_log "[Edge cost] %a ---> %a: %a + %a * %a = %a\n" 
+      DCP.Node.pp transition.src_node DCP.Node.pp transition.dst_node
+      EdgeExp.pp transition.bound EdgeExp.pp transition.bound EdgeExp.pp exec_cost EdgeExp.pp value;
+      value
+    )
+    in
+    EdgeExp.add bound_sum total_edge_cost
+  )
+  in *)
+
+
+  let total_bound transitions =
+    let rec calculate_transition_cost transition =
+      let cost_of_calls = List.fold transition.calls ~init:EdgeExp.zero ~f:(fun bound_sum (call : call) ->
+        List.fold call.bounds ~f:(fun sum (call_transition : transition) ->
+          EdgeExp.add sum (calculate_transition_cost call_transition)
+        ) ~init:bound_sum
+      )
+      in
+      let total_edge_cost = if EdgeExp.is_zero cost_of_calls then (
+        debug_log "[Edge cost] %a ---> %a: %a\n" 
+        DCP.Node.pp transition.src_node DCP.Node.pp transition.dst_node 
+        EdgeExp.pp transition.bound;
+        transition.bound
+      ) 
+      else if EdgeExp.is_one cost_of_calls then (
+        let value = transition.bound in
+        debug_log "[Edge cost] %a ---> %a: %a * %a = %a\n" 
+        DCP.Node.pp transition.src_node DCP.Node.pp transition.dst_node 
+        EdgeExp.pp transition.bound EdgeExp.pp cost_of_calls EdgeExp.pp value;
+        value
+      )
+      else (
+        let value = EdgeExp.add transition.bound (EdgeExp.mult transition.bound cost_of_calls) in
+        debug_log "[Edge cost] %a ---> %a: %a + %a * %a = %a\n" 
+        DCP.Node.pp transition.src_node DCP.Node.pp transition.dst_node
+        EdgeExp.pp transition.bound EdgeExp.pp transition.bound EdgeExp.pp cost_of_calls EdgeExp.pp value;
+        value
+      )
+      in
+      total_edge_cost
+
+      (* if EdgeExp.is_one cost_of_calls then transition.bound
+      else (
+        (* Total cost is: iterations + (iterations * cost_of_calls) *)
+        EdgeExp.add transition.bound (EdgeExp.mult transition.bound cost_of_calls)
+      ) *)
+    in
+    let costs = List.map transitions ~f:calculate_transition_cost in
+    if List.is_empty costs then EdgeExp.zero else List.reduce_exn costs ~f:EdgeExp.add
+
+    (* List.fold summary.bounds ~init:EdgeExp.zero ~f:(fun bound_sum (transition : transition) ->
+      let exec_cost = List.fold transition.call_bounds ~f:(fun sum (call_cost : call) ->
+        EdgeExp.add sum call_cost.bound
+      ) ~init:EdgeExp.zero
+      in
+      let total_edge_cost = if EdgeExp.is_one exec_cost 
+      then EdgeExp.mult transition.bound exec_cost
+      else EdgeExp.mult transition.bound (EdgeExp.add EdgeExp.one exec_cost)
+      in
+      EdgeExp.add bound_sum total_edge_cost
+    ) *)
+
+
+  (* let instantiate (summary : t) args ~upper_bound ~lower_bound tenv active_prover cache =
+      let maximize_argument_exp exp cache =
+      (* Bound increases with the increasing value of this parameter.
+       * Maximize value of the argument expression *)
+      let arg_variable_monotony = EdgeExp.determine_monotony_why3 exp tenv active_prover in
+      let evaluated_arg, (cache_acc : cache) = EdgeExp.map_accesses exp ~f:(fun arg_access cache_acc ->
+        let var_monotony = AccessPathMap.find arg_access arg_variable_monotony in
+        match var_monotony with
+        | VariableMonotony.NonDecreasing -> (
+          upper_bound (EdgeExp.Access arg_access) cache_acc
+        )
+        | VariableMonotony.NonIncreasing -> (
+          lower_bound (EdgeExp.Access arg_access) cache_acc
+        )
+        | VariableMonotony.NotMonotonic -> assert(false);
+      ) cache
+      in
+      evaluated_arg, cache_acc
+    in
+
+
+    let minimize_arg_exp exp cache = 
+      (* Bound decreases with the increasing value of this parameter.
+       * Minimize value of the argument expression *)
+      let arg_variable_monotony = EdgeExp.determine_monotony_why3 exp tenv active_prover in
+      let evaluated_arg, cache_acc = EdgeExp.map_accesses exp ~f:(fun arg_access cache_acc ->
+        let var_monotony = AccessPathMap.find arg_access arg_variable_monotony in
+        match var_monotony with
+        | VariableMonotony.NonDecreasing -> (
+          lower_bound (EdgeExp.Access arg_access) cache_acc
+        )
+        | VariableMonotony.NonIncreasing -> (
+          upper_bound (EdgeExp.Access arg_access) cache_acc
+        )
+        | VariableMonotony.NotMonotonic -> assert(false);
+      ) cache
+      in
+      evaluated_arg, cache_acc
+    in
+
+
+    let evaluate_bound_argument formal_access_base formal_monotony arg_exp cache =           
+      match formal_monotony with
+      | VariableMonotony.NonDecreasing -> (
+        (* Bound increases with the increasing value of this parameter.
+          * Maximize value of the argument expression *)
+        debug_log "[%a] Non decreasing, maximize arg value\n" AccessPath.pp_base formal_access_base;
+        debug_log "[%a] Argument: %a\n" AccessPath.pp_base formal_access_base EdgeExp.pp arg_exp;
+        let evaluated_arg, cache_acc = maximize_argument_exp arg_exp cache in
+        debug_log "[%a] Evaluated argument: %a\n" AccessPath.pp_base formal_access_base EdgeExp.pp evaluated_arg;
+        evaluated_arg, cache_acc
+      )
+      | VariableMonotony.NonIncreasing -> (
+        (* Bound decreases with the increasing value of this parameter.
+          * Minimize value of the argument expression *)
+        debug_log "[%a] Non increasing, minimize arg value\n" AccessPath.pp_base formal_access_base;
+        debug_log "[%a] Argument: %a\n" AccessPath.pp_base formal_access_base EdgeExp.pp arg_exp;
+        let evaluated_arg, cache_acc = minimize_arg_exp arg_exp cache in
+        debug_log "[%a] Evaluated argument: %a\n" AccessPath.pp_base formal_access_base EdgeExp.pp evaluated_arg;
+        evaluated_arg, cache_acc
+      )
+      | VariableMonotony.NotMonotonic -> (
+        debug_log "[%a] Not monotonic\n" AccessPath.pp_base formal_access_base;
+        debug_log "[%a] Argument: %a\n" AccessPath.pp_base formal_access_base EdgeExp.pp arg_exp;
+        assert(false);
+      )
+    in
+
+
+    let instantiate_bound bound monotony_map cache = EdgeExp.map_accesses bound ~f:(fun formal_access cache_acc ->
+      let formal_access_base : AccessPath.base = fst formal_access in
+      let formal_idx = Option.value_exn (FormalMap.get_formal_index formal_access_base summary.formal_map) in
+      let arg_exp = List.nth_exn args formal_idx |> fst in
+      match AccessPathMap.find_opt formal_access monotony_map with
+      | Some formal_monotony -> (
+        evaluate_bound_argument formal_access_base formal_monotony arg_exp cache_acc
+      )
+      | None -> assert(false);
+    ) cache
+    in
+
+
+    let instantiate_transition_summary (transition : transition) cache =
+      let bound, cache = if EdgeExp.is_const transition.bound 
+      then transition.bound, cache
+      else instantiate_bound transition.bound transition.monotony_map cache
+      in
+
+      let call_bound_sum, cache = List.fold transition.call_bounds ~init:(EdgeExp.zero, cache)
+      ~f:(fun (bound_acc, cache) (call_summary : call) ->
+        let call_bound, cache = instantiate_bound call_summary.bound call_summary.monotony_map cache in
+        EdgeExp.add bound_acc call_bound, cache
+      )
+      in
+
+      if EdgeExp.is_zero call_bound_sum then bound, cache
+      else EdgeExp.mult bound call_bound_sum, cache
+    in
+
+    let call_cost, new_cache = List.fold summary.bounds ~f:(fun (bound_acc, cache) (transition : transition) ->
+      let bound, cache = instantiate_transition_summary transition cache in
+      EdgeExp.add bound_acc bound, cache
+    ) ~init:(EdgeExp.zero, cache)
+    in
+    EdgeExp.simplify call_cost, new_cache *)
+
+
+  let instantiate (summary : t) args ~upper_bound ~lower_bound tenv active_prover cache =
+    debug_log "\t[Determine monotonicity of argument expressions]\n";
+    let arg_monotonicity_maps = List.map args ~f:(fun (arg_exp, _) -> 
+      EdgeExp.determine_monotony_why3 arg_exp tenv active_prover
+    )
+    in
+
+    let maximize_argument_exp arg_exp arg_monotonicity_map cache =
+      (* Bound increases with the increasing value of this parameter.
+       * Maximize value of the argument expression *)
+      (* let arg_variable_monotony = EdgeExp.determine_monotony_why3 arg_exp tenv active_prover in *)
+      let evaluated_arg, (cache_acc : cache) = EdgeExp.map_accesses arg_exp ~f:(fun arg_access cache_acc ->
+        let var_monotony = AccessPathMap.find arg_access arg_monotonicity_map in
+        match var_monotony with
+        | VariableMonotony.NonDecreasing -> (
+          upper_bound (EdgeExp.Access arg_access) cache_acc
+        )
+        | VariableMonotony.NonIncreasing -> (
+          lower_bound (EdgeExp.Access arg_access) cache_acc
+        )
+        | VariableMonotony.NotMonotonic -> assert(false);
+      ) cache
+      in
+      evaluated_arg, cache_acc
+    in
+
+
+    let minimize_arg_exp arg_exp arg_monotonicity_map cache = 
+      (* Bound decreases with the increasing value of this parameter.
+       * Minimize value of the argument expression *)
+      (* let arg_variable_monotony = EdgeExp.determine_monotony_why3 arg_exp tenv active_prover in *)
+      let evaluated_arg, cache_acc = EdgeExp.map_accesses arg_exp ~f:(fun arg_access cache_acc ->
+        let var_monotony = AccessPathMap.find arg_access arg_monotonicity_map in
+        match var_monotony with
+        | VariableMonotony.NonDecreasing -> (
+          lower_bound (EdgeExp.Access arg_access) cache_acc
+        )
+        | VariableMonotony.NonIncreasing -> (
+          upper_bound (EdgeExp.Access arg_access) cache_acc
+        )
+        | VariableMonotony.NotMonotonic -> assert(false);
+      ) cache
+      in
+      evaluated_arg, cache_acc
+    in
+
+
+    let evaluate_bound_argument formal_access_base formal_monotonicity arg_exp arg_monotonicity_map cache =           
+      match formal_monotonicity with
+      | VariableMonotony.NonDecreasing -> (
+        (* Bound increases with the increasing value of this parameter.
+          * Maximize value of the argument expression *)
+        debug_log "[%a] Non decreasing, maximize arg value\n" AccessPath.pp_base formal_access_base;
+        debug_log "[%a] Argument: %a\n" AccessPath.pp_base formal_access_base EdgeExp.pp arg_exp;
+        let evaluated_arg, cache_acc = maximize_argument_exp arg_exp arg_monotonicity_map cache in
+        debug_log "[%a] Evaluated argument: %a\n" AccessPath.pp_base formal_access_base EdgeExp.pp evaluated_arg;
+        evaluated_arg, cache_acc
+      )
+      | VariableMonotony.NonIncreasing -> (
+        (* Bound decreases with the increasing value of this parameter.
+          * Minimize value of the argument expression *)
+        debug_log "[%a] Non increasing, minimize arg value\n" AccessPath.pp_base formal_access_base;
+        debug_log "[%a] Argument: %a\n" AccessPath.pp_base formal_access_base EdgeExp.pp arg_exp;
+        let evaluated_arg, cache_acc = minimize_arg_exp arg_exp arg_monotonicity_map cache in
+        debug_log "[%a] Evaluated argument: %a\n" AccessPath.pp_base formal_access_base EdgeExp.pp evaluated_arg;
+        evaluated_arg, cache_acc
+      )
+      | VariableMonotony.NotMonotonic -> (
+        debug_log "[%a] Not monotonic\n" AccessPath.pp_base formal_access_base;
+        debug_log "[%a] Argument: %a\n" AccessPath.pp_base formal_access_base EdgeExp.pp arg_exp;
+        assert(false);
+      )
+    in
+
+
+    let instantiate_bound bound monotony_map cache = EdgeExp.map_accesses bound ~f:(fun formal_access cache_acc ->
+      let formal_access_base : AccessPath.base = fst formal_access in
+      let formal_idx = Option.value_exn (FormalMap.get_formal_index formal_access_base summary.formal_map) in
+      let arg_exp = List.nth_exn args formal_idx |> fst in
+      let arg_monotonicity_map = List.nth_exn arg_monotonicity_maps formal_idx in
+      match AccessPathMap.find_opt formal_access monotony_map with
+      | Some formal_monotony -> (
+        evaluate_bound_argument formal_access_base formal_monotony arg_exp arg_monotonicity_map cache_acc
+      )
+      | None -> assert(false);
+    ) cache
+    in
+
+
+    let rec instantiate_transition_summary (transition : transition) cache =
+      let bound, cache = if EdgeExp.is_const transition.bound then transition.bound, cache
+      else instantiate_bound transition.bound transition.monotony_map cache
+      in
+
+      let calls, cache = List.fold transition.calls ~f:(fun (calls_acc, cache) (call : call) ->
+        let call_transitions, cache = List.fold call.bounds ~init:([], cache)
+        ~f:(fun (call_transitions, cache) (call_transition : transition) ->
+          let instantiated_call_transition, cache = instantiate_transition_summary call_transition cache in
+          instantiated_call_transition :: call_transitions, cache
+        )
+        in
+        { call with bounds = call_transitions } :: calls_acc, cache
+      ) ~init:([], cache)
+      in
+      let transition = { transition with 
+        bound;
+        calls;
+        monotony_map = EdgeExp.determine_monotony_why3 bound tenv active_prover
+      } in
+      transition, cache
+    in
+
+    let transitions, new_cache = List.fold summary.bounds ~f:(fun (transitions, cache) (transition : transition) ->
+      let instantiated_transition, cache = instantiate_transition_summary transition cache in
+      instantiated_transition :: transitions, cache
+    ) ~init:([], cache)
+    in
+    transitions, new_cache
+
+
+  let pp fmt (summary : t) = EdgeExp.pp fmt (total_bound summary.bounds)
+
+
+  module TreeGraph = struct
+    module Node = struct
+      type t = 
+      | CallNode of Procname.t * Location.t
+      | TransitionNode of DCP.Node.t * EdgeExp.t * DCP.Node.t
+      [@@deriving compare]
+
+      let hash x = Hashtbl.hash_param 100 100 x
+      let equal = [%compare.equal: t]
+    end
+    
+    module Edge = struct
+      type t = unit [@@deriving compare]
+      let hash = Hashtbl.hash
+      let equal = [%compare.equal : t]
+      let default = ()
+      end
+    include Graph.Imperative.Digraph.ConcreteBidirectionalLabeled(Node)(Edge)
+    include DefaultDot
+
+    let edge_attributes : E.t -> 'a list = fun _ -> [`Label ""; `Color 4711]
+    let vertex_attributes : V.t -> 'a list = fun node -> (
+      (* let label = F.asprintf "%a, %a" EdgeExp.pp norm DCP.Node.pp dcp_node in *)
+      match node with
+      | CallNode (procname, loc) -> (
+        let label = F.asprintf "%a: %a" Procname.pp procname Location.pp loc in
+        let color : int = 0xFF0000 in
+        [ `Shape `Box; `Label label; `Style `Rounded; `Color color ]
+      )
+      | TransitionNode (src, bound, dst) -> (
+        let label = F.asprintf "{%a --> %a}\n%a" DCP.Node.pp src DCP.Node.pp dst EdgeExp.pp bound in
+        let color : int = 0x0000FF in
+        [ `Shape `Box; `Label label; `Color color; `Height 1.0]
+      )
+    )
+    let vertex_name : V.t -> string = fun vertex -> string_of_int (Node.hash vertex)
+
+    module Map = Caml.Map.Make(Node)
+  end
+
+  module TreeGraph_Dot = Graph.Graphviz.Dot(TreeGraph)
+
+
+  let to_graph (summary : t) procname loc =
+    let graph = TreeGraph.create () in
+
+    let rec construct_subtree root transitions =
+      List.iter transitions ~f:(fun trans ->
+        let transition_node = TreeGraph.Node.TransitionNode (trans.src_node, trans.bound, trans.dst_node) in
+        TreeGraph.add_vertex graph transition_node;
+        TreeGraph.add_edge graph root transition_node;
+        List.iter trans.calls ~f:(fun call ->
+          let call_node = TreeGraph.Node.CallNode (call.name, call.loc) in
+          TreeGraph.add_vertex graph call_node;
+          TreeGraph.add_edge graph transition_node call_node;
+          construct_subtree call_node call.bounds
+        )
+      )
+    in
+
+    let root_node = TreeGraph.Node.CallNode (procname, loc) in
+    TreeGraph.add_vertex graph root_node;
+    construct_subtree root_node summary.bounds;
+    graph
+
+end

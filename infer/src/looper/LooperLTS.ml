@@ -8,7 +8,11 @@ module L = Logging
 module Domain = LooperDomain
 
 
-let log : F.formatter -> ('a, Format.formatter, unit) format -> 'a = fun fmt format -> F.fprintf fmt format
+(* let log : F.formatter -> ('a, Format.formatter, unit) format -> 'a = fun fmt format -> F.fprintf fmt format *)
+
+let debug_log : ('a, Format.formatter, unit) format -> 'a = fun fmt -> F.fprintf (List.hd_exn !Domain.debug_fmt) fmt
+
+(* let debug_log : ('a, Format.formatter, unit) format -> 'a = fun fmt -> F.fprintf !Domain.debug_fmt fmt *)
 
 
 module GraphData = struct
@@ -30,14 +34,11 @@ module GraphData = struct
     formals: Pvar.Set.t;
     type_map: Typ.t Domain.PvarMap.t;
     tenv: Tenv.t;
-    analysis_data: Domain.summary InterproceduralAnalysis.t;
-    call_summaries: Domain.summary Location.Map.t;
-
-    (* Hack workaround for now *)
-    log_file: Utils.outfile;
+    analysis_data: Domain.Summary.t InterproceduralAnalysis.t;
+    call_summaries: Domain.Summary.t Location.Map.t;
   }
 
-  let make log_file tenv proc_desc analysis_data start_node = 
+  let make tenv proc_desc analysis_data start_node = 
     let open Domain in
     let locals = Procdesc.get_locals proc_desc in
     let formals = Procdesc.get_pvar_formals proc_desc in
@@ -78,8 +79,6 @@ module GraphData = struct
       tenv = tenv;
       analysis_data = analysis_data;
       call_summaries = Location.Map.empty;
-
-      log_file = log_file
     }
 end
 
@@ -107,8 +106,6 @@ let is_decl_node node = match Procdesc.Node.get_kind node with
 module GraphConstructor = struct
   let exec_instr : GraphData.t -> Sil.instr -> GraphData.t = fun graph_data instr ->
     let open Domain in
-
-    let debug_log format = log graph_data.log_file.fmt format in
 
     let ap_id_resolver = EdgeExp.access_path_id_resolver graph_data.ident_map in
 
@@ -201,13 +198,19 @@ module GraphConstructor = struct
           )
           | None -> call
         )
-        | x -> x
+        | exp -> (
+          let exp, _ = EdgeExp.map_accesses exp ~f:(fun access _ -> 
+            DCP.EdgeData.get_assignment_rhs graph_data.edge_data access, None
+          ) None
+          in
+          
+          EdgeExp.simplify exp
+        )
         in
 
         debug_log "[STORE] (%a) | %a = %a\n" Location.pp loc EdgeExp.pp lhs_access_exp EdgeExp.pp rhs_exp;
 
-        (* -------------------TODO: replace with recursive substitution *)
-        let rhs_exp = match rhs_exp with
+        (* let rhs_exp = match rhs_exp with
         | EdgeExp.BinOp (Binop.PlusA _, EdgeExp.Access rhs_access, (EdgeExp.Const (Const.Cint rhs_int) as rhs_c)) -> (
           (* [BINOP] Access + Const *)
           match (DCP.EdgeData.get_assignment_rhs graph_data.edge_data rhs_access) with
@@ -234,8 +237,8 @@ module GraphConstructor = struct
           DCP.EdgeData.get_assignment_rhs graph_data.edge_data rhs_access
         )
         | _ -> rhs_exp
-        in
-        (* ------------------- END OF REPLACEMENT *)
+        in *)
+
 
         let is_plus_minus_op op = match op with
         | Binop.PlusA _ | Binop.MinusA _ -> true | _ -> false
@@ -367,7 +370,8 @@ module GraphConstructor = struct
       | EdgeExp.BinOp (op, lexp, rexp) -> (
         let lexp, rexp = substitute edge_data lexp, substitute edge_data rexp in
         match lexp, rexp with
-        | EdgeExp.Const Const.Cint c1, EdgeExp.Const Const.Cint c2 -> EdgeExp.eval op c1 c2
+        | EdgeExp.Const Const.Cint c1, EdgeExp.Const Const.Cint c2 -> 
+          EdgeExp.Const (Const.Cint (EdgeExp.eval_consts op c1 c2))
         | _ -> exp
       )
       | EdgeExp.UnOp (op, subexp, typ) -> EdgeExp.UnOp (op, substitute edge_data subexp, typ)
@@ -382,11 +386,20 @@ module GraphConstructor = struct
 
       let args, arg_norms = List.fold args ~init:([], EdgeExp.Set.empty) ~f:(fun (args, norms) (arg, arg_typ) ->
         let arg = EdgeExp.of_exp arg graph_data.ident_map arg_typ graph_data.type_map in
-        let arg = substitute graph_data.edge_data arg in
+        debug_log "Simplify argument expression: %a\n" EdgeExp.pp arg;
+        let arg = substitute graph_data.edge_data arg |> EdgeExp.simplify in
         let arg_norms = EdgeExp.get_accesses arg in
         (arg, arg_typ) :: args, if Typ.is_int arg_typ then EdgeExp.Set.union arg_norms norms else norms
       )
       in
+
+      (* let args, arg_norms = List.fold args ~f:(fun (args, norms) (arg, arg_typ) ->
+        let arg = EdgeExp.of_exp arg graph_data.ident_map arg_typ graph_data.type_map in
+        debug_log "Simplify argument expression: %a\n" EdgeExp.pp arg;
+        let arg = EdgeExp.simplify (substitute graph_data.edge_data arg) in
+        (arg, arg_typ) :: args, if Typ.is_int arg_typ then EdgeExp.Set.add arg norms else norms
+      ) ~init:([], EdgeExp.Set.empty)
+      in *)
 
       let args = List.rev args in
       let call = EdgeExp.Call (ret_typ, callee_pname, args, loc) in
@@ -417,7 +430,13 @@ module GraphConstructor = struct
         debug_log "[VariableLifetimeBegins] (%a) | %a\n" Location.pp loc Pvar.pp_value pvar;
         let pvar_access = AccessPath.of_pvar pvar typ in
         let scope_locals = match graph_data.scope_locals with
-        | scope::tail -> [AccessSet.add pvar_access scope] @ tail
+        | scope::tail -> (
+          debug_log "[Scope variables] ";
+          let variables = AccessSet.add pvar_access scope in
+          AccessSet.iter (fun path -> debug_log "%a " AccessPath.pp path) variables;
+          debug_log "\n";
+          [variables] @ tail
+        )
         | [] -> [AccessSet.singleton pvar_access]
         in
         { graph_data with 
@@ -441,8 +460,6 @@ module GraphConstructor = struct
   let rec traverseCFG : Procdesc.t -> Procdesc.Node.t -> Procdesc.NodeSet.t -> GraphData.t -> (Procdesc.NodeSet.t * GraphData.t) = 
   fun proc_desc node visited graph_data -> (
     let open Domain in
-
-    let debug_log format = log graph_data.log_file.fmt format in
 
     (* TODO: should probably POP loophead from stack if we encounter false branch later on.
      * Otherwise we are accumulating loop heads from previous loops but it doesn't seem to
@@ -581,13 +598,13 @@ module GraphConstructor = struct
   )
 
 
-  let create_lts : Tenv.t -> Procdesc.t -> Domain.summary InterproceduralAnalysis.t -> Utils.outfile -> GraphData.t = 
-  fun tenv proc_desc summary log_file -> (
+  let create_lts : Tenv.t -> Procdesc.t -> Domain.Summary.t InterproceduralAnalysis.t -> GraphData.t = 
+  fun tenv proc_desc summary -> (
     let proc_name = Procdesc.get_proc_name proc_desc in
     let begin_loc = Procdesc.get_loc proc_desc in
     let start_node = Procdesc.get_start_node proc_desc in
     let dcp_start_node = Domain.DCP.Node.Start (proc_name, begin_loc) in
-    let graph_data = GraphData.make log_file tenv proc_desc summary dcp_start_node in
+    let graph_data = GraphData.make tenv proc_desc summary dcp_start_node in
     snd (traverseCFG proc_desc start_node Procdesc.NodeSet.empty graph_data)
   )
 end

@@ -292,19 +292,20 @@ module JsonCostsPrinter = MakeJsonListPrinter (struct
 end)
 
 type json_looper_printer_typ =
-  {loc: Location.t; proc_name: Procname.t; looper_opt: LooperDomain.summary option}
+  {loc: Location.t; proc_name: Procname.t; looper_opt: LooperDomain.Summary.t option}
 
 module JsonLooperPrinter = MakeJsonListPrinter (struct
   type elt = json_looper_printer_typ
 
   let to_string {loc; proc_name; looper_opt} = match looper_opt with
-    | Some {bound; return_bound } -> (
-      let return_bound_opt = match return_bound with 
+    | Some looper_summary -> (
+      let return_bound_opt = match looper_summary.return_bound with 
       | Some return_bound -> Some (LooperDomain.EdgeExp.to_string return_bound)
       | None -> None
       in
+      let total_bound = LooperDomain.Summary.total_bound looper_summary.bounds in
       let bound_info : Jsonbug_t.bound_info = { 
-        bound= LooperDomain.EdgeExp.to_string bound; return_bound = return_bound_opt}
+        bound= LooperDomain.EdgeExp.to_string total_bound; return_bound = return_bound_opt}
       in
 
       let file = SourceFile.to_rel_path loc.Location.file in

@@ -23,16 +23,12 @@ module GraphData : sig
     formals: Pvar.Set.t;
     type_map: Typ.t LooperDomain.PvarMap.t;
     tenv: Tenv.t;
-    analysis_data: LooperDomain.summary InterproceduralAnalysis.t;
-    call_summaries: LooperDomain.summary Location.Map.t;
-
-    (* Hack workaround for now *)
-    log_file: Utils.outfile;
+    analysis_data: LooperDomain.Summary.t InterproceduralAnalysis.t;
+    call_summaries: LooperDomain.Summary.t Location.Map.t;
   }
 end
 
 
 module GraphConstructor : sig
-  val create_lts: 
-    Tenv.t -> Procdesc.t -> LooperDomain.summary InterproceduralAnalysis.t -> Utils.outfile -> GraphData.t
+  val create_lts: Tenv.t -> Procdesc.t -> LooperDomain.Summary.t InterproceduralAnalysis.t -> GraphData.t
 end

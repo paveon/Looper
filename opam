@@ -54,6 +54,7 @@ depends: [
   "yojson" {>="1.7.0"}
   "zarith" {>="1.7"}
   "z3" {="4.8.9"}
+  "why3"
 ]
 depexts: [
   [ ["ubuntu"] ["default-jdk"] ]
