@@ -1697,9 +1697,13 @@ module DCP = struct
 
       let rec derive_rhs norm = match norm with
         | EdgeExp.Access access -> (
-          if AccessSet.mem access used_assignments
-          then AccessSet.empty, None
-          else AccessSet.singleton access, get_assignment access
+          match get_assignment access with 
+          | Some rhs -> (
+            if not (EdgeExp.equal norm rhs) && AccessSet.mem access used_assignments
+            then AccessSet.empty, None
+            else AccessSet.singleton access, get_assignment access
+          )
+          | None -> AccessSet.empty, None
         )
         | EdgeExp.Const (Const.Cint _) -> AccessSet.empty, Some norm
         | EdgeExp.BinOp (op, lexp, rexp) -> (
