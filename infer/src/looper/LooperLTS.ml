@@ -2,40 +2,40 @@
 
 
 open! IStd
+open LooperUtils
 
 module F = Format
 module L = Logging
-module Domain = LooperDomain
+module DCP = DifferenceConstraintProgram
 
 
-let debug_log : ('a, Format.formatter, unit) format -> 'a = fun fmt -> F.fprintf (List.hd_exn !Domain.debug_fmt) fmt
+let debug_log : ('a, Format.formatter, unit) format -> 'a = fun fmt -> F.fprintf (List.hd_exn !debug_fmt) fmt
 
 
 module GraphData = struct
   type t = {
-    last_node: Domain.DCP.Node.t;
+    last_node: DCP.Node.t;
     loophead_stack: Procdesc.Node.t Stack.t;
-    nodes: Domain.DCP.NodeSet.t;
-    edges: Domain.DCP.EdgeSet.t;
-    edge_data: Domain.DCP.EdgeData.t;
-    ident_map: Domain.EdgeExp.t Ident.Map.t;
-    node_map: Domain.DCP.Node.t Procdesc.NodeMap.t;
-    potential_norms: Domain.EdgeExp.Set.t;
-    norms: Domain.EdgeExp.Set.t;
+    nodes: DCP.NodeSet.t;
+    edges: DCP.EdgeSet.t;
+    edge_data: DCP.EdgeData.t;
+    ident_map: EdgeExp.t Ident.Map.t;
+    node_map: DCP.Node.t Procdesc.NodeMap.t;
+    potential_norms: EdgeExp.Set.t;
+    norms: EdgeExp.Set.t;
     loop_heads: Location.t list;
-    loop_modified: Domain.AccessSet.t;
+    loop_modified: AccessSet.t;
     
-    scope_locals: Domain.AccessSet.t list;
-    locals: Domain.AccessSet.t;
+    scope_locals: AccessSet.t list;
+    locals: AccessSet.t;
     formals: Pvar.Set.t;
-    type_map: Typ.t Domain.PvarMap.t;
+    type_map: Typ.t PvarMap.t;
     tenv: Tenv.t;
-    analysis_data: Domain.Summary.t InterproceduralAnalysis.t;
-    call_summaries: Domain.Summary.t Location.Map.t;
+    analysis_data: LooperSummary.t InterproceduralAnalysis.t;
+    call_summaries: LooperSummary.t Location.Map.t;
   }
 
   let make tenv proc_desc analysis_data start_node = 
-    let open Domain in
     let locals = Procdesc.get_locals proc_desc in
     let formals = Procdesc.get_pvar_formals proc_desc in
 
@@ -57,18 +57,18 @@ module GraphData = struct
     {
       last_node = start_node;
       loophead_stack = Stack.create ();
-      nodes = Domain.DCP.NodeSet.singleton start_node;
-      edges = Domain.DCP.EdgeSet.empty;
-      edge_data = Domain.DCP.EdgeData.empty;
+      nodes = DCP.NodeSet.singleton start_node;
+      edges = DCP.EdgeSet.empty;
+      edge_data = DCP.EdgeData.empty;
       ident_map = Ident.Map.empty;
       node_map = Procdesc.NodeMap.empty;
-      potential_norms = Domain.EdgeExp.Set.empty;
-      norms = Domain.EdgeExp.Set.empty;
+      potential_norms = EdgeExp.Set.empty;
+      norms = EdgeExp.Set.empty;
       loop_heads = [];
-      loop_modified = Domain.AccessSet.empty;
+      loop_modified = AccessSet.empty;
 
-      scope_locals = [Domain.AccessSet.empty];
-      locals = Domain.AccessSet.empty;
+      scope_locals = [AccessSet.empty];
+      locals = AccessSet.empty;
       formals = formals;
       type_map = type_map;
       tenv = tenv;
@@ -100,9 +100,13 @@ let is_decl_node node = match Procdesc.Node.get_kind node with
 
 module GraphConstructor = struct
   let exec_instr : GraphData.t -> Sil.instr -> GraphData.t = fun graph_data instr ->
-    let open Domain in
-
     let ap_id_resolver = EdgeExp.access_path_id_resolver graph_data.ident_map in
+
+    let is_loop_prune (kind : Sil.if_kind) = match kind with
+    | Ik_dowhile | Ik_for | Ik_while -> true
+    | _ -> false
+    in
+
 
     match instr with
     | Prune (cond, loc, branch, kind) -> (
@@ -113,9 +117,8 @@ module GraphConstructor = struct
 
       let in_loop = not (List.is_empty graph_data.loop_heads) in
       let is_int_expr = EdgeExp.is_int normalized_cond graph_data.type_map graph_data.tenv in
-      let loop_prune = is_loop_prune kind in
 
-      let graph_data = if branch && (loop_prune || in_loop) && is_int_expr then (
+      let graph_data = if branch && (is_loop_prune kind || in_loop) && is_int_expr then (
         (* Derive norm from prune condition.
         * [x > y] -> [x - y] > 0
         * [x >= y] -> [x - y + 1] > 0 *)
@@ -139,7 +142,7 @@ module GraphConstructor = struct
             | EdgeExp.Access access -> AccessSet.mem access graph_data.loop_modified
             | _ -> false
             in
-            if not loop_prune && not is_modified then (
+            if not (is_loop_prune kind) && not is_modified then (
               (* Prune on loop path but not loop head. Norm is only potential,
               * must be confirmed by increment/decrement on this loop path *)
               { graph_data with potential_norms = EdgeExp.Set.add new_norm graph_data.potential_norms; }
@@ -180,7 +183,7 @@ module GraphConstructor = struct
         graph_data
       )
       | _ -> (
-        let lhs_access = Option.value_exn (Domain.access_of_lhs_exp ~include_array_indexes:true lhs typ ~f_resolve_id:ap_id_resolver) in
+        let lhs_access = Option.value_exn (access_of_lhs_exp ~include_array_indexes:true lhs typ ~f_resolve_id:ap_id_resolver) in
         let lhs_access_exp = EdgeExp.Access lhs_access in
 
         let rhs_exp = match EdgeExp.of_exp rhs graph_data.ident_map typ graph_data.type_map with
@@ -292,7 +295,7 @@ module GraphConstructor = struct
       debug_log "[LOAD] (%a) | %a = %a\n" Location.pp loc Ident.pp id Exp.pp e;
       let map_ident exp = match exp with
       | Exp.Lindex _ -> (
-        let accesses = Domain.access_of_exp ~include_array_indexes:true exp typ ~f_resolve_id:ap_id_resolver in
+        let accesses = access_of_exp ~include_array_indexes:true exp typ ~f_resolve_id:ap_id_resolver in
         assert (Int.equal (List.length accesses) 1);
         let access = List.hd_exn accesses in
         Ident.Map.add id (EdgeExp.Access access) graph_data.ident_map
@@ -417,8 +420,6 @@ module GraphConstructor = struct
 
   let rec traverseCFG : Procdesc.t -> Procdesc.Node.t -> Procdesc.NodeSet.t -> GraphData.t -> (Procdesc.NodeSet.t * GraphData.t) = 
   fun proc_desc node visited graph_data -> (
-    let open Domain in
-
     (* TODO: should probably POP loophead from stack if we encounter false branch later on.
      * Otherwise we are accumulating loop heads from previous loops but it doesn't seem to
      * affect the algorithm in any way. *)
@@ -556,12 +557,12 @@ module GraphConstructor = struct
   )
 
 
-  let create_lts : Tenv.t -> Procdesc.t -> Domain.Summary.t InterproceduralAnalysis.t -> GraphData.t = 
+  let create_lts : Tenv.t -> Procdesc.t -> LooperSummary.t InterproceduralAnalysis.t -> GraphData.t = 
   fun tenv proc_desc summary -> (
     let proc_name = Procdesc.get_proc_name proc_desc in
     let begin_loc = Procdesc.get_loc proc_desc in
     let start_node = Procdesc.get_start_node proc_desc in
-    let dcp_start_node = Domain.DCP.Node.Start (proc_name, begin_loc) in
+    let dcp_start_node = DCP.Node.Start (proc_name, begin_loc) in
     let graph_data = GraphData.make tenv proc_desc summary dcp_start_node in
     snd (traverseCFG proc_desc start_node Procdesc.NodeSet.empty graph_data)
   )

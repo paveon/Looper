@@ -25,7 +25,7 @@ type t =
   ; starvation: StarvationDomain.summary option
   ; nullsafe: NullsafeSummary.t option
   ; uninit: UninitDomain.Summary.t option
-  ; looper: LooperDomain.Summary.t option }
+  ; looper: LooperSummary.t option }
 [@@deriving fields]
 
 let yojson_of_t {pulse} =
@@ -57,7 +57,7 @@ let fields =
     ~starvation:(fun f -> mk f "Starvation" StarvationDomain.pp_summary)
     ~nullsafe:(fun f -> mk f "Nullsafe" NullsafeSummary.pp)
     ~uninit:(fun f -> mk f "Uninitialised" UninitDomain.Summary.pp)
-    ~looper:(fun f -> mk f "Looper" LooperDomain.Summary.pp)
+    ~looper:(fun f -> mk f "Looper" LooperSummary.pp)
 
 
 let pp pe f payloads =

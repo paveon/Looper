@@ -2,5 +2,4 @@
 
 open! IStd
 
-val analyze_procedure : 
-  LooperDomain.Summary.t InterproceduralAnalysis.t -> LooperDomain.Summary.t option
+val analyze_procedure : LooperSummary.t InterproceduralAnalysis.t -> LooperSummary.t option

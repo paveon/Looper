@@ -2,20 +2,28 @@
 
 
 open! IStd
+open LooperUtils
 
 module F = Format
 module L = Logging
-module Domain = LooperDomain
+module DC = DifferenceConstraint
+module DCP = DifferenceConstraintProgram
+module RG = ResetGraph
+module VFG = VariableFlowGraph
 
 let console_log : ('a, F.formatter, unit) format -> 'a = fun fmt -> F.printf fmt
 
 
-module DCP_SCC = Graph.Components.Make(Domain.DCP)
-module VFG_SCC = Graph.Components.Make(Domain.VFG)
+module DCP_Dot = Graph.Graphviz.Dot(DCP)
+module RG_Dot = Graph.Graphviz.Dot(RG)
+module VFG_Dot = Graph.Graphviz.Dot(VFG)
+
+module DCP_SCC = Graph.Components.Make(DCP)
+module VFG_SCC = Graph.Components.Make(VFG)
 
 
 module UnprocessedNormSet = Caml.Set.Make(struct
-  type nonrec t = Domain.EdgeExp.t * Domain.AccessSet.t Domain.DCP.EdgeMap.t
+  type nonrec t = EdgeExp.t * AccessSet.t DCP.EdgeMap.t
   [@@deriving compare]
 end)
 
@@ -38,12 +46,10 @@ let mk_outfile fname = match Utils.create_outfile fname with
   | Some outf -> outf
 
 
-let why3_data = ref Domain.ProverMap.empty
+let why3_data = ref ProverMap.empty
 
 
-let analyze_procedure (analysis_data : Domain.Summary.t InterproceduralAnalysis.t) =
-  let open Domain in
-
+let analyze_procedure (analysis_data : LooperSummary.t InterproceduralAnalysis.t) =
   let proc_desc = analysis_data.proc_desc in
   let begin_loc = Procdesc.get_loc proc_desc in
   let source_file_str = SourceFile.to_string begin_loc.file in
@@ -84,6 +90,7 @@ let analyze_procedure (analysis_data : Domain.Summary.t InterproceduralAnalysis.
         ) else snd (Why3.Whyconf.Mprover.max_binding provers)
       in
 
+      console_log "%s\n" prover.driver;
       let driver : Why3.Driver.driver = try Why3.Whyconf.load_driver main env prover.driver []
       with e -> L.die InternalError "Failed to load driver for %s: %a@." name Why3.Exn_printer.exn_printer e
       in
@@ -248,8 +255,7 @@ let analyze_procedure (analysis_data : Domain.Summary.t InterproceduralAnalysis.
       let guards = get_shared_guards in_edges in
       let out_edges = DCP.succ_e dcp node in
 
-      let guards, out_edges = match node with
-      | DCP.Node.Prune (kind, _, _) when is_loop_prune kind -> (
+      let guards, out_edges = if DCP.Node.is_loophead node then (
         assert(Int.equal (List.length out_edges) 2);
         let branch_true, branch_false = List.partition_tf out_edges ~f:(fun (_, edge_data, _) -> 
           DCP.EdgeData.branch_type edge_data
@@ -271,8 +277,9 @@ let analyze_procedure (analysis_data : Domain.Summary.t InterproceduralAnalysis.
         in
         guards, [branch_false]
       )
-      | _ -> guards, out_edges
+      else guards, out_edges
       in
+
       let nodes = if EdgeExp.Set.is_empty guards then nodes else (
         (* Propagate guards to all outgoing edges and add
           * destination nodes of those edges to the processing queue *)
@@ -649,27 +656,30 @@ let analyze_procedure (analysis_data : Domain.Summary.t InterproceduralAnalysis.
   in
 
 
-  let get_update_map norm edges cache =
+  let get_update_map norm edges (cache : LooperSummary.cache) =
     if EdgeExp.Map.mem norm cache.updates then cache
     else (
       (* Create missing increments and resets sets for this variable norm *)
-      let updates = DCP.EdgeSet.fold (fun ((_, edge_data, _) as edge) updates ->
+      let updates = DCP.EdgeSet.fold (fun ((_, edge_data, _) as edge) (updates : LooperSummary.norm_updates) ->
         match DC.Map.get_dc norm edge_data.constraints with
         | Some ((_, (rhs_norm, _, rhs_const)) as dc) -> (
           (* Variable norm is used on this edge *)
           if DC.is_reset dc then (
-            {updates with resets = Resets.add (edge, rhs_norm, rhs_const) updates.resets}
+            let resets = LooperSummary.Resets.add (edge, rhs_norm, rhs_const) updates.resets in
+            {updates with resets} : LooperSummary.norm_updates
           ) else if DC.is_decreasing dc then (
-            {updates with decrements = Decrements.add (edge, rhs_const) updates.decrements}
+            let decrements = LooperSummary.Decrements.add (edge, rhs_const) updates.decrements in
+            {updates with decrements} : LooperSummary.norm_updates
           ) else if not (IntLit.iszero rhs_const) then (
-            {updates with increments = Increments.add (edge, rhs_const) updates.increments}
+            let increments = LooperSummary.Increments.add (edge, rhs_const) updates.increments in
+            {updates with increments} : LooperSummary.norm_updates
           )
           else updates
         )
         | None -> updates
-      ) edges empty_updates
+      ) edges LooperSummary.empty_updates
       in
-      { cache with updates = EdgeExp.Map.add norm updates cache.updates }
+      { cache with updates = EdgeExp.Map.add norm updates cache.updates } : LooperSummary.cache
     )
   in
 
@@ -678,7 +688,7 @@ let analyze_procedure (analysis_data : Domain.Summary.t InterproceduralAnalysis.
       * SUM(TB(t) * const) for all edges where norm is incremented, 0 if nowhere *)
     let cache = get_update_map norm graph_data.edges cache in
     let norm_updates = EdgeExp.Map.find norm cache.updates in
-    let increment_sum, cache = Increments.fold (fun (edge, const) (increment_sum, cache) ->
+    let increment_sum, cache = LooperSummary.Increments.fold (fun (edge, const) (increment_sum, cache) ->
       let bound, cache = transition_bound edge cache in
       let const = EdgeExp.mult bound (EdgeExp.Const (Const.Cint const)) in
       (EdgeExp.add increment_sum const), cache
@@ -693,7 +703,7 @@ let analyze_procedure (analysis_data : Domain.Summary.t InterproceduralAnalysis.
       * SUM(TB(t) * const) for all edges where norm is decremented, 0 if nowhere *)
     let cache = get_update_map norm graph_data.edges cache in
     let norm_updates = EdgeExp.Map.find norm cache.updates in
-    let decrement_sum, cache = Decrements.fold (fun (edge, const) (decrement_sum, cache) ->
+    let decrement_sum, cache = LooperSummary.Decrements.fold (fun (edge, const) (decrement_sum, cache) ->
       let bound, cache = transition_bound edge cache in
       let const = EdgeExp.mult bound (EdgeExp.Const (Const.Cint const)) in
       (EdgeExp.add decrement_sum const), cache
@@ -763,12 +773,12 @@ let analyze_procedure (analysis_data : Domain.Summary.t InterproceduralAnalysis.
   ) chains (EdgeExp.zero, cache)
 
 
-  and variable_bound norm cache =
+  and variable_bound norm (cache : LooperSummary.cache) =
     let bound, cache = match EdgeExp.Map.find_opt norm cache.variable_bounds with
     | Some bound -> bound, cache
     | None -> (
       if EdgeExp.is_variable norm graph_data.formals then (
-        let var_bound, cache = match norm with
+        let var_bound, (cache : LooperSummary.cache) = match norm with
         | EdgeExp.Max args when List.length args > 1 -> (
           (* Variable bound for a max(...) expression. Calculate VB for each variable argument *)
           let cache, args = List.fold args ~init:(cache, [])  ~f:(fun (cache, args_acc) arg ->
@@ -793,8 +803,9 @@ let analyze_procedure (analysis_data : Domain.Summary.t InterproceduralAnalysis.
           let norm_updates = EdgeExp.Map.find norm cache.updates in
           let increment_sum, cache = calculate_increment_sum (EdgeExp.Set.singleton norm) cache in
 
-          assert(not (Resets.is_empty norm_updates.resets));
-          let max_args, cache = Resets.fold (fun (_, norm, const) (args, cache) ->
+          assert(not (LooperSummary.Resets.is_empty norm_updates.resets));
+          let max_args, (cache : LooperSummary.cache) = LooperSummary.Resets.fold 
+          (fun (_, norm, const) (args, cache) ->
             let var_bound, cache = variable_bound norm cache in
             let max_arg = if IntLit.isnegative const then (
               let const = EdgeExp.Const (Const.Cint (IntLit.neg const)) in
@@ -841,22 +852,26 @@ let analyze_procedure (analysis_data : Domain.Summary.t InterproceduralAnalysis.
           EdgeExp.add max_subexp increment_sum, cache
         )
         in
-
         var_bound, {cache with variable_bounds = EdgeExp.Map.add norm var_bound cache.variable_bounds}
       ) 
-      else norm, {cache with variable_bounds = EdgeExp.Map.add norm norm cache.variable_bounds}
+      else (
+        let cache : LooperSummary.cache = 
+          {cache with variable_bounds = EdgeExp.Map.add norm norm cache.variable_bounds} 
+        in
+        norm, cache
+      )
     )
     in
     debug_log "   [VB(%a)] %a\n" EdgeExp.pp norm EdgeExp.pp bound;
     bound, cache
 
 
-  and variable_lower_bound norm cache =
+  and variable_lower_bound norm (cache : LooperSummary.cache) =
     let bound, cache = match EdgeExp.Map.find_opt norm cache.lower_bounds with
     | Some bound -> bound, cache
     | None -> (
       if EdgeExp.is_variable norm graph_data.formals then (
-        let var_bound, cache = match norm with
+        let var_bound, (cache : LooperSummary.cache) = match norm with
         | EdgeExp.Max args -> (
           (* Variable bound for a max(...) expression. Calculate VB for each variable argument *)
           let cache, args = List.fold args ~init:(cache, [])  ~f:(fun (cache, args_acc) arg ->
@@ -881,8 +896,8 @@ let analyze_procedure (analysis_data : Domain.Summary.t InterproceduralAnalysis.
           let norm_updates = EdgeExp.Map.find norm cache.updates in
           let decrement_sum, cache = calculate_decrement_sum (EdgeExp.Set.singleton norm) cache in
 
-          assert(not (Resets.is_empty norm_updates.resets));
-          let min_args, cache = Resets.fold (fun (_, norm, const) (args, cache) ->
+          assert(not (LooperSummary.Resets.is_empty norm_updates.resets));
+          let min_args, cache = LooperSummary.Resets.fold (fun (_, norm, const) (args, cache) ->
             let var_bound, cache = variable_lower_bound norm cache in
             let min_arg = if IntLit.isnegative const 
             then EdgeExp.sub var_bound (EdgeExp.Const (Const.Cint (IntLit.neg const)))
@@ -911,14 +926,19 @@ let analyze_procedure (analysis_data : Domain.Summary.t InterproceduralAnalysis.
 
         var_bound, {cache with lower_bounds = EdgeExp.Map.add norm var_bound cache.lower_bounds}
       ) 
-      else norm, {cache with lower_bounds = EdgeExp.Map.add norm norm cache.lower_bounds}
+      else (
+        let cache : LooperSummary.cache = 
+          {cache with lower_bounds = EdgeExp.Map.add norm norm cache.lower_bounds}
+        in
+        norm, cache
+      )
     )
     in
     debug_log "   [LB(%a)] %a\n" EdgeExp.pp norm EdgeExp.pp bound;
     bound, cache
 
 
-  and transition_bound (src, (edge_data : DCP.EdgeData.t), dst) cache =
+  and transition_bound (src, (edge_data : DCP.EdgeData.t), dst) (cache : LooperSummary.cache) =
     (* For variable norms: TB(t) = IncrementSum + ResetSum 
      * For constant norms: TB(t) = constant *)
     debug_log "[TB] %a -- %a\n" DCP.Node.pp src DCP.Node.pp dst;
@@ -981,11 +1001,11 @@ let analyze_procedure (analysis_data : Domain.Summary.t InterproceduralAnalysis.
         | Some payload -> (
           debug_log "[Summary Instantiation] %a | %a\n" Procname.pp proc_name Location.pp loc;
 
-          let call_transitions, new_cache = Summary.instantiate payload args tenv active_prover cache
+          let call_transitions, new_cache = LooperSummary.instantiate payload args tenv active_prover cache
             ~upper_bound:variable_bound ~lower_bound:variable_lower_bound
           in
 
-          let instantiated_call : Summary.call = {
+          let instantiated_call : LooperSummary.call = {
             name = proc_name;
             loc;
             bounds = call_transitions
@@ -994,7 +1014,7 @@ let analyze_procedure (analysis_data : Domain.Summary.t InterproceduralAnalysis.
           instantiated_call :: calls, new_cache
         )
         | None -> (
-          let missing_payload_call : Summary.call = {
+          let missing_payload_call : LooperSummary.call = {
             name = proc_name;
             loc;
             bounds = []
@@ -1016,7 +1036,7 @@ let analyze_procedure (analysis_data : Domain.Summary.t InterproceduralAnalysis.
     L.internal_error "[%a] Local bound could not be \
     determined for following edges:\n%s\n\
     Returning [Infinity]\n" Procname.pp proc_name culprits;
-    [], empty_cache
+    [], LooperSummary.empty_cache
   ) else (
     debug_log "\n==========[Calculating bounds]====================\n";
 
@@ -1036,7 +1056,7 @@ let analyze_procedure (analysis_data : Domain.Summary.t InterproceduralAnalysis.
           DCP.EdgeSet.add edge edge_set, cache
         )
         else edge_set, cache
-      ) graph_data.edges (DCP.EdgeSet.empty, empty_cache)
+      ) graph_data.edges (DCP.EdgeSet.empty, LooperSummary.empty_cache)
       in
 
       (* Execution cost must be computed after transitions bounds
@@ -1050,7 +1070,7 @@ let analyze_procedure (analysis_data : Domain.Summary.t InterproceduralAnalysis.
         else EdgeExp.determine_monotony_why3 bound tenv active_prover
         in
 
-        let transition : Summary.transition = {
+        let transition : LooperSummary.transition = {
           src_node; dst_node;
           bound;
           monotony_map;
@@ -1063,12 +1083,12 @@ let analyze_procedure (analysis_data : Domain.Summary.t InterproceduralAnalysis.
 
       bounds, cache
     with Exit -> (
-      [], empty_cache
+      [], LooperSummary.empty_cache
     )
   )
   in
 
-  let total_bound_exp = Summary.total_bound bounds in
+  let total_bound_exp = LooperSummary.total_bound bounds in
   debug_log "\n[Final bound] %a\n" EdgeExp.pp total_bound_exp;
 
   let ret_type = Procdesc.get_ret_type proc_desc in
@@ -1084,7 +1104,7 @@ let analyze_procedure (analysis_data : Domain.Summary.t InterproceduralAnalysis.
   | _ -> None
   in
 
-  let payload : Domain.Summary.t = {
+  let payload : LooperSummary.t = {
     formal_map = FormalMap.make proc_desc;
     bounds = bounds;
     return_bound = return_bound;
@@ -1095,6 +1115,6 @@ let analyze_procedure (analysis_data : Domain.Summary.t InterproceduralAnalysis.
   Utils.close_outf log_file;
   debug_fmt := List.tl_exn !debug_fmt;
 
-  let summary_graph = Summary.to_graph payload proc_name begin_loc in
-  output_graph (proc_graph_dir ^/ summary_graph_fname) summary_graph Summary.TreeGraph_Dot.output_graph;
+  let summary_graph = LooperSummary.to_graph payload proc_name begin_loc in
+  output_graph (proc_graph_dir ^/ summary_graph_fname) summary_graph LooperSummary.TreeGraph_Dot.output_graph;
   Some payload
