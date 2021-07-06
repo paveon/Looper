@@ -41,7 +41,7 @@ let rec to_string = function
   )
   | UnOp (op, exp, _) -> F.sprintf "%s%s" (Unop.to_string op) (to_string exp)
   | Access path -> F.asprintf "%a" AccessPath.pp path
-  | Const const -> Exp.to_string (Exp.Const const)
+  | Const const -> F.asprintf "%a" Const.(pp Pp.text) const
   | Call (_, callee, args, _) -> (
     let proc_name = String.drop_suffix (Procname.to_simplified_string callee) 2 in
     let args_string = String.concat ~sep:", " (List.map args ~f:(fun (x, _) -> to_string x)) in

@@ -117,7 +117,10 @@ let edge_attributes : E.t -> 'a list = fun (_, edge_data, _) -> (
   let label = if edge_data.backedge then label ^ "[backedge]\n" else label in
   let call_list = List.map (EdgeExp.Set.elements edge_data.calls) ~f:(fun call ->
     match call with
-    | EdgeExp.Call (_, _, _, loc) -> F.asprintf "%a : %a" EdgeExp.pp call Location.pp loc
+    | EdgeExp.Call (_, _, _, loc) -> (
+      let call_str = String.substr_replace_all (EdgeExp.to_string call) ~pattern:"\"" ~with_:"\\\"" in
+      F.asprintf "%s : %a" call_str Location.pp loc
+    )
     | _ -> assert(false)
   ) 
   in
