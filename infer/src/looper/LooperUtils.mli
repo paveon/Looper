@@ -36,6 +36,18 @@ type prover =
   | Vampire
   [@@deriving compare]
 
+type prover_cfg = {
+  prover_type: prover;
+  name: string;
+  driver_path: string;
+  command: string;
+  command_steps: string option
+}
+
+val looper_src_dir : string
+
+val supported_provers : prover_cfg list
+
 
 module ProverMap : Caml.Map.S with type key = prover
 

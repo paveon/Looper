@@ -73,39 +73,49 @@ let analyze_procedure (analysis_data : LooperSummary.t InterproceduralAnalysis.t
     console_log "=========== Initializing Why3 ===========\n";
     let config : Why3.Whyconf.config = Why3.Whyconf.(load_default_config_if_needed (read_config None)) in
     let main : Why3.Whyconf.main = Why3.Whyconf.get_main config in
-    let provers : Why3.Whyconf.config_prover Why3.Whyconf.Mprover.t = Why3.Whyconf.get_provers config in
-    Why3.Whyconf.Mprover.iter (fun prover _ ->
-      console_log "Prover: %s %s\n" prover.prover_name prover.prover_version;
-    ) provers;
-
-    let prover_names = [(Z3, "Z3"); (CVC4, "CVC4"); (Vampire, "Vampire")] in
 
     let env : Why3.Env.env = Why3.Env.create_env (Why3.Whyconf.loadpath main) in
     let real_theory : Why3.Theory.theory = Why3.Env.read_theory env ["real"] "Real" in
 
-    let prover_map = List.fold prover_names ~init:ProverMap.empty ~f:(fun acc (prover_type, name) -> 
-      let prover : Why3.Whyconf.config_prover =
-        let filter = Why3.Whyconf.parse_filter_prover name in
-        let provers = Why3.Whyconf.filter_provers config filter in
-        if Why3.Whyconf.Mprover.is_empty provers then (
-          L.die InternalError "Prover '%s' is not installed or configured." name
-        ) else snd (Why3.Whyconf.Mprover.max_binding provers)
-      in
+    let prover_map = List.fold supported_provers ~init:ProverMap.empty ~f:(fun acc prover_cfg -> 
+      let filter = Why3.Whyconf.parse_filter_prover prover_cfg.name in
+      let provers = Why3.Whyconf.filter_provers config filter in
+      if Why3.Whyconf.Mprover.is_empty provers then (
+        console_log "[Warning] Prover '%s' is not installed or configured." prover_cfg.name;
+        acc
+      )
+      else (
+        let why3_prover_cfg = snd (Why3.Whyconf.Mprover.max_binding provers) in
 
-      console_log "%s\n" prover.driver;
-      let driver : Why3.Driver.driver = try Why3.Whyconf.load_driver main env prover.driver []
-      with e -> L.die InternalError "Failed to load driver for %s: %a@." name Why3.Exn_printer.exn_printer e
-      in
+        let driver : Why3.Driver.driver = try Why3.Whyconf.load_driver main env prover_cfg.driver_path []
+          with e -> L.die InternalError "[Looper] Failed to load driver for %s: %a@."
+            prover_cfg.name Why3.Exn_printer.exn_printer e
+        in
 
-      ProverMap.add prover_type { name; 
-        prover_conf = prover; 
-        driver = driver; 
-        theory = real_theory;
-        idents = StringMap.empty;
-        vars = StringMap.empty;
-      } acc
+        ProverMap.add prover_cfg.prover_type {
+          name = prover_cfg.name;
+          driver;
+          theory = real_theory;
+          idents = StringMap.empty;
+          vars = StringMap.empty;
+          prover_conf = {why3_prover_cfg with
+            command = prover_cfg.command;
+            command_steps = prover_cfg.command_steps;
+          };
+        } acc
+      )
     )
     in
+
+    if ProverMap.is_empty prover_map then (
+      L.(die UserError)
+        "[Looper] No suitable Why3 prover was found.\n\
+        Please consult the following Why3 page on how\n\
+        to install external provers: 'http://why3.lri.fr/doc/install.html'.\n\
+        The list of external provers currently supported by Looper contains Z3 and CVC4.\n\
+        The Z3 prover is recommended for best results."
+    );
+
     why3_data := prover_map;
     !why3_data
   )

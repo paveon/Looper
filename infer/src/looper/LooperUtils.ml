@@ -40,6 +40,35 @@ type prover =
 [@@deriving compare]
 
 
+type prover_cfg = {
+  prover_type: prover;
+  name: string;
+  driver_path: string;
+  command: string;
+  command_steps: string option
+}
+
+
+let looper_src_dir = Config.bin_dir ^/ Filename.parent_dir_name ^/ "src" ^/ "looper"
+
+let supported_provers = [
+    {
+      prover_type = Z3;
+      name = "Z3";
+      driver_path = looper_src_dir ^/ "z3_custom.drv";
+      command = "z3 -smt2 -t:%t000 sat.random_seed=42 model.compact=false nlsat.randomize=false smt.random_seed=42 -st %f";
+      command_steps = Some "%e -smt2 sat.random_seed=42 model.compact=false nlsat.randomize=false smt.random_seed=42 memory_max_alloc_count=%S -st %f"
+    };
+    {
+      prover_type = CVC4;
+      name = "CVC4";
+      driver_path = looper_src_dir ^/ "cvc4_16_custom.drv";
+      command = "cvc4 --stats --tlimit-per=%t000 --lang=smt2 %f";
+      command_steps = Some "%e --stats --rlimit=%S --lang=smt2 %f"
+    }
+  ]
+
+
 module ProverMap = Caml.Map.Make(struct
     type nonrec t = prover
     let compare = compare_prover
