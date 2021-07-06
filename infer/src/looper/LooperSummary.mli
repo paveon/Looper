@@ -1,7 +1,9 @@
 (* Author: Ondrej Pavela <xpavel34@stud.fit.vutbr.cz> *)
 
 open! IStd
+
 module F = Format
+module LTS = LabeledTransitionSystem
 module DCP = DifferenceConstraintProgram
 
 
@@ -39,8 +41,8 @@ type call = {
 }
 
 and transition = {
-  src_node: DCP.Node.t;
-  dst_node: DCP.Node.t;
+  src_node: LTS.Node.t;
+  dst_node: LTS.Node.t;
   bound: EdgeExp.t;
   monotony_map: LooperUtils.VariableMonotony.t LooperUtils.AccessPathMap.t;
   calls: call list
@@ -66,7 +68,7 @@ module TreeGraph : sig
   module Node : sig
     type t = 
     | CallNode of Procname.t * Location.t
-    | TransitionNode of DCP.Node.t * EdgeExp.t * DCP.Node.t
+    | TransitionNode of LTS.Node.t * EdgeExp.t * LTS.Node.t
     [@@deriving compare]
     val hash : 'a -> int
     val equal : t -> t -> bool

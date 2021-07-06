@@ -3,12 +3,14 @@
 
 open! IStd
 open LooperUtils
+
+module LTS = LabeledTransitionSystem
 module DCP = DifferenceConstraintProgram
 
 
 (* Variable flow graph *)
 module Node = struct
-  type t = EdgeExp.t * DCP.Node.t [@@deriving compare]
+  type t = EdgeExp.t * LTS.Node.t [@@deriving compare]
   let hash x = Hashtbl.hash_param 100 100 x
   let equal = [%compare.equal: t]
 end
@@ -27,7 +29,7 @@ include DefaultDot
 
 let edge_attributes : E.t -> 'a list = fun _ -> [`Label ""; `Color 4711]
 let vertex_attributes : V.t -> 'a list = fun (norm, dcp_node) -> (
-  let label = F.asprintf "%a, %a" EdgeExp.pp norm DCP.Node.pp dcp_node in
+  let label = F.asprintf "%a, %a" EdgeExp.pp norm LTS.Node.pp dcp_node in
   [ `Shape `Box; `Label label ]
 )
 let vertex_name : V.t -> string = fun vertex -> string_of_int (Node.hash vertex)

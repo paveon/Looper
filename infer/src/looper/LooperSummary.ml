@@ -4,6 +4,7 @@ open! IStd
 open LooperUtils
 
 module F = Format
+module LTS = LabeledTransitionSystem
 module DCP = DifferenceConstraintProgram
 
 
@@ -61,8 +62,8 @@ type call = {
 }
 
 and transition = {
-  src_node: DCP.Node.t;
-  dst_node: DCP.Node.t;
+  src_node: LTS.Node.t;
+  dst_node: LTS.Node.t;
   bound: EdgeExp.t;
   monotony_map: VariableMonotony.t AccessPathMap.t;
   calls: call list
@@ -85,21 +86,21 @@ let total_bound transitions =
     in
     let total_edge_cost = if EdgeExp.is_zero cost_of_calls then (
       debug_log "[Edge cost] %a ---> %a: %a\n" 
-      DCP.Node.pp transition.src_node DCP.Node.pp transition.dst_node 
+      LTS.Node.pp transition.src_node LTS.Node.pp transition.dst_node 
       EdgeExp.pp transition.bound;
       transition.bound
     ) 
     else if EdgeExp.is_one cost_of_calls then (
       let value = transition.bound in
       debug_log "[Edge cost] %a ---> %a: %a * %a = %a\n" 
-      DCP.Node.pp transition.src_node DCP.Node.pp transition.dst_node 
+      LTS.Node.pp transition.src_node LTS.Node.pp transition.dst_node 
       EdgeExp.pp transition.bound EdgeExp.pp cost_of_calls EdgeExp.pp value;
       value
     )
     else (
       let value = EdgeExp.add transition.bound (EdgeExp.mult transition.bound cost_of_calls) in
       debug_log "[Edge cost] %a ---> %a: %a + %a * %a = %a\n" 
-      DCP.Node.pp transition.src_node DCP.Node.pp transition.dst_node
+      LTS.Node.pp transition.src_node LTS.Node.pp transition.dst_node
       EdgeExp.pp transition.bound EdgeExp.pp transition.bound EdgeExp.pp cost_of_calls EdgeExp.pp value;
       value
     )
@@ -237,7 +238,7 @@ module TreeGraph = struct
   module Node = struct
     type t = 
     | CallNode of Procname.t * Location.t
-    | TransitionNode of DCP.Node.t * EdgeExp.t * DCP.Node.t
+    | TransitionNode of LTS.Node.t * EdgeExp.t * LTS.Node.t
     [@@deriving compare]
 
     let hash x = Hashtbl.hash_param 100 100 x
@@ -262,7 +263,7 @@ module TreeGraph = struct
       [ `Shape `Box; `Label label; `Style `Rounded; `Color color ]
     )
     | TransitionNode (src, bound, dst) -> (
-      let label = F.asprintf "{%a --> %a}\n%a" DCP.Node.pp src DCP.Node.pp dst EdgeExp.pp bound in
+      let label = F.asprintf "{%a --> %a}\n%a" LTS.Node.pp src LTS.Node.pp dst EdgeExp.pp bound in
       let color : int = 0x0000FF in
       [ `Shape `Box; `Label label; `Color color; `Height 1.0]
     )

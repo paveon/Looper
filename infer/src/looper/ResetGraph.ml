@@ -2,6 +2,7 @@
 
 open! IStd
 module F = Format
+module LTS = LabeledTransitionSystem
 module DCP = DifferenceConstraintProgram
 
 
@@ -42,7 +43,7 @@ type graph = t
 
 let edge_attributes : E.t -> 'a list = fun (_, edge, _) -> (
   let label = match edge.dcp_edge with
-  | Some (src, _, dst) -> F.asprintf "%a -- %a\n%a" DCP.Node.pp src DCP.Node.pp dst IntLit.pp edge.const
+  | Some (src, _, dst) -> F.asprintf "%a -- %a\n%a" LTS.Node.pp src LTS.Node.pp dst IntLit.pp edge.const
   | None -> ""
   in
   [`Label label; `Color 4711]
@@ -152,7 +153,7 @@ let get_reset_chains origin reset_graph dcp =
         (* Find all paths from origin to end and check if they reset the end norm *)
         let current_norm = dst in
         let rec checkPaths origin current visited_nodes norm_reset =
-          if DCP.Node.equal current path_end && not (DCP.NodeSet.is_empty visited_nodes) then (
+          if LTS.Node.equal current path_end && not (LTS.NodeSet.is_empty visited_nodes) then (
             (* Found path, return info if norm was reset along the path *)
             match norm_reset with 
             | Some _ -> norm_reset
@@ -163,13 +164,13 @@ let get_reset_chains origin reset_graph dcp =
               (* Not a path *)
               None
             ) else (
-              let visited_nodes = if DCP.Node.equal origin current then (
+              let visited_nodes = if LTS.Node.equal origin current then (
                 visited_nodes
-              ) else (DCP.NodeSet.add current visited_nodes)
+              ) else (LTS.NodeSet.add current visited_nodes)
               in
               List.fold_until next ~init:norm_reset ~f:(fun norm_reset (dcp_edge : DCP.E.t) ->
                 let dcp_src, dcp_data, dcp_dst = dcp_edge in
-                if DCP.NodeSet.mem dcp_dst visited_nodes || DCP.Node.equal dcp_src dcp_dst then (
+                if LTS.NodeSet.mem dcp_dst visited_nodes || LTS.Node.equal dcp_src dcp_dst then (
                   Continue norm_reset
                 ) else (
                   let norm_reset = match norm_reset with
@@ -184,7 +185,7 @@ let get_reset_chains origin reset_graph dcp =
             )
           )
         in
-        let all_paths_reset = checkPaths path_origin path_origin DCP.NodeSet.empty None in
+        let all_paths_reset = checkPaths path_origin path_origin LTS.NodeSet.empty None in
         match all_paths_reset with
         | Some _ -> Continue ([(src, edge_data, dst)] @ optimal_chain)
         | None -> (

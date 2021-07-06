@@ -233,7 +233,6 @@ AC_ASSERT_OCAML_PKG([easy-format])
 AC_ASSERT_OCAML_PKG([oUnit])
 AC_CHECK_TOOL([UTOP], [utop], [no])
 AC_ASSERT_OCAML_PKG([yojson])
-AC_ASSERT_OCAML_PKG([z3])
 
 AC_MSG_CHECKING([which ocamlformat to use])
 AS_IF([test x"$is_facebook_tree" = x"yes"],

@@ -7,6 +7,7 @@ open LooperUtils
 module F = Format
 module L = Logging
 module DC = DifferenceConstraint
+module LTS = LabeledTransitionSystem
 module DCP = DifferenceConstraintProgram
 module RG = ResetGraph
 module VFG = VariableFlowGraph
@@ -14,6 +15,7 @@ module VFG = VariableFlowGraph
 let console_log : ('a, F.formatter, unit) format -> 'a = fun fmt -> F.printf fmt
 
 
+module LTS_Dot = Graph.Graphviz.Dot(LTS)
 module DCP_Dot = Graph.Graphviz.Dot(DCP)
 module RG_Dot = Graph.Graphviz.Dot(RG)
 module VFG_Dot = Graph.Graphviz.Dot(VFG)
@@ -23,7 +25,7 @@ module VFG_SCC = Graph.Components.Make(VFG)
 
 
 module UnprocessedNormSet = Caml.Set.Make(struct
-  type nonrec t = EdgeExp.t * AccessSet.t DCP.EdgeMap.t
+  type nonrec t = EdgeExp.t * AccessSet.t LTS.EdgeMap.t
   [@@deriving compare]
 end)
 
@@ -122,34 +124,23 @@ let analyze_procedure (analysis_data : LooperSummary.t InterproceduralAnalysis.t
             - LTS CONSTRUCTION\n\
             ---------------------------------\n";
   let tenv = Exe_env.get_tenv analysis_data.exe_env proc_name in
-  let graph_data = LooperLTS.GraphConstructor.create_lts tenv proc_desc analysis_data in
-  
-  let lts = DCP.create () in
-  DCP.NodeSet.iter (fun node ->
-    DCP.add_vertex lts node;
-  ) graph_data.nodes;
-  DCP.EdgeSet.iter (fun (src, edge_data, dst) ->
-    edge_data.edge_type <- LTS;
-    DCP.add_edge_e lts (src, edge_data, dst);
-  ) graph_data.edges;
+  let graph_data = GraphConstructor.construct tenv proc_desc analysis_data in
 
-  output_graph (proc_graph_dir ^/ lts_fname) lts DCP_Dot.output_graph;
+  output_graph (proc_graph_dir ^/ lts_fname) graph_data.lts LTS_Dot.output_graph;
 
   debug_log "\n---------------------------------\n\
               - PERFORMING ANALYSIS \n\
               ---------------------------------\n";
 
   (* Draw dot graph, use nodes and edges stored in graph_data *)
-  debug_log "[POTENTIAL NORMS]\n";
-  EdgeExp.Set.iter (fun norm -> debug_log "  %a\n" EdgeExp.pp norm) graph_data.potential_norms;
-
   debug_log "[INITIAL NORMS]\n";
   EdgeExp.Set.iter (fun norm -> debug_log "  %a\n" EdgeExp.pp norm) graph_data.norms;
 
-  let dcp = DCP.create () in
-  DCP.NodeSet.iter (fun node ->
-    DCP.add_vertex dcp node;
-  ) graph_data.nodes;
+  let edge_pairs = LTS.EdgeSet.fold (fun ((_, edge_data, _) as lts_edge) edge_pairs ->
+    let dcp_edge_data = DCP.EdgeData.from_lts_edge edge_data in
+    (lts_edge, dcp_edge_data) :: edge_pairs
+  ) graph_data.edges []
+  in
 
 
   let rec compute_norm_set unprocessed processed = if UnprocessedNormSet.is_empty unprocessed
@@ -161,17 +152,26 @@ let analyze_procedure (analysis_data : LooperSummary.t InterproceduralAnalysis.t
     debug_log "[DC derivation] Processing norm: %a\n" EdgeExp.pp norm;
 
     let unprocessed = if EdgeExp.is_variable norm graph_data.formals then (
-      DCP.EdgeSet.fold (fun ((_, edge_data, _) as edge) unprocessed ->
-        let used_assignments = match DCP.EdgeMap.find_opt edge norm_history with
+      List.fold edge_pairs ~f:(fun unprocessed (((_, lts_edge_data, _) as lts_edge), dcp_edge_data) ->
+        let used_assignments = match LTS.EdgeMap.find_opt lts_edge norm_history with
         | Some set -> set
         | None -> AccessSet.empty
         in
 
-        match DCP.EdgeData.derive_constraint edge_data norm used_assignments graph_data.formals with
-        | Some (new_norm, substituted_accesses) -> (
+        let substituted_accesses, dc_rhs_opt, new_norm_opt = 
+          LTS.EdgeData.derive_constraint lts_edge_data norm used_assignments graph_data.formals 
+        in
+
+        if Option.is_some dc_rhs_opt then (
+          let dc_rhs = Option.value_exn dc_rhs_opt in
+          DCP.EdgeData.add_constraint dcp_edge_data (norm, dc_rhs)
+        );
+
+        match new_norm_opt with
+        | Some new_norm -> (
           (* Remember used assignments on this specific edge to avoid infinite recursive
            * loop when generating new norms from assignments such as [i = i * n] *)
-          let new_norm_history = DCP.EdgeMap.add edge substituted_accesses norm_history in
+          let new_norm_history = LTS.EdgeMap.add lts_edge substituted_accesses norm_history in          
 
           if EdgeExp.Set.mem new_norm processed then unprocessed
           else (
@@ -180,8 +180,7 @@ let analyze_procedure (analysis_data : LooperSummary.t InterproceduralAnalysis.t
           )
         )
         | None -> unprocessed
-        
-      ) graph_data.edges unprocessed
+      ) ~init:unprocessed
     )
     else unprocessed
     in
@@ -192,7 +191,7 @@ let analyze_procedure (analysis_data : LooperSummary.t InterproceduralAnalysis.t
 
   debug_log "\n==========[Deriving constraints]==================\n";
   let unprocessed_norms = EdgeExp.Set.fold (fun norm acc ->
-    UnprocessedNormSet.add (norm, DCP.EdgeMap.empty) acc
+    UnprocessedNormSet.add (norm, LTS.EdgeMap.empty) acc
   ) graph_data.norms UnprocessedNormSet.empty
   in
 
@@ -210,29 +209,33 @@ let analyze_procedure (analysis_data : LooperSummary.t InterproceduralAnalysis.t
    * norm [x + y] > 0 thus it is a guard on this transition *)
   debug_log "\n==========[Deriving guards]=======================\n";
 
+  let dcp = DCP.create () in
+  LTS.NodeSet.iter (fun node -> DCP.add_vertex dcp node) graph_data.nodes;
 
+  List.iter edge_pairs ~f:(fun ((src, lts_edge_data, dst), dcp_edge_data) ->
+    debug_log "[Guard Derivation] %a ---> %a\n" LTS.Node.pp src LTS.Node.pp dst;
+    DCP.EdgeData.set_edge_output_type dcp_edge_data GuardedDCP;
 
-  DCP.EdgeSet.iter (fun (src, edge_data, dst) ->
-    debug_log "[Guard Derivation] %a ---> %a\n" DCP.Node.pp src DCP.Node.pp dst;
-    edge_data.edge_type <- GuardedDCP;
-    DCP.EdgeData.derive_guards_why3 edge_data final_norm_set tenv active_prover;
+    let guards = LTS.EdgeData.derive_guards lts_edge_data final_norm_set tenv active_prover in
+    DCP.EdgeData.add_guards dcp_edge_data guards;
     
-    EdgeExp.Set.iter (fun guard -> debug_log "\t%s > 0\n" (EdgeExp.to_string guard)) edge_data.guards;
+    EdgeExp.Set.iter (fun guard -> debug_log "\t%s > 0\n" (EdgeExp.to_string guard)) guards;
 
-    DCP.add_edge_e dcp (src, edge_data, dst);
-  ) graph_data.edges;
+    DCP.add_edge_e dcp (src, dcp_edge_data, dst);
+  );
 
   let guarded_nodes = DCP.fold_edges_e (fun (_, edge_data, dst) acc ->
-    if EdgeExp.Set.is_empty edge_data.guards then acc else DCP.NodeSet.add dst acc
-  ) dcp DCP.NodeSet.empty
+    if EdgeExp.Set.is_empty edge_data.guards then acc else LTS.NodeSet.add dst acc
+  ) dcp LTS.NodeSet.empty
   in
+
 
   (* Propagate guard to all outgoing edges if all incoming edges
     * are guarded by this guard and the guard itself is not decreased
     * on any of those incoming edges (guard is a norm) *)
   debug_log "\n==========[Propagating guards]====================\n";
-  let rec propagate_guards : DCP.NodeSet.t -> unit = fun nodes -> (
-    if not (DCP.NodeSet.is_empty nodes) then (
+  let rec propagate_guards : LTS.NodeSet.t -> unit = fun nodes -> (
+    if not (LTS.NodeSet.is_empty nodes) then (
       let get_shared_guards incoming_edges = if List.is_empty incoming_edges then EdgeExp.Set.empty
         else (
           let (_, head_edge_data, _) = List.hd_exn incoming_edges in
@@ -246,8 +249,8 @@ let analyze_procedure (analysis_data : LooperSummary.t InterproceduralAnalysis.t
       in
 
       (* Pop one node from set of unprocessed nodes *)
-      let node = DCP.NodeSet.min_elt nodes in
-      let nodes = DCP.NodeSet.remove node nodes in
+      let node = LTS.NodeSet.min_elt nodes in
+      let nodes = LTS.NodeSet.remove node nodes in
       
       let in_backedges, in_edges = List.partition_tf (DCP.pred_e dcp node) 
       ~f:(fun (_, edge_data, _) -> DCP.EdgeData.is_backedge edge_data) 
@@ -255,7 +258,7 @@ let analyze_procedure (analysis_data : LooperSummary.t InterproceduralAnalysis.t
       let guards = get_shared_guards in_edges in
       let out_edges = DCP.succ_e dcp node in
 
-      let guards, out_edges = if DCP.Node.is_loophead node then (
+      let guards, out_edges = if LTS.Node.is_loophead node then (
         assert(Int.equal (List.length out_edges) 2);
         let branch_true, branch_false = List.partition_tf out_edges ~f:(fun (_, edge_data, _) -> 
           DCP.EdgeData.branch_type edge_data
@@ -265,8 +268,8 @@ let analyze_procedure (analysis_data : LooperSummary.t InterproceduralAnalysis.t
 
         branch_true.guards <- EdgeExp.Set.union guards branch_true.guards;
 
-        if not (DCP.Node.equal src dst) && not (DCP.EdgeData.is_backedge branch_true) 
-        then propagate_guards (DCP.NodeSet.add dst nodes);
+        if not (LTS.Node.equal src dst) && not (DCP.EdgeData.is_backedge branch_true) 
+        then propagate_guards (LTS.NodeSet.add dst nodes);
 
         let guards = if List.is_empty in_backedges then guards
         else (
@@ -285,7 +288,7 @@ let analyze_procedure (analysis_data : LooperSummary.t InterproceduralAnalysis.t
           * destination nodes of those edges to the processing queue *)
         List.fold out_edges ~init:nodes ~f:(fun acc (_, (edge_data : DCP.EdgeData.t), dst) ->
           edge_data.guards <- EdgeExp.Set.union guards edge_data.guards;
-          if DCP.EdgeData.is_backedge edge_data then acc else DCP.NodeSet.add dst acc
+          if DCP.EdgeData.is_backedge edge_data then acc else LTS.NodeSet.add dst acc
         )
       )
       in
@@ -301,8 +304,8 @@ let analyze_procedure (analysis_data : LooperSummary.t InterproceduralAnalysis.t
   debug_log "\n==========[Converting Integer DCP to Natural Numbers]==========\n";
 
   (* Convert DCP with guards to DCP without guards over natural numbers *)
-  let to_natural_numbers : DCP.EdgeSet.t -> unit = fun edges -> (
-    DCP.EdgeSet.iter (fun (_, edge_data, _) ->
+  let to_natural_numbers : DCP.t -> unit = fun dcp -> (
+    DCP.iter_edges_e (fun (_, edge_data, _) ->
       let constraints = DC.Map.fold (fun lhs (rhs_norm, op, rhs_const) acc ->
         let rhs_const = if IntLit.isnegative rhs_const then (
           (* lhs != rhs hack for now, abstraction algorithm presented in the thesis
@@ -329,11 +332,11 @@ let analyze_procedure (analysis_data : LooperSummary.t InterproceduralAnalysis.t
       ) edge_data.constraints DC.Map.empty
       in
       edge_data.constraints <- constraints;
-      edge_data.edge_type <- DCP;
-    ) edges
+      DCP.EdgeData.set_edge_output_type edge_data DCP;
+    ) dcp
   )
   in
-  to_natural_numbers graph_data.edges;
+  to_natural_numbers dcp;
 
 
   output_graph (proc_graph_dir ^/ dcp_fname) dcp DCP_Dot.output_graph;
@@ -352,7 +355,7 @@ let analyze_procedure (analysis_data : LooperSummary.t InterproceduralAnalysis.t
     in
 
     let vfg = VFG.create () in
-    let used_variables = DCP.EdgeSet.fold (fun (src, edge_data, dst) acc -> 
+    let used_variables = DCP.fold_edges_e (fun (src, edge_data, dst) acc -> 
       DC.Map.fold (fun lhs_norm (rhs_norm, _, _) inner_acc ->
         if (EdgeExp.Set.mem lhs_norm variables) && (EdgeExp.Set.mem rhs_norm variables) then (
           let vfg_add_node node = if not (VFG.mem_vertex vfg node) then (
@@ -367,7 +370,7 @@ let analyze_procedure (analysis_data : LooperSummary.t InterproceduralAnalysis.t
         )
         else inner_acc
       ) edge_data.constraints acc
-    ) graph_data.edges EdgeExp.Set.empty
+    ) dcp EdgeExp.Set.empty
     in
 
     let ssa_variables = EdgeExp.Set.diff variables used_variables in
@@ -376,11 +379,11 @@ let analyze_procedure (analysis_data : LooperSummary.t InterproceduralAnalysis.t
 
     let ssa_variables_map = EdgeExp.Set.fold (fun norm mapping ->
       if EdgeExp.is_return norm then mapping else (
-        DCP.EdgeSet.fold (fun (_, edge_data, _) acc ->
+        DCP.fold_edges_e (fun (_, edge_data, _) acc ->
           match DCP.EdgeData.get_reset edge_data norm with
           | Some rhs -> EdgeExp.Map.add norm rhs acc
           | None -> acc
-        ) graph_data.edges mapping
+        ) dcp mapping
       )
     ) ssa_variables EdgeExp.Map.empty
     in
@@ -432,12 +435,12 @@ let analyze_procedure (analysis_data : LooperSummary.t InterproceduralAnalysis.t
     in
     debug_log "[VFG Mapping]\n";
     VFG.Map.iter (fun (norm, dcp_node) aux_norm -> 
-      debug_log "  (%a, %a) --> %a\n" DCP.Node.pp dcp_node EdgeExp.pp norm EdgeExp.pp aux_norm;
+      debug_log "  (%a, %a) --> %a\n" LTS.Node.pp dcp_node EdgeExp.pp norm EdgeExp.pp aux_norm;
     ) vfg_map;
 
 
     (* Apply VFG mapping and rename DCP variables to ensure acyclic reset DAG *)
-    DCP.EdgeSet.iter (fun (dcp_src, edge_data, dcp_dst) -> 
+    DCP.iter_edges_e (fun (dcp_src, edge_data, dcp_dst) -> 
       let constraints = DC.Map.fold (fun lhs_norm (rhs_norm, op, rhs_const) map ->
         let lhs_node, rhs_node = (lhs_norm, dcp_dst), (rhs_norm, dcp_src) in
         match VFG.Map.find_opt lhs_node vfg_map, VFG.Map.find_opt rhs_node vfg_map with
@@ -472,7 +475,7 @@ let analyze_procedure (analysis_data : LooperSummary.t InterproceduralAnalysis.t
               let access = EdgeExp.Access access in
               if EdgeExp.is_symbolic_const access graph_data.formals then access, None
               else (
-                console_log "%a  ---> %a  | ACCESS: %a\n" DCP.Node.pp dcp_src DCP.Node.pp dcp_dst EdgeExp.pp access;
+                console_log "%a  ---> %a  | ACCESS: %a\n" LTS.Node.pp dcp_src LTS.Node.pp dcp_dst EdgeExp.pp access;
 
                 (* A little hack-around, need to figure out how to deal with this later *)
                 let possible_keys = [
@@ -512,8 +515,8 @@ let analyze_procedure (analysis_data : LooperSummary.t InterproceduralAnalysis.t
 
       edge_data.calls <- calls_renamed_args;
       edge_data.constraints <- constraints;
-      edge_data.edge_type <- DCP;
-    ) graph_data.edges;
+      DCP.EdgeData.set_edge_output_type edge_data DCP;
+    ) dcp;
 
     output_graph (proc_graph_dir ^/ ssa_dcp_fname) dcp DCP_Dot.output_graph;
     vfg_norm_set
@@ -525,7 +528,7 @@ let analyze_procedure (analysis_data : LooperSummary.t InterproceduralAnalysis.t
   (* Reset graph construction, must be performed after VFG renaming phase *)
   debug_log "\n==========[Creating Reset Graph]==================\n";
   let reset_graph = RG.create () in
-  DCP.EdgeSet.iter (fun (src, edge_data, dst) -> 
+  DCP.iter_edges_e (fun (src, edge_data, dst) -> 
     (* Search for resets *)
     DC.Map.iter (fun lhs_norm (rhs_norm, op, rhs_const) ->
       debug_log "Checking %a == %a ?\n" EdgeExp.pp lhs_norm EdgeExp.pp rhs_norm;
@@ -537,7 +540,7 @@ let analyze_procedure (analysis_data : LooperSummary.t InterproceduralAnalysis.t
         RG.add_edge_e reset_graph edge;
       )
     ) edge_data.constraints;
-  ) graph_data.edges;
+  ) dcp;
 
 
   output_graph (proc_graph_dir ^/ rg_fname) reset_graph RG_Dot.output_graph;
@@ -565,16 +568,20 @@ let analyze_procedure (analysis_data : LooperSummary.t InterproceduralAnalysis.t
   (* Edges that are not part of any SCC can be executed only once,
    * thus their local bound mapping is 1 and consequently their
    * transition bound TB(t) is 1 *)
+  let dcp_edge_set = DCP.fold_edges_e (fun edge acc -> 
+    DCP.EdgeSet.add edge acc
+  ) dcp DCP.EdgeSet.empty
+  in
+
   let dcp_scc_graph = DCP.create () in
   let scc_edges = get_scc_edges dcp dcp_scc_graph in
-  let non_scc_edges = DCP.EdgeSet.diff graph_data.edges scc_edges in
+  let non_scc_edges = DCP.EdgeSet.diff dcp_edge_set scc_edges in
   DCP.EdgeSet.iter (fun (_, edge_data, _) ->
     edge_data.bound_norm <- Some EdgeExp.one;
   ) non_scc_edges;
 
   (* Create SCC graph *)
   DCP.EdgeSet.iter (fun (src, edge_data, dst) ->
-    edge_data.edge_type <- LTS;
     DCP.add_edge_e dcp_scc_graph (src, edge_data, dst);
   ) scc_edges;
 
@@ -621,7 +628,7 @@ let analyze_procedure (analysis_data : LooperSummary.t InterproceduralAnalysis.t
     debug_log "E(%a):\n" EdgeExp.pp norm;
     DCP.EdgeSet.iter (fun (src, edge_data, dst) ->
       let local_bound = Option.value_exn edge_data.bound_norm in
-      debug_log "  %a -- %a -- %a\n" DCP.Node.pp src EdgeExp.pp local_bound DCP.Node.pp dst;
+      debug_log "  %a -- %a -- %a\n" LTS.Node.pp src EdgeExp.pp local_bound LTS.Node.pp dst;
     ) edge_set
   ) norm_edge_sets;
 
@@ -686,7 +693,7 @@ let analyze_procedure (analysis_data : LooperSummary.t InterproceduralAnalysis.t
   let rec calculate_increment_sum norms cache = EdgeExp.Set.fold (fun norm (total_sum, cache) -> 
     (* Calculates increment sum based on increments of variable norm:
       * SUM(TB(t) * const) for all edges where norm is incremented, 0 if nowhere *)
-    let cache = get_update_map norm graph_data.edges cache in
+    let cache = get_update_map norm dcp_edge_set cache in
     let norm_updates = EdgeExp.Map.find norm cache.updates in
     let increment_sum, cache = LooperSummary.Increments.fold (fun (edge, const) (increment_sum, cache) ->
       let bound, cache = transition_bound edge cache in
@@ -701,7 +708,7 @@ let analyze_procedure (analysis_data : LooperSummary.t InterproceduralAnalysis.t
   and calculate_decrement_sum norms cache = EdgeExp.Set.fold (fun norm (total_sum, cache) -> 
     (* Calculates decrement sum based on decrements of variable norm:
       * SUM(TB(t) * const) for all edges where norm is decremented, 0 if nowhere *)
-    let cache = get_update_map norm graph_data.edges cache in
+    let cache = get_update_map norm dcp_edge_set cache in
     let norm_updates = EdgeExp.Map.find norm cache.updates in
     let decrement_sum, cache = LooperSummary.Decrements.fold (fun (edge, const) (decrement_sum, cache) ->
       let bound, cache = transition_bound edge cache in
@@ -799,7 +806,7 @@ let analyze_procedure (analysis_data : LooperSummary.t InterproceduralAnalysis.t
         )
         | _ -> (
           debug_log "   [VB(%a)]\n" EdgeExp.pp norm;
-          let cache = get_update_map norm graph_data.edges cache in
+          let cache = get_update_map norm dcp_edge_set cache in
           let norm_updates = EdgeExp.Map.find norm cache.updates in
           let increment_sum, cache = calculate_increment_sum (EdgeExp.Set.singleton norm) cache in
 
@@ -892,7 +899,7 @@ let analyze_procedure (analysis_data : LooperSummary.t InterproceduralAnalysis.t
         )
         | _ -> (
           debug_log "   [LB(%a)]\n" EdgeExp.pp norm;
-          let cache = get_update_map norm graph_data.edges cache in
+          let cache = get_update_map norm dcp_edge_set cache in
           let norm_updates = EdgeExp.Map.find norm cache.updates in
           let decrement_sum, cache = calculate_decrement_sum (EdgeExp.Set.singleton norm) cache in
 
@@ -941,7 +948,7 @@ let analyze_procedure (analysis_data : LooperSummary.t InterproceduralAnalysis.t
   and transition_bound (src, (edge_data : DCP.EdgeData.t), dst) (cache : LooperSummary.cache) =
     (* For variable norms: TB(t) = IncrementSum + ResetSum 
      * For constant norms: TB(t) = constant *)
-    debug_log "[TB] %a -- %a\n" DCP.Node.pp src DCP.Node.pp dst;
+    debug_log "[TB] %a -- %a\n" LTS.Node.pp src LTS.Node.pp dst;
     match edge_data.bound with
     | Some bound -> bound, cache
     | None -> (
@@ -1030,7 +1037,7 @@ let analyze_procedure (analysis_data : LooperSummary.t InterproceduralAnalysis.t
 
   let bounds, cache = if not (DCP.EdgeSet.is_empty remaining_edges) then (
     let culprits = List.map (DCP.EdgeSet.elements remaining_edges) ~f:(fun (src, _, dst) ->
-      F.asprintf "%a ---> %a" DCP.Node.pp src DCP.Node.pp dst
+      F.asprintf "%a ---> %a" LTS.Node.pp src LTS.Node.pp dst
     ) |> String.concat ~sep:"\n"
     in
     L.internal_error "[%a] Local bound could not be \
@@ -1043,10 +1050,10 @@ let analyze_procedure (analysis_data : LooperSummary.t InterproceduralAnalysis.t
     (* Calculate bound for all back-edges and sum them to get the total bound *)
     try
       debug_log "[Local bounds]\n";
-      let edge_set, cache = DCP.EdgeSet.fold (fun edge (edge_set, cache) ->
+      let edge_set, cache = DCP.fold_edges_e (fun edge (edge_set, cache) ->
         let src, edge_data, dst = edge in
         let local_bound = Option.value_exn edge_data.bound_norm in
-        debug_log "  %a ---> %a: %a\n" DCP.Node.pp src DCP.Node.pp dst EdgeExp.pp local_bound;
+        debug_log "  %a ---> %a: %a\n" LTS.Node.pp src LTS.Node.pp dst EdgeExp.pp local_bound;
 
         if DCP.EdgeData.is_backedge edge_data then (
           let _, cache = transition_bound edge cache in
@@ -1056,7 +1063,7 @@ let analyze_procedure (analysis_data : LooperSummary.t InterproceduralAnalysis.t
           DCP.EdgeSet.add edge edge_set, cache
         )
         else edge_set, cache
-      ) graph_data.edges (DCP.EdgeSet.empty, LooperSummary.empty_cache)
+      ) dcp (DCP.EdgeSet.empty, LooperSummary.empty_cache)
       in
 
       (* Execution cost must be computed after transitions bounds
