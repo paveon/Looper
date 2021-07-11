@@ -93,5 +93,10 @@ module OnDisk : sig
     -> unit
   (** Iterates over all analysis artefacts listed above, for each procedure *)
 
+  val iter_looper_summaries_from_config :
+    f:(Procname.t -> Location.t -> LooperSummary.t option -> unit) -> unit
+
+  val pp_specs_from_config : Format.formatter -> unit
+  (** pretty print all stored summaries *)
   val get_model_proc_desc : Procname.t -> Procdesc.t option
 end

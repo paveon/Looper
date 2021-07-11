@@ -46,6 +46,7 @@ val store_spec :
   -> proc_name:Sqlite3.Data.t
   -> analysis_summary:Sqlite3.Data.t
   -> report_summary:Sqlite3.Data.t
+  -> looper_summary:Sqlite3.Data.t
   -> unit
 
 val delete_spec : proc_uid:string -> unit

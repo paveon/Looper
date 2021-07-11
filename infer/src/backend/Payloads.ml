@@ -16,6 +16,7 @@ type t =
   ; config_checks_between_markers: ConfigChecksBetweenMarkers.Summary.t option
   ; config_impact_analysis: ConfigImpactAnalysis.Summary.t option
   ; cost: CostDomain.summary option
+  ; looper: LooperSummary.t option
   ; disjunctive_demo: DisjunctiveDemo.domain option
   ; dotnet_resource_leaks: ResourceLeakCSDomain.summary option
   ; lab_resource_leaks: ResourceLeakDomain.summary option
@@ -51,6 +52,7 @@ let fields =
       mk f "ConfigChecksBetweenMarkers" ConfigChecksBetweenMarkers.Summary.pp )
     ~config_impact_analysis:(fun f -> mk f "ConfigImpactAnalysis" ConfigImpactAnalysis.Summary.pp)
     ~cost:(fun f -> mk f "Cost" CostDomain.pp_summary)
+    ~looper:(fun f -> mk f "Looper" LooperSummary.pp)
     ~disjunctive_demo:(fun f -> mk f "Disjunctive Demo" DisjunctiveDemo.pp_domain)
     ~litho_required_props:(fun f -> mk f "Litho Required Props" LithoDomain.pp_summary)
     ~pulse:(fun f -> mk f "Pulse" PulseSummary.pp)
@@ -79,6 +81,7 @@ let empty =
   ; config_checks_between_markers= None
   ; config_impact_analysis= None
   ; cost= None
+  ; looper= None
   ; disjunctive_demo= None
   ; dotnet_resource_leaks= None
   ; lab_resource_leaks= None

@@ -1,0 +1,26 @@
+(* Counterexamples: set model parser *)
+model_parser "smtv2"
+
+import "smt-libv2_custom.gen"
+printer "smtv2"
+
+
+transformation "inline_trivial"
+transformation "eliminate_builtin"
+transformation "detect_polymorphism"
+transformation "eliminate_definition"
+transformation "simplify_formula"
+transformation "prepare_for_counterexmp"
+
+(** Error messages specific to Z3 *)
+
+outofmemory "(error \".*out of memory\")\\|Cannot allocate memory"
+timeout "interrupted by timeout"
+steps ":rlimit-count +\\([0-9]+\\)" 1
+steplimitexceeded "Maximal allocation counts [0-9]+ have been exceeded"
+
+
+theory BuiltIn
+  meta "counterexample_need_smtlib_push" ""
+(*  meta "get_counterexmp" "" *)
+end
