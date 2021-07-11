@@ -31,6 +31,8 @@ let is_formal = AccessPath.BaseMap.mem
 
 let get_formal_index base t = AccessPath.BaseMap.find_opt base t
 
+let get_formal_indices = AccessPath.BaseMap.bindings
+
 let get_formal_base index t =
   List.find ~f:(fun (_, i) -> Int.equal i index) (AccessPath.BaseMap.bindings t)
   |> Option.map ~f:fst

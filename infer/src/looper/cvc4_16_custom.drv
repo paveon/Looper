@@ -1,0 +1,42 @@
+(** Why3 driver for CVC4 1.6 *)
+
+prelude ";; produced by cvc4_16.drv ;;"
+
+prelude "(set-logic AUFBVFPDTNIRA)"
+(*
+    A    : Array
+    UF   : Uninterpreted Function
+    BV   : BitVectors
+    FP   : FloatingPoint
+    DT   : Datatypes
+    NIRA : NonLinear Integer+Real Arithmetic
+*)
+
+(** Why3 driver for CVC4 >= 1.6 (with floating point support) *)
+
+prelude "(set-info :smt-lib-version 2.6)"
+
+import "smt-libv2_custom.gen"
+printer "smtv2.6"
+
+transformation "inline_trivial"
+transformation "eliminate_builtin"
+transformation "detect_polymorphism"
+transformation "simplify_formula"
+
+(* Prepare for counter-example query: get rid of some quantifiers
+   (makes it possible to query model values of the variables in
+   premises) and introduce counter-example projections.  Note: does
+   nothing if meta get_counterexmp is not set *)
+transformation "prepare_for_counterexmp"
+
+(** Error messages specific to CVC4 *)
+
+outofmemory "(error \".*out of memory\")\\|Cannot allocate memory"
+timeout "interrupted by timeout"
+steps "smt::SmtEngine::resourceUnitsUsed, \\([0-9]+.?[0-9]*\\)" 1
+(*
+specific output message when CVC4 reaches its resource limit
+*)
+steplimitexceeded "driver::sat/unsat, unknown (RESOURCEOUT)"
+

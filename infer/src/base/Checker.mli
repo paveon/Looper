@@ -15,6 +15,7 @@ type t =
   | ConfigChecksBetweenMarkers
   | ConfigImpactAnalysis
   | Cost
+  | Looper
   | Eradicate
   | FragmentRetainsView
   | ImmutableCast

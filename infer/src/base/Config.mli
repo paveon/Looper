@@ -352,6 +352,8 @@ val icfg_dotty_outfile : string option
 
 val impurity_report_immutable_modifications : bool
 
+val disable_vfg_renaming : bool
+
 val incremental_analysis : bool
 
 val infer_is_clang : bool

@@ -142,6 +142,18 @@ module ReportSummary = struct
   end)
 end
 
+module LooperSummary = struct
+  type t = {loc: Location.t; looper_opt: LooperSummary.t option}
+
+  let of_full_summary (f : full_summary) =
+    ({loc= get_loc f; looper_opt= f.payloads.Payloads.looper} : t)
+
+
+  module SQLite = SqliteUtils.MarshalledDataNOTForComparison (struct
+    type nonrec t = t
+  end)
+end
+
 module AnalysisSummary = struct
   include struct
     (* ignore dead modules added by @@deriving fields *)
@@ -278,10 +290,12 @@ module OnDisk = struct
     add proc_name summary ;
     let analysis_summary = AnalysisSummary.of_full_summary summary in
     let report_summary = ReportSummary.of_full_summary summary in
+    let looper_summary = LooperSummary.of_full_summary summary in
     DBWriter.store_spec ~proc_uid:(Procname.to_unique_id proc_name)
       ~proc_name:(Procname.SQLite.serialize proc_name)
       ~analysis_summary:(AnalysisSummary.SQLite.serialize analysis_summary)
       ~report_summary:(ReportSummary.SQLite.serialize report_summary)
+      ~looper_summary:(LooperSummary.SQLite.serialize looper_summary)
 
 
   let store_analyzed summary = store {summary with status= Status.Analyzed}
@@ -346,6 +360,21 @@ module OnDisk = struct
              f proc_name loc cost_opt config_impact_opt err_log )
 
 
+  let iter_filtered_looper_summaries ~filter ~f =
+    let db = ResultsDatabase.get_database () in
+    let dummy_source_file = SourceFile.invalid __FILE__ in
+    (* NB the order is deterministic, but it is over a serialised value, so it is arbitrary *)
+    Sqlite3.prepare db "SELECT proc_name, looper_summary FROM specs ORDER BY proc_uid ASC"
+    |> Container.iter ~fold:(SqliteUtils.result_fold_rows db ~log:"iter over filtered specs")
+         ~f:(fun stmt ->
+           let proc_name = Sqlite3.column stmt 0 |> Procname.SQLite.deserialize in
+           if filter dummy_source_file proc_name then
+             let ({loc; looper_opt} : LooperSummary.t) =
+               Sqlite3.column stmt 1 |> LooperSummary.SQLite.deserialize
+             in
+             f proc_name loc looper_opt )
+
+
   let make_filtered_iterator_from_config ~iter ~f =
     let filter =
       if Option.is_some Config.procedures_filter then Lazy.force Filtering.procedures_filter
@@ -356,6 +385,9 @@ module OnDisk = struct
 
   let iter_report_summaries_from_config ~f =
     make_filtered_iterator_from_config ~iter:iter_filtered_report_summaries ~f
+
+  let iter_looper_summaries_from_config ~f =
+    make_filtered_iterator_from_config ~iter:iter_filtered_looper_summaries ~f
 
 
   let iter_specs_from_config ~f = make_filtered_iterator_from_config ~iter:iter_filtered_specs ~f

@@ -53,6 +53,7 @@ let specs_schema prefix =
         , proc_name BLOB NOT NULL
         , analysis_summary BLOB NOT NULL
         , report_summary BLOB NOT NULL
+        , looper_summary BLOB NOT NULL
         )
     |}
     prefix

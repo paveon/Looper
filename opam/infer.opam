@@ -53,6 +53,7 @@ depends: [
   "xmlm" {>="1.2.0"}
   "yojson" {>="1.7.0"}
   "zarith" {>="1.7"}
+  "why3"
 ]
 depexts: [
   [ ["ubuntu"] ["default-jdk"] ]

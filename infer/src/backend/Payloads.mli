@@ -20,6 +20,7 @@ include sig
     ; config_checks_between_markers: ConfigChecksBetweenMarkers.Summary.t option
     ; config_impact_analysis: ConfigImpactAnalysis.Summary.t option
     ; cost: CostDomain.summary option
+    ; looper: LooperSummary.t option
     ; lab_resource_leaks: ResourceLeakDomain.summary option
     ; dotnet_resource_leaks: ResourceLeakCSDomain.summary option
     ; litho_required_props: LithoDomain.summary option

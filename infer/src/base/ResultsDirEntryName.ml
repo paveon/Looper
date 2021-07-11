@@ -30,6 +30,7 @@ type id =
   | RacerDIssues
   | ReportConfigImpactJson
   | ReportCostsJson
+  | ReportLooperJson
   | ReportHtml
   | ReportJson
   | ReportText
@@ -153,6 +154,11 @@ let of_id = function
       ; before_caching_capture= Delete }
   | ReportCostsJson ->
       { rel_path= "costs-report.json"
+      ; kind= File
+      ; before_incremental_analysis= Delete
+      ; before_caching_capture= Delete }
+  | ReportLooperJson ->
+      { rel_path= "looper-report.json"
       ; kind= File
       ; before_incremental_analysis= Delete
       ; before_caching_capture= Delete }

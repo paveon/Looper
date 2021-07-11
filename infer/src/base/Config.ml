@@ -2602,6 +2602,11 @@ and uninit_interproc =
   CLOpt.mk_bool ~long:"uninit-interproc" "Run uninit check in the experimental interprocedural mode"
 
 
+and disable_vfg_renaming =
+  CLOpt.mk_bool ~long:"disable-vfg-renaming" ~default:false
+    "Disable variable renaming based on VFG"
+
+
 and incremental_analysis =
   CLOpt.mk_bool ~long:"incremental-analysis" ~default:false
     "[EXPERIMENTAL] Use incremental analysis for changed files. Not compatible with \
@@ -3175,6 +3180,8 @@ and impurity_report_immutable_modifications = !impurity_report_immutable_modific
 and inclusive_cost = !inclusive_cost
 
 and incremental_analysis = !incremental_analysis
+
+and disable_vfg_renaming = !disable_vfg_renaming
 
 and issues_tests = !issues_tests
 

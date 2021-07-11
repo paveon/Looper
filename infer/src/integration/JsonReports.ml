@@ -325,6 +325,39 @@ end
 
 module JsonConfigImpactPrinter = MakeJsonListPrinter (JsonConfigImpactPrinterElt)
 
+
+type json_looper_printer_typ =
+  {loc: Location.t; proc_name: Procname.t; looper_opt: LooperSummary.t option}
+
+module JsonLooperPrinter = MakeJsonListPrinter (struct
+  type elt = json_looper_printer_typ
+
+  let to_string {loc; proc_name; looper_opt} = match looper_opt with
+    | Some looper_summary -> (
+      let return_bound_opt = match looper_summary.return_bound with 
+      | Some return_bound -> Some (EdgeExp.to_string return_bound)
+      | None -> None
+      in
+      let total_bound = LooperSummary.total_bound looper_summary.bounds in
+      let bound_info : Jsonbug_t.bound_info = { 
+        bound= EdgeExp.to_string total_bound; return_bound = return_bound_opt}
+      in
+
+      let file = SourceFile.to_rel_path loc.Location.file in
+      let looper_item : Jsonbug_t.looper_item = { 
+        hash= compute_hash ~severity:"" ~bug_type:"" ~proc_name ~file ~qualifier:"";
+        loc= {file; lnum= loc.Location.line; cnum= loc.Location.col; enum= -1};
+        procedure_name= Procname.get_method proc_name;
+        procedure_id= procedure_id_of_procname proc_name;
+        bounds= bound_info 
+      }
+      in
+      Some (Jsonbug_j.string_of_looper_item looper_item) 
+    )
+    | None -> None
+end)
+
+
 let is_in_changed_files {Location.file} =
   match SourceFile.read_config_changed_files () with
   | None ->
@@ -351,6 +384,8 @@ let write_costs proc_name loc cost_opt (outfile : Utils.outfile) =
   if (not (Cost.is_report_suppressed proc_name)) && is_in_changed_files loc then
     JsonCostsPrinter.pp outfile.fmt {loc; proc_name; cost_opt}
 
+let write_looper proc_name loc looper_opt (outfile : Utils.outfile) =
+  JsonLooperPrinter.pp outfile.fmt {loc; proc_name; looper_opt}
 
 let get_all_config_fields () =
   lazy
@@ -413,7 +448,13 @@ let process_all_summaries_and_issues ~issues_outf ~costs_outf ~config_impact_out
   ()
 
 
-let write_reports ~issues_json ~costs_json ~config_impact_json =
+let process_all_looper_summaries ~looper_outf =
+  Summary.OnDisk.iter_looper_summaries_from_config ~f:(fun proc_name loc looper_opt ->
+    write_looper proc_name loc looper_opt looper_outf;
+  )
+
+
+let write_reports ~issues_json ~costs_json ~config_impact_json ~looper_json =
   let mk_outfile fname =
     match Utils.create_outfile fname with
     | None ->
@@ -436,4 +477,10 @@ let write_reports ~issues_json ~costs_json ~config_impact_json =
   process_all_summaries_and_issues ~issues_outf ~costs_outf ~config_impact_outf ;
   close_fmt_and_outfile config_impact_outf ;
   close_fmt_and_outfile costs_outf ;
-  close_fmt_and_outfile issues_outf
+  close_fmt_and_outfile issues_outf ;
+
+  let looper_outf = mk_outfile looper_json in
+  JsonLooperPrinter.pp_open looper_outf.fmt () ;
+  process_all_looper_summaries ~looper_outf ;
+  JsonLooperPrinter.pp_close looper_outf.fmt () ;
+  Utils.close_outf looper_outf ;

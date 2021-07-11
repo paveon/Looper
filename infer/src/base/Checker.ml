@@ -16,6 +16,7 @@ type t =
   | ConfigChecksBetweenMarkers
   | ConfigImpactAnalysis
   | Cost
+  | Looper
   | Eradicate
   | FragmentRetainsView
   | ImmutableCast
@@ -186,6 +187,17 @@ let config_unsafe checker =
       ; cli_flags= Some {deprecated= []; show_in_help= true}
       ; enabled_by_default= false
       ; activates= [BufferOverrunAnalysis; PurityAnalysis] }
+  | Looper ->
+      { id= "looper"
+      ; kind=
+          UserFacing
+            { title= "Looper"
+            ; markdown_body= "See https://github.com/paveon/Looper/wiki/Looper:-A-Worst-Case-Cost-Analyser"}
+      ; support= supports_clang_and_java
+      ; short_documentation= "Loop complexity analysis."
+      ; cli_flags= Some {deprecated= []; show_in_help= true}
+      ; enabled_by_default= false
+      ; activates= [] }
   | Eradicate ->
       { id= "eradicate"
       ; kind=

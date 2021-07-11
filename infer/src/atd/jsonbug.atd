@@ -152,3 +152,17 @@ type config_impact_item = {
 }
 
 type config_impact_report = config_impact_item list
+
+
+type bound_info = {
+  bound : string;
+  return_bound : string option;
+}
+
+type looper_item = {
+  hash : string;
+  loc : loc;
+  procedure_name : string;
+  procedure_id : string;
+  bounds : bound_info;
+}

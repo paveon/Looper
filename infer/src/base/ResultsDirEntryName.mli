@@ -31,6 +31,7 @@ type id =
   | RacerDIssues  (** directory of issues reported by the RacerD analysis *)
   | ReportConfigImpactJson  (** reports of the config impact analysis *)
   | ReportCostsJson  (** reports of the costs analysis *)
+  | ReportLooperJson  (** reports of the Looper cost analysis *)
   | ReportHtml  (** directory of the HTML report *)
   | ReportJson  (** the main product of the analysis: [report.json] *)
   | ReportText  (** a human-readable textual version of [report.json] *)

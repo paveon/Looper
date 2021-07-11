@@ -198,10 +198,10 @@ module Implementation = struct
       ResultsDatabase.register_statement
         {|
           INSERT OR REPLACE INTO specs
-          VALUES (:proc_uid, :proc_name, :analysis_summary, :report_summary)
+          VALUES (:proc_uid, :proc_name, :analysis_summary, :report_summary, :looper_summary)
         |}
     in
-    fun ~proc_uid ~proc_name ~analysis_summary ~report_summary ->
+    fun ~proc_uid ~proc_name ~analysis_summary ~report_summary ~looper_summary ->
       let proc_uid_hash = String.hash proc_uid in
       IntHash.find_opt specs_overwrite_counts proc_uid_hash
       |> Option.value_map ~default:0 ~f:(( + ) 1)
@@ -216,6 +216,8 @@ module Implementation = struct
           |> SqliteUtils.check_result_code db ~log:"store spec bind analysis_summary" ;
           Sqlite3.bind store_stmt 4 report_summary
           |> SqliteUtils.check_result_code db ~log:"store spec bind report_summary" ;
+          Sqlite3.bind store_stmt 5 looper_summary
+          |> SqliteUtils.check_result_code db ~log:"store spec bind looper_summary" ;
           SqliteUtils.result_unit ~finalize:false ~log:"store spec" db store_stmt )
 
 
@@ -251,7 +253,8 @@ module Command = struct
         { proc_uid: string
         ; proc_name: Sqlite3.Data.t
         ; analysis_summary: Sqlite3.Data.t
-        ; report_summary: Sqlite3.Data.t }
+        ; report_summary: Sqlite3.Data.t
+        ; looper_summary: Sqlite3.Data.t }
     | ReplaceAttributes of
         { proc_uid: string
         ; proc_name: Sqlite3.Data.t
@@ -304,8 +307,8 @@ module Command = struct
         Implementation.mark_all_source_files_stale ()
     | Merge {infer_deps_file} ->
         Implementation.merge infer_deps_file
-    | StoreSpec {proc_uid; proc_name; analysis_summary; report_summary} ->
-        Implementation.store_spec ~proc_uid ~proc_name ~analysis_summary ~report_summary
+    | StoreSpec {proc_uid; proc_name; analysis_summary; report_summary; looper_summary} ->
+        Implementation.store_spec ~proc_uid ~proc_name ~analysis_summary ~report_summary ~looper_summary
     | ReplaceAttributes {proc_uid; proc_name; attr_kind; source_file; proc_attributes; cfg; callees}
       ->
         Implementation.replace_attributes ~proc_uid ~proc_name ~attr_kind ~source_file
@@ -434,8 +437,8 @@ let canonicalize () = perform Vacuum
 
 let reset_capture_tables () = perform ResetCaptureTables
 
-let store_spec ~proc_uid ~proc_name ~analysis_summary ~report_summary =
-  perform (StoreSpec {proc_uid; proc_name; analysis_summary; report_summary})
+let store_spec ~proc_uid ~proc_name ~analysis_summary ~report_summary ~looper_summary =
+  perform (StoreSpec {proc_uid; proc_name; analysis_summary; report_summary; looper_summary})
 
 
 let delete_spec ~proc_uid = perform (DeleteSpec {proc_uid})
