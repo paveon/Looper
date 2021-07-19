@@ -11,6 +11,8 @@ module LTS = LabeledTransitionSystem
 
 let debug_log : ('a, Format.formatter, unit) format -> 'a = fun fmt -> F.fprintf (List.hd_exn !debug_fmt) fmt
 
+let console_log : ('a, F.formatter, unit) format -> 'a = fun fmt -> F.printf fmt
+
 
 type procedure_data = {
   nodes: LTS.NodeSet.t;
@@ -302,13 +304,7 @@ let exec_instr : construction_temp_data -> Sil.instr -> construction_temp_data =
 
     let rec substitute edge_data exp = match exp with
     | EdgeExp.Access access -> LTS.EdgeData.get_assignment_rhs edge_data access
-    | EdgeExp.BinOp (op, lexp, rexp) -> (
-      let lexp, rexp = substitute edge_data lexp, substitute edge_data rexp in
-      match lexp, rexp with
-      | EdgeExp.Const Const.Cint c1, EdgeExp.Const Const.Cint c2 -> 
-        EdgeExp.Const (Const.Cint (EdgeExp.eval_consts op c1 c2))
-      | _ -> exp
-    )
+    | EdgeExp.BinOp (op, lexp, rexp) -> EdgeExp.BinOp (op, substitute edge_data lexp, substitute edge_data rexp)
     | EdgeExp.UnOp (op, subexp, typ) -> EdgeExp.UnOp (op, substitute edge_data subexp, typ)
     | EdgeExp.Call (ret_typ, procname, args, loc) -> (
       let args = List.map args ~f:(fun (arg, typ) -> (substitute edge_data arg, typ)) in
@@ -321,10 +317,15 @@ let exec_instr : construction_temp_data -> Sil.instr -> construction_temp_data =
 
     let args, arg_norms = List.fold args ~init:([], EdgeExp.Set.empty) ~f:(fun (args, norms) (arg, arg_typ) ->
       let arg = EdgeExp.of_exp arg graph_data.ident_map arg_typ graph_data.type_map in
-      debug_log "Simplify argument expression: %a\n" EdgeExp.pp arg;
-      let arg = substitute graph_data.edge_data arg |> EdgeExp.simplify in
-      let arg_norms = EdgeExp.get_accesses arg in
-      (arg, arg_typ) :: args, if Typ.is_int arg_typ then EdgeExp.Set.union arg_norms norms else norms
+      let arg = substitute graph_data.edge_data arg in
+      if Typ.is_int arg_typ then (
+        debug_log "Simplify argument expression: %a\n" EdgeExp.pp arg;
+        let simplified_arg = EdgeExp.simplify arg in
+        let arg_norms = EdgeExp.get_access_exp_set arg in
+        (simplified_arg, arg_typ) :: args, EdgeExp.Set.union arg_norms norms
+      ) else (
+        (arg, arg_typ) :: args, norms
+      )
     )
     in
 
@@ -388,42 +389,53 @@ let exec_node node graph_data =
 
 let rec traverseCFG : Procdesc.t -> Procdesc.Node.t -> Procdesc.NodeSet.t -> construction_temp_data 
   -> (Procdesc.NodeSet.t * construction_temp_data) = 
-  fun proc_desc node visited graph_data -> (
+  fun proc_desc cfg_node visited_cfg_nodes graph_data -> (
+
+  console_log "[Visiting node] %a : %s\n" Procdesc.Node.pp cfg_node (pp_nodekind (Procdesc.Node.get_kind cfg_node));
+
+  let cfg_predecessors = Procdesc.Node.get_preds cfg_node in
+  let cfg_successors = Procdesc.Node.get_succs cfg_node in
+  let in_degree = List.length cfg_predecessors in
+  let out_degree = List.length cfg_successors in
+  console_log "[%a] In-degree: %d, Out-degree: %d\n" Procdesc.Node.pp cfg_node in_degree out_degree;
+
 
   (* TODO: should probably POP loophead from stack if we encounter false branch later on.
     * Otherwise we are accumulating loop heads from previous loops but it doesn't seem to
     * affect the algorithm in any way. *)
-  let is_loop_head = Procdesc.is_loop_head proc_desc node in
+  let is_loop_head = Procdesc.is_loop_head proc_desc cfg_node in
   let is_backedge = if is_loop_head then (
-    debug_log "[LOOP HEAD] %a\n" Procdesc.Node.pp node;
+    debug_log "[LOOP HEAD] %a\n" Procdesc.Node.pp cfg_node;
     match Stack.top graph_data.loophead_stack with
-    | Some last_loophead -> (
-        debug_log "[PREVIOUS LOOP HEAD] %a\n" Procdesc.Node.pp last_loophead;
-        if Procdesc.Node.equal last_loophead node then (
+    | Some last_cfg_loophead -> (
+        debug_log "[PREVIOUS LOOP HEAD] %a\n" Procdesc.Node.pp last_cfg_loophead;
+        if Procdesc.Node.equal last_cfg_loophead cfg_node then (
           let _ = Stack.pop_exn graph_data.loophead_stack in
           true
         ) else (
-          Stack.push graph_data.loophead_stack node;
+          Stack.push graph_data.loophead_stack cfg_node;
           false
         )
     )
     | None -> (
-      Stack.push graph_data.loophead_stack node;
+      Stack.push graph_data.loophead_stack cfg_node;
       false
     )
   ) else false
   in
 
-  if Procdesc.NodeSet.mem node visited then (
-    (* log "[Visited Node] %a : %s\n" Procdesc.Node.pp node (pp_nodekind (Procdesc.Node.get_kind node)); *)
-    let preds = Procdesc.Node.get_preds node in
-    let graph_data = if is_join_node node || List.length preds > 1 then (
+  
+  if Procdesc.NodeSet.mem cfg_node visited_cfg_nodes then (
+    console_log "[%a] Visited\n" Procdesc.Node.pp cfg_node;
+
+    let graph_data = if is_join_node cfg_node || in_degree > 1 then (
       let edge_data = LTS.EdgeData.add_invariants graph_data.edge_data graph_data.locals in
       let edge_data = if is_backedge then LTS.EdgeData.set_backedge edge_data else edge_data in
-      let node = Procdesc.NodeMap.find node graph_data.node_map in
+      console_log "IS_BACKEDGE: %B\n" is_backedge;
+      let lts_node = Procdesc.NodeMap.find cfg_node graph_data.node_map in
       (* log "Mapped node %a\n" LTS.Node.pp node; *)
       (* log "[New edge] %a ---> %a\n" LTS.Node.pp graph_data.last_node LTS.Node.pp node; *)
-      let new_edge = LTS.E.create graph_data.last_node edge_data node in
+      let new_edge = LTS.E.create graph_data.last_node edge_data lts_node in
       let edges = LTS.EdgeSet.add new_edge graph_data.proc_data.edges in
       { graph_data with 
         edge_data = LTS.EdgeData.default;
@@ -432,18 +444,15 @@ let rec traverseCFG : Procdesc.t -> Procdesc.Node.t -> Procdesc.NodeSet.t -> con
     )
     else graph_data
     in
-    (visited, graph_data)
+    (visited_cfg_nodes, graph_data)
   )
   else (
-    let visited = Procdesc.NodeSet.add node visited in
-    (* log "[Node] %a : %s\n" Procdesc.Node.pp node (pp_nodekind (Procdesc.Node.get_kind node)); *)
+    let visited_cfg_nodes = Procdesc.NodeSet.add cfg_node visited_cfg_nodes in
 
-    let preds = Procdesc.Node.get_preds node in
-    let graph_data = if List.length preds > 1 && not is_loop_head then (
+    let graph_data = if in_degree > 1 && not is_loop_head then (
       (* Join node *)
-      let join_node_id = Procdesc.Node.get_id node in
-      let join_node = LTS.Node.Join (Procdesc.Node.get_loc node, join_node_id) in
-      (* log "[New Join] %a\n" LTS.Node.pp join_node; *)
+      let join_node_id = Procdesc.Node.get_id cfg_node in
+      let join_node = LTS.Node.Join (Procdesc.Node.get_loc cfg_node, join_node_id) in
       let edge_data = LTS.EdgeData.add_invariants graph_data.edge_data graph_data.locals in
       let new_edge = LTS.E.create graph_data.last_node edge_data join_node in
       (* log "Locals: %a\n" Pvar.Set.pp graph_data.locals;
@@ -453,24 +462,25 @@ let rec traverseCFG : Procdesc.t -> Procdesc.Node.t -> Procdesc.NodeSet.t -> con
         edge_data = LTS.EdgeData.default;
         locals = AccessSet.diff graph_data.locals (List.hd_exn graph_data.scope_locals);
         scope_locals = List.tl_exn graph_data.scope_locals;
-        node_map = Procdesc.NodeMap.add node join_node graph_data.node_map;
+        node_map = Procdesc.NodeMap.add cfg_node join_node graph_data.node_map;
 
         proc_data = {graph_data.proc_data with 
           nodes = LTS.NodeSet.add join_node graph_data.proc_data.nodes;
           edges = LTS.EdgeSet.add new_edge graph_data.proc_data.edges;
         }
       }
-    ) else graph_data
+    ) else (
+      graph_data
+    )
     in
 
 
     (* Execute node instructions *)
-    let graph_data = exec_node node graph_data in
+    let graph_data = exec_node cfg_node graph_data in
 
-    let successors = Procdesc.Node.get_succs node in
-    let graph_data = if List.length successors > 1 then (
+    let graph_data = if out_degree > 1 then (
       (* Split node, create new DCP prune node *)
-      let branch_node = List.hd_exn successors in
+      let branch_node = List.hd_exn cfg_successors in
       let loc = Procdesc.Node.get_loc branch_node in
       let branch_node_id = Procdesc.Node.get_id branch_node in
       let if_kind = match Procdesc.Node.get_kind branch_node with
@@ -480,10 +490,25 @@ let rec traverseCFG : Procdesc.t -> Procdesc.Node.t -> Procdesc.NodeSet.t -> con
       let prune_node = LTS.Node.Prune (if_kind, loc, branch_node_id) in
       let edge_data = LTS.EdgeData.add_invariants graph_data.edge_data graph_data.locals in
       let new_edge = LTS.E.create graph_data.last_node edge_data prune_node in
-      let node_map = match List.hd preds with
-      | Some pred when Procdesc.is_loop_head proc_desc pred -> Procdesc.NodeMap.add pred prune_node graph_data.node_map
-      | _ -> graph_data.node_map
+
+      let is_pred_loophead = match List.hd cfg_predecessors with
+      | Some pred -> Procdesc.is_loop_head proc_desc pred
+      | _ -> false
       in
+      let node_map = if is_pred_loophead then (
+        let loop_head_node = List.hd_exn cfg_predecessors in
+        console_log "Adding node to map: %a\n" Procdesc.Node.pp loop_head_node;
+        Procdesc.NodeMap.add loop_head_node prune_node graph_data.node_map
+      )
+      else if in_degree > 1 then (
+        (* Check if current node has 2 direct predecessors and 2 direct successors
+         * which would make it merged join + split node *)
+        console_log "Adding node to map: %a\n" Procdesc.Node.pp cfg_node;
+        Procdesc.NodeMap.add cfg_node prune_node graph_data.node_map
+      )
+      else graph_data.node_map
+      in
+
       { graph_data with 
         last_node = prune_node;
         edge_data = LTS.EdgeData.default;
@@ -498,7 +523,7 @@ let rec traverseCFG : Procdesc.t -> Procdesc.Node.t -> Procdesc.NodeSet.t -> con
     else graph_data
     in
 
-    if is_exit_node node then (
+    if is_exit_node cfg_node then (
       let exit_node = LTS.Node.Exit in
       let edge_data = LTS.EdgeData.add_invariants graph_data.edge_data graph_data.locals in
       let new_edge = LTS.E.create graph_data.last_node edge_data exit_node in
@@ -512,14 +537,15 @@ let rec traverseCFG : Procdesc.t -> Procdesc.Node.t -> Procdesc.NodeSet.t -> con
         }
       }
       in
-      (visited, graph_data)
+      (visited_cfg_nodes, graph_data)
     )
     else (
       let last_node = graph_data.last_node in
       let loop_heads = graph_data.loop_heads in
       let locals = graph_data.locals in
       let scope_locals = graph_data.scope_locals in
-      List.fold successors ~init:(visited, graph_data) ~f:(fun (visited, graph_data) next_node ->
+
+      List.fold cfg_successors ~f:(fun (visited_cfg_nodes, graph_data) next_node ->
         let graph_data = { graph_data with
           last_node = last_node;
           loop_heads = loop_heads;
@@ -527,8 +553,8 @@ let rec traverseCFG : Procdesc.t -> Procdesc.Node.t -> Procdesc.NodeSet.t -> con
           scope_locals = scope_locals;
         }
         in
-        traverseCFG proc_desc next_node visited graph_data
-      )
+        traverseCFG proc_desc next_node visited_cfg_nodes graph_data
+      ) ~init:(visited_cfg_nodes, graph_data)
     )
   )
 )
