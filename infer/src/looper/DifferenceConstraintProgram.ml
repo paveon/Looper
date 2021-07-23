@@ -117,27 +117,36 @@ let edge_attributes : E.t -> 'a list = fun (_, edge_data, _) -> (
   let label = if edge_data.backedge then label ^ "[backedge]\n" else label in
   let call_list = List.map (EdgeExp.Set.elements edge_data.calls) ~f:(fun call ->
     match call with
-    | EdgeExp.Call (_, _, _, loc) -> (
-      let call_str = String.substr_replace_all (EdgeExp.to_string call) ~pattern:"\"" ~with_:"\\\"" in
-      F.asprintf "%s : %a" call_str Location.pp loc
-    )
+    | EdgeExp.Call (_, _, _, loc) -> F.asprintf "%s : %a" (EdgeExp.to_string call) Location.pp loc
     | _ -> assert(false)
   ) 
   in
   let calls_str = String.concat ~sep:"\n" call_list in
 
-  match edge_data.edge_type with
+  (* Perform replacement to escape all harmful characters which corrupt dot file *)
+  let label = String.substr_replace_all label ~pattern:"\"" ~with_:"\\\"" |>
+    (* Remove newlines from string arguments of function calls and such to make it more readable *)
+    String.substr_replace_all ~pattern:"\\n" ~with_:""
+  in
+
+  let label = match edge_data.edge_type with
   | GuardedDCP -> (
     let guards = List.map (EdgeExp.Set.elements edge_data.guards) ~f:(fun guard -> F.asprintf "[GUARD] %s > 0" (EdgeExp.to_string guard)) in
     let constraints = List.map (DC.Map.bindings edge_data.constraints) ~f:(fun dc -> (DC.to_string dc)) in
-    let label = F.asprintf "%s\n%s\n%s\n%s" label 
+    F.asprintf "%s\n%s\n%s\n%s" label 
     (String.concat ~sep:"\n" guards) 
-    (String.concat ~sep:"\n" constraints) calls_str in
-    [`Label label; `Color 4711]
+    (String.concat ~sep:"\n" constraints) calls_str
   )
   | DCP -> (
     let constraints = List.map (DC.Map.bindings edge_data.constraints) ~f:(fun dc -> (DC.to_string dc)) in
-    let label = F.asprintf "%s\n%s\n%s" label (String.concat ~sep:"\n" constraints) calls_str in
-    [`Label label; `Color 4711]
+    F.asprintf "%s\n%s\n%s" label (String.concat ~sep:"\n" constraints) calls_str
   )
+  in
+
+  (* Perform replacement to escape all harmful characters which corrupt dot file *)
+  let label = String.substr_replace_all label ~pattern:"\"" ~with_:"\\\"" |>
+    (* Remove newlines from string arguments of function calls and such to make it more readable *)
+    String.substr_replace_all ~pattern:"\\n" ~with_:""
+  in
+  [`Label label; `Color 4711]
 )

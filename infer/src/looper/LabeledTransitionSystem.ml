@@ -325,13 +325,11 @@ let edge_attributes : E.t -> 'a list = fun (_, edge_data, _) -> (
   let label = if edge_data.backedge then label ^ "[backedge]\n" else label in
   let call_list = List.map (EdgeExp.Set.elements edge_data.calls) ~f:(fun call ->
     match call with
-    | EdgeExp.Call (_, _, _, loc) -> (
-      let call_str = String.substr_replace_all (EdgeExp.to_string call) ~pattern:"\"" ~with_:"\\\"" in
-      F.asprintf "%s : %a" call_str Location.pp loc
-    )
+    | EdgeExp.Call (_, _, _, loc) -> F.asprintf "%s : %a" (EdgeExp.to_string call) Location.pp loc
     | _ -> assert(false)
   ) 
   in
+
   let calls_str = String.concat ~sep:"\n" call_list in
   let conditions = List.map (EdgeExp.Set.elements edge_data.conditions) ~f:(fun cond -> EdgeExp.to_string cond) in
   let assignments = List.map (AccessPathMap.bindings edge_data.assignments) ~f:(fun (lhs, rhs) ->
@@ -341,5 +339,12 @@ let edge_attributes : E.t -> 'a list = fun (_, edge_data, _) -> (
   let label = F.asprintf "%s\n%s\n%s\n%s" label (String.concat ~sep:"\n" conditions) 
     (String.concat ~sep:"\n" assignments) calls_str 
   in
+
+  (* Perform replacement to escape all harmful characters which corrupt dot file *)
+  let label = String.substr_replace_all label ~pattern:"\"" ~with_:"\\\"" |>
+    (* Remove newlines from string arguments of function calls and such to make it more readable *)
+    String.substr_replace_all ~pattern:"\\n" ~with_:""
+  in
+
   [`Label label; `Color 4711]
 )
