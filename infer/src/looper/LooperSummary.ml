@@ -3,6 +3,7 @@
 open! IStd
 open LooperUtils
 
+module L = Logging
 module F = Format
 module LTS = LabeledTransitionSystem
 module DCP = DifferenceConstraintProgram
@@ -65,7 +66,7 @@ and transition = {
   src_node: LTS.Node.t;
   dst_node: LTS.Node.t;
   bound: EdgeExp.t;
-  monotony_map: VariableMonotony.t AccessPathMap.t;
+  monotony_map: Monotonicity.t AccessPathMap.t;
   calls: call list
 }
 
@@ -114,25 +115,19 @@ let total_bound transitions =
 
 
 let instantiate (summary : t) args ~upper_bound ~lower_bound tenv active_prover cache =
-  debug_log "\t[Determine monotonicity of argument expressions]\n";
-  let arg_monotonicity_maps = List.map args ~f:(fun (arg_exp, _) -> 
-    EdgeExp.determine_monotony_why3 arg_exp tenv active_prover
-  )
-  in
-
   let maximize_argument_exp arg_exp arg_monotonicity_map cache =
     (* Bound increases with the increasing value of this parameter.
       * Maximize value of the argument expression *)
     let evaluated_arg, (cache_acc : cache) = EdgeExp.map_accesses arg_exp ~f:(fun arg_access cache_acc ->
       let var_monotony = AccessPathMap.find arg_access arg_monotonicity_map in
       match var_monotony with
-      | VariableMonotony.NonDecreasing -> (
+      | Monotonicity.NonDecreasing -> (
         upper_bound (EdgeExp.Access arg_access) cache_acc
       )
-      | VariableMonotony.NonIncreasing -> (
+      | Monotonicity.NonIncreasing -> (
         lower_bound (EdgeExp.Access arg_access) cache_acc
       )
-      | VariableMonotony.NotMonotonic -> assert(false);
+      | Monotonicity.NotMonotonic -> assert(false);
     ) cache
     in
     evaluated_arg, cache_acc
@@ -145,13 +140,13 @@ let instantiate (summary : t) args ~upper_bound ~lower_bound tenv active_prover 
     let evaluated_arg, cache_acc = EdgeExp.map_accesses arg_exp ~f:(fun arg_access cache_acc ->
       let var_monotony = AccessPathMap.find arg_access arg_monotonicity_map in
       match var_monotony with
-      | VariableMonotony.NonDecreasing -> (
+      | Monotonicity.NonDecreasing -> (
         lower_bound (EdgeExp.Access arg_access) cache_acc
       )
-      | VariableMonotony.NonIncreasing -> (
+      | Monotonicity.NonIncreasing -> (
         upper_bound (EdgeExp.Access arg_access) cache_acc
       )
-      | VariableMonotony.NotMonotonic -> assert(false);
+      | Monotonicity.NotMonotonic -> assert(false);
     ) cache
     in
     evaluated_arg, cache_acc
@@ -160,55 +155,99 @@ let instantiate (summary : t) args ~upper_bound ~lower_bound tenv active_prover 
 
   let evaluate_bound_argument formal_access_base formal_monotonicity arg_exp arg_monotonicity_map cache =           
     match formal_monotonicity with
-    | VariableMonotony.NonDecreasing -> (
+    | Monotonicity.NonDecreasing -> (
       (* Bound increases with the increasing value of this parameter.
         * Maximize value of the argument expression *)
-      debug_log "[%a] Non decreasing, maximize arg value\n" AccessPath.pp_base formal_access_base;
-      debug_log "[%a] Argument: %a\n" AccessPath.pp_base formal_access_base EdgeExp.pp arg_exp;
+      debug_log "Formal monotonicity: non-decreasing@,Goal: maximize argument value@,";
+      debug_log "Argument: %a@," EdgeExp.pp arg_exp;
       let evaluated_arg, cache_acc = maximize_argument_exp arg_exp arg_monotonicity_map cache in
-      debug_log "[%a] Evaluated argument: %a\n" AccessPath.pp_base formal_access_base EdgeExp.pp evaluated_arg;
+      debug_log "Evaluated argument: %a@," EdgeExp.pp evaluated_arg;
       evaluated_arg, cache_acc
     )
-    | VariableMonotony.NonIncreasing -> (
+    | Monotonicity.NonIncreasing -> (
       (* Bound decreases with the increasing value of this parameter.
         * Minimize value of the argument expression *)
-      debug_log "[%a] Non increasing, minimize arg value\n" AccessPath.pp_base formal_access_base;
-      debug_log "[%a] Argument: %a\n" AccessPath.pp_base formal_access_base EdgeExp.pp arg_exp;
+      debug_log "Formal monotonicity: non-increasing@,Goal: minimize argument value@,";
+      debug_log "Argument: %a@," EdgeExp.pp arg_exp;
       let evaluated_arg, cache_acc = minimize_arg_exp arg_exp arg_monotonicity_map cache in
-      debug_log "[%a] Evaluated argument: %a\n" AccessPath.pp_base formal_access_base EdgeExp.pp evaluated_arg;
+      debug_log "Evaluated argument: %a@," EdgeExp.pp evaluated_arg;
       evaluated_arg, cache_acc
     )
-    | VariableMonotony.NotMonotonic -> (
-      debug_log "[%a] Not monotonic\n" AccessPath.pp_base formal_access_base;
-      debug_log "[%a] Argument: %a\n" AccessPath.pp_base formal_access_base EdgeExp.pp arg_exp;
+    | Monotonicity.NotMonotonic -> (
+      debug_log "Formal monotonicity: not monotonic@,";
+      debug_log "Argument: %a@," EdgeExp.pp arg_exp;
       assert(false);
     )
   in
 
 
-  let instantiate_bound bound monotony_map cache = EdgeExp.map_accesses bound ~f:(fun formal_access cache_acc ->
-    let formal_access_base : AccessPath.base = fst formal_access in
-    let formal_idx = Option.value_exn (FormalMap.get_formal_index formal_access_base summary.formal_map) in
-    let arg_exp = List.nth_exn args formal_idx |> fst in
-    let arg_monotonicity_map = List.nth_exn arg_monotonicity_maps formal_idx in
-    match AccessPathMap.find_opt formal_access monotony_map with
-    | Some formal_monotony -> (
-      evaluate_bound_argument formal_access_base formal_monotony arg_exp arg_monotonicity_map cache_acc
-    )
-    | None -> assert(false);
-  ) cache
+  let instantiate_bound bound formals_monotonicity_map arg_monotonicity_maps cache =
+    debug_log "@[<v2>[Instantiating bound] %a@," EdgeExp.pp bound;
+    debug_log "@[<v2>[Formals monotonicity map]@,";
+    AccessPathMap.iter (fun access monotonicity ->
+      match monotonicity with
+      | Monotonicity.NonDecreasing -> debug_log "%a: Non-decreasing@," AccessPath.pp access
+      | Monotonicity.NonIncreasing -> debug_log "%a: Non-increasing@," AccessPath.pp access
+      | Monotonicity.NotMonotonic -> debug_log "%a: Not monotonic@," AccessPath.pp access
+    ) formals_monotonicity_map;
+    debug_log "@]@,";
+
+    debug_log "@[<v2>[Min-maxing formal bound variables]@,";
+    let instantiated_bound = EdgeExp.map_accesses bound ~f:(fun formal_access cache_acc ->
+      debug_log "Mapping formal access: %a@," AccessPath.pp formal_access;
+      let formal_access_base : AccessPath.base = fst formal_access in
+      let formal_idx = Option.value_exn (FormalMap.get_formal_index formal_access_base summary.formal_map) in
+      let arg_exp, arg_typ = List.nth_exn args formal_idx in
+      let arg_monotonicity_map_opt = List.nth_exn arg_monotonicity_maps formal_idx in
+      match arg_monotonicity_map_opt with
+      | Some arg_monotonicity_map -> (
+        match AccessPathMap.find_opt formal_access formals_monotonicity_map with
+        | Some formal_monotony -> (
+          evaluate_bound_argument formal_access_base formal_monotony arg_exp arg_monotonicity_map cache_acc
+        )
+        | None -> L.die InternalError 
+          "[Summary Instantiation] Missing monotonicity \
+          information for formal parameter: %a" AccessPath.pp formal_access;
+      )
+      | None when EdgeExp.is_const arg_exp -> arg_exp, cache
+      | None -> (
+        (* Not an integer argument, should not appear in a bound expression *)
+        L.die InternalError 
+          "Non-integer argument '%a' substitution in bound expression. Typ: %a"
+          EdgeExp.pp arg_exp Typ.(pp Pp.text) arg_typ;
+      )
+    ) cache
+    in
+    debug_log "@]@,";
+    instantiated_bound
   in
 
 
-  let rec instantiate_transition_summary (transition : transition) cache =
-    let bound, cache = if EdgeExp.is_const transition.bound then transition.bound, cache
-    else instantiate_bound transition.bound transition.monotony_map cache
+  let rec instantiate_transition_summary (transition : transition) arg_monotonicity_maps cache =
+    debug_log "@[<v2>[Instantiating transition summary] %a ---> %a@," 
+      LTS.Node.pp transition.src_node
+      LTS.Node.pp transition.dst_node;
+    
+    debug_log "Summary TB: %a@," EdgeExp.pp transition.bound;
+    let bound, cache = if EdgeExp.is_const transition.bound then (
+      debug_log "Constant TB, skipping instantiation...@,";
+      transition.bound, cache
+    )
+    else (
+      instantiate_bound transition.bound transition.monotony_map arg_monotonicity_maps cache
+    )
+    in
+
+    let bound_monotony_map = if EdgeExp.is_const bound then AccessPathMap.empty
+    else EdgeExp.determine_monotonicity bound tenv active_prover
     in
 
     let calls, cache = List.fold transition.calls ~f:(fun (calls_acc, cache) (call : call) ->
       let call_transitions, cache = List.fold call.bounds ~init:([], cache)
       ~f:(fun (call_transitions, cache) (call_transition : transition) ->
-        let instantiated_call_transition, cache = instantiate_transition_summary call_transition cache in
+        let instantiated_call_transition, cache = 
+          instantiate_transition_summary call_transition arg_monotonicity_maps cache
+        in
         instantiated_call_transition :: call_transitions, cache
       )
       in
@@ -218,16 +257,36 @@ let instantiate (summary : t) args ~upper_bound ~lower_bound tenv active_prover 
     let transition = { transition with 
       bound;
       calls;
-      monotony_map = EdgeExp.determine_monotony_why3 bound tenv active_prover
-    } in
+      monotony_map = bound_monotony_map
+    } 
+    in
+    debug_log "@]@,";
     transition, cache
   in
 
-  let transitions, new_cache = List.fold summary.bounds ~f:(fun (transitions, cache) (transition : transition) ->
-    let instantiated_transition, cache = instantiate_transition_summary transition cache in
-    instantiated_transition :: transitions, cache
-  ) ~init:([], cache)
+  debug_log "Summary transition count: %d@," (List.length summary.bounds);
+
+  let transitions, new_cache = if List.is_empty summary.bounds then [], cache
+  else (
+    debug_log "@[<v2>[Determine monotonicity of argument expressions]@,";
+    let arg_monotonicity_maps = List.map args ~f:(fun (arg_exp, arg_typ) ->
+      if Typ.is_int arg_typ && (EdgeExp.is_const arg_exp |> not)
+      then Some (EdgeExp.determine_monotonicity arg_exp tenv active_prover)
+      else None
+    )
+    in
+    debug_log "@]@,Monotonicities established@,";
+
+    debug_log "Summary transition count: %d@," (List.length summary.bounds);
+    List.fold summary.bounds ~f:(fun (transitions, cache) (transition : transition) ->
+      let instantiated_transition, cache = 
+        instantiate_transition_summary transition arg_monotonicity_maps cache
+      in
+      instantiated_transition :: transitions, cache
+    ) ~init:([], cache)
+  )
   in
+  debug_log "Summary instantiated";
   transitions, new_cache
 
 

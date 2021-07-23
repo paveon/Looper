@@ -79,7 +79,7 @@ let of_int32 value = Const (Const.Cint (IntLit.of_int32 value))
 let of_int64 value = Const (Const.Cint (IntLit.of_int64 value))
 
 let is_zero = function 
-  | Const const -> Const.iszero_int_float const 
+  | Const const
   | UnOp (Unop.Neg, Const const, _) -> Const.iszero_int_float const
   | _ -> false
 
@@ -160,7 +160,13 @@ let try_eval op e1 e2 = match e1, e2 with
   | _ -> BinOp (op, e1, e2)
 
 
-let rec evaluate exp value_map default_value = match exp with
+let rec evaluate exp value_map default_value = 
+  let eval_min_max args f =
+    let values = List.map args ~f:(fun arg -> evaluate arg value_map default_value) in
+    Option.value_exn (f values ~compare:Float.compare)
+  in
+
+  match exp with
   | Access path -> (
     match AccessPathMap.find_opt path value_map with
     | Some value -> value
@@ -178,14 +184,8 @@ let rec evaluate exp value_map default_value = match exp with
     | _ -> assert(false)
   )
   | UnOp (Unop.Neg, subexp, _) -> -.(evaluate subexp value_map default_value)
-  | Max args -> (
-    let values = List.map args ~f:(fun arg -> evaluate arg value_map default_value) in
-    Option.value_exn (List.max_elt values ~compare:Float.compare)
-  )
-  | Min args -> (
-    let values = List.map args ~f:(fun arg -> evaluate arg value_map default_value) in
-    Option.value_exn (List.min_elt values ~compare:Float.compare)
-  )
+  | Max args -> eval_min_max args List.max_elt
+  | Min args -> eval_min_max args List.min_elt
   | _ -> assert(false)
 
 
@@ -245,7 +245,7 @@ let split_exp exp =
 let merge_exp_parts parts = Option.value (List.reduce parts ~f:(fun lhs rhs -> 
   match lhs, rhs with
   | UnOp (Unop.Neg, _, _), UnOp (Unop.Neg, rsubexp, _) -> try_eval (Binop.MinusA None) lhs rsubexp
-  | _, UnOp (Unop.Neg, rsubexp, _) -> try_eval (Binop.MinusA None) lhs rsubexp
+  | _ , UnOp (Unop.Neg, rsubexp, _) -> try_eval (Binop.MinusA None) lhs rsubexp
   | UnOp (Unop.Neg, lsubexp, _), _ -> try_eval (Binop.MinusA None) rhs lsubexp
   | _ -> try_eval (Binop.PlusA None) lhs rhs
   )) ~default:zero
@@ -269,13 +269,17 @@ let rec separate exp =
         | Binop.MinusA typ, Binop.MinusA _ -> lexp_derived, rexp_derived, Some (Binop.MinusA typ, IntLit.add r_const l_const)
         | Binop.Shiftrt, Binop.PlusA _ -> merge lexp_derived l_const_opt, rexp_derived, Some (Binop.PlusA None, r_const)
         | _ -> (
-        (* debug_log "lop: %s, rop: %s\n" (Binop.str Pp.text l_op) (Binop.str Pp.text r_op); *)
-        assert(false)
+          (* debug_log "lop: %s, rop: %s\n" (Binop.str Pp.text l_op) (Binop.str Pp.text r_op); *)
+          assert(false)
         )
       )
       | Some (l_op, l_const), None -> (
         match l_op with
         | Binop.PlusA _ | Binop.MinusA _ -> lexp_derived, rexp_derived, Some (l_op, l_const)
+        | Binop.Shiftrt -> (
+          (* [(lexp >> l_const) + rexp] no way to go, merge l_const back to lexp *)
+          merge lexp_derived l_const_opt, rexp_derived, None
+        )
         | _ -> assert(false)
       )
       | None, Some (r_op, r_const) -> (
@@ -387,11 +391,17 @@ let rec separate exp =
         | Binop.Shiftlt -> (
           try_eval op lexp_derived rexp_derived, const_part
         )
+        | Binop.PlusPI
+        | Binop.MinusPI
+        | Binop.MinusPP -> (
+          (* TODO: Should we handle pointer arithmetic differently? *)
+          try_eval op lexp_derived rexp_derived, const_part
+        )
         | _ -> (
           debug_log "%a %s %a\n" pp lexp_derived (Binop.str Pp.text op) pp rexp_derived;
           match const_part with
           | Some (const_op, rhs_const) -> (
-            debug_log "Const part: %s %a\n" (Binop.str Pp.text const_op) IntLit.pp rhs_const;
+            (* debug_log "Const part: %s %a\n" (Binop.str Pp.text const_op) IntLit.pp rhs_const; *)
             assert(false)
           )
           | None -> assert(false)
@@ -524,9 +534,11 @@ let rec expand_multiplication exp const_opt =
   )
   | BinOp (Binop.Div, lexp, rexp) -> process_div lexp rexp const_opt
   | BinOp (Binop.Shiftrt, lexp, Const (Const.Cint power_value)) -> (
+    let lexp = expand_multiplication lexp const_opt in
+    BinOp (Binop.Shiftrt, lexp, Const (Const.Cint power_value))
     (* Transform to division *)
-    let divisor = IntLit.of_int (Int.pow 2 (IntLit.to_int_exn power_value)) in
-    process_div lexp (Const (Const.Cint divisor)) const_opt
+    (* let divisor = IntLit.of_int (Int.pow 2 (IntLit.to_int_exn power_value)) in
+    process_div lexp (Const (Const.Cint divisor)) const_opt *)
   )
   | BinOp (Binop.Shiftrt, lexp, rexp) -> (
     match const_opt with
@@ -547,12 +559,12 @@ let rec expand_multiplication exp const_opt =
 
 
 let simplify exp = 
-  debug_log "[Simplify] Before: %a\n" pp exp;
+  (* debug_log "@[<v2>[Simplify] %a@," pp exp; *)
   let expanded_exp = expand_multiplication exp None in
-  debug_log "[Simplify] After expansion: %a\n" pp expanded_exp;
+  (* debug_log "Expanded: %a@," pp expanded_exp; *)
   let non_const_part, const_opt = separate expanded_exp in
   let simplified_exp = merge non_const_part const_opt in
-  debug_log "[Simplify] After: %a\n" pp simplified_exp;
+  (* debug_log "Simplified: %a@]@," pp simplified_exp; *)
   simplified_exp
 
 
@@ -630,8 +642,10 @@ let access_path_id_resolver ident_map var = match var with
   | Var.ProgramVar _ -> assert(false)
 
 
-let rec of_exp exp ident_map typ type_map =   
-  match exp with
+let rec of_exp exp ident_map typ type_map =
+  let original_exp = exp in
+
+  let aux exp = match exp with
   | Exp.BinOp (op, lexp, rexp) -> (
     let lexp = of_exp lexp ident_map typ type_map in
     let rexp = of_exp rexp ident_map typ type_map in
@@ -643,7 +657,20 @@ let rec of_exp exp ident_map typ type_map =
   | Exp.UnOp (op, sub_exp, _) -> UnOp (op, of_exp sub_exp ident_map typ type_map, Some typ)
   | Exp.Var ident -> Ident.Map.find ident ident_map
   | Exp.Cast (_, exp) -> of_exp exp ident_map typ type_map
-  | Exp.Lvar pvar -> Access (AccessPath.of_pvar pvar (PvarMap.find pvar type_map))
+  | Exp.Lvar pvar -> (
+    let pvar_typ = match PvarMap.find_opt pvar type_map with
+    | Some typ -> typ
+    | None -> (
+      (* A little hack-around. As far as I know, there is currently no way to query the type
+       * of a global, let alone query which global variables exists at all. This case occurs
+       * when there is a global variable used as a function argument and it was not used anywhere
+       * else before that -> we dont have the type information in our type_map. *)
+      if Exp.equal exp original_exp then typ
+      else L.die InternalError "[EdgeExp.of_exp] Missing type information for Pvar '%a'" Pvar.(pp Pp.text) pvar;
+    )
+    in
+    Access (AccessPath.of_pvar pvar pvar_typ)
+  )
   | Exp.Const const -> Const const
   | Exp.Sizeof {nbytes} -> (
     match nbytes with
@@ -658,6 +685,8 @@ let rec of_exp exp ident_map typ type_map =
     Access access
   )
   | _ -> L.(die InternalError)"[EdgeExp.of_exp] Unsupported expression %a!" Exp.pp exp
+  in
+  aux exp
 
 
 let why3_get_vsymbol name (prover_data : prover_data) = 
@@ -870,16 +899,21 @@ let rec always_positive_why3 exp tenv (prover_data : prover_data) =
   )
 
 
-let get_accesses exp =
+let get_accesses_poly exp set ~f ~g =
   let rec aux exp set = match exp with
-  | Access _ -> Set.add exp set
+  | Access access -> f (g access) set
   | BinOp (_, lexp, rexp) -> aux rexp (aux lexp set)
   | UnOp (_, exp, _) -> aux exp set
   | Max args -> List.fold args ~init:set ~f:(fun acc arg -> aux arg acc)
   | Min args -> List.fold args ~init:set ~f:(fun acc arg -> aux arg acc)
   | _ -> set
   in
-  aux exp Set.empty
+  aux exp set
+
+
+let get_accesses exp = get_accesses_poly exp AccessSet.empty ~f:AccessSet.add ~g:(fun x -> x)
+
+let get_access_exp_set exp = get_accesses_poly exp Set.empty ~f:Set.add ~g:(fun x -> Access x)
 
 
 (* TODO: rewrite/get rid of *)
@@ -1000,7 +1034,9 @@ let normalize_condition exp tenv =
   BinOp (op, lexp, rexp)
 
 
-let determine_monotony_why3 exp tenv (prover_data : prover_data) =
+let determine_monotonicity exp tenv (prover_data : prover_data) =
+  debug_log "@[<v2>[Determining monotonicity] %a@," pp exp;
+
   (* Basically expands two brackets and multiplies its terms *)
   let multiply_exps lexp_parts rexp_parts = List.fold lexp_parts ~init:[] ~f:(fun acc lexp ->
     List.fold rexp_parts ~init:acc ~f:(fun acc rexp ->
@@ -1021,15 +1057,15 @@ let determine_monotony_why3 exp tenv (prover_data : prover_data) =
   )
   in
 
-
-  debug_log "[Pre-transform] %a\n" pp exp;
   let transformed, conditions = transform_shifts exp in
-  let simplified = simplify transformed in
-  debug_log "[Simplified]\n%a\n" pp simplified;
-  debug_log "[Conditions]\n";
-  Set.iter (fun condition -> debug_log "\t%a\n" pp condition) conditions;
+  debug_log "@[<v2>[Transforming shifts]@,Result: %a@," pp transformed;
+  if Set.is_empty conditions |> not then (
+    debug_log "Value conditions: ";
+    Set.iter (fun condition -> debug_log "%a@ " pp condition) conditions;
 
-  let variables = get_accesses simplified in
+  );
+  let simplified = simplify transformed in
+  debug_log "@]@,[Simplified] %a@," pp simplified;
 
   let rec partial_derivative exp var is_root = match exp with
   | BinOp (Binop.Div, lexp, rexp) -> (
@@ -1073,7 +1109,7 @@ let determine_monotony_why3 exp tenv (prover_data : prover_data) =
   | _ -> (
     let rec get_degree exp root = match exp with
     | Const _ -> 0, Some exp
-    | Access _ -> if equal exp var then 1, None else 0, Some exp
+    | Access access -> if AccessPath.equal access var then 1, None else 0, Some exp
     | UnOp (Unop.Neg, subexp, typ) -> (
       assert(root);
       let degree, remainder_opt = get_degree subexp false in
@@ -1081,22 +1117,22 @@ let determine_monotony_why3 exp tenv (prover_data : prover_data) =
       | Some remainder -> degree, Some remainder
       | None -> degree, Some (UnOp (Unop.Neg, one, typ))
     )
-    | BinOp (Binop.Mult _, (Access _ as lexp), (Access _ as rexp)) -> (
-      match equal lexp var, equal rexp var with
+    | BinOp (Binop.Mult _, (Access l_access), (Access r_access)) -> (
+      match AccessPath.equal l_access var, AccessPath.equal r_access var with
       | true, true -> 2, None
-      | true, false -> 1, Some rexp
-      | false, true -> 1, Some lexp
+      | true, false -> 1, Some (Access r_access)
+      | false, true -> 1, Some (Access l_access)
       | _ -> 0, Some exp
     )
-    | BinOp (Binop.Mult typ, (Access _ as access_exp), subexp)
-    | BinOp (Binop.Mult typ, subexp, (Access _ as access_exp)) -> (
+    | BinOp (Binop.Mult typ, (Access access), subexp)
+    | BinOp (Binop.Mult typ, subexp, (Access access)) -> (
       let subexp_degree, subexp_opt = get_degree subexp false in
 
-      if equal access_exp var then subexp_degree + 1, subexp_opt
+      if AccessPath.equal access var then subexp_degree + 1, subexp_opt
       else (
         match subexp_opt with
-        | Some subexp -> subexp_degree, Some (BinOp (Binop.Mult typ, access_exp, subexp))
-        | None -> subexp_degree, Some access_exp
+        | Some subexp -> subexp_degree, Some (BinOp (Binop.Mult typ, Access access, subexp))
+        | None -> subexp_degree, Some (Access access)
       )
     )
     | BinOp (Binop.Mult typ, lexp, rexp) -> (
@@ -1128,7 +1164,7 @@ let determine_monotony_why3 exp tenv (prover_data : prover_data) =
     | 1 -> Option.value remainder_exp_opt ~default:one
     | _ -> (
       let degree_const = of_int degree in
-      let var_power = create_var_power var (degree - 1) in
+      let var_power = create_var_power (Access var) (degree - 1) in
       match remainder_exp_opt with
       | Some remainder_exp -> (
         let remainder_exp = simplify (BinOp (Binop.Mult None, degree_const, remainder_exp)) in
@@ -1140,22 +1176,15 @@ let determine_monotony_why3 exp tenv (prover_data : prover_data) =
   in
 
   let parts = split_exp simplified in
-  debug_log "[Parts]\n";
-  List.iter parts ~f:(fun exp -> debug_log "  %a\n" pp exp);
+  debug_log "@[[Expression terms]@ ";
+  List.iter parts ~f:(fun exp -> debug_log "%a,@ " pp exp);
+  debug_log "@]@,";
 
   let non_const_parts = List.filter parts ~f:(fun part -> not (is_const part)) in
-  debug_log "[Non-const parts]\n";
-  List.iter non_const_parts ~f:(fun exp -> debug_log "  %a\n" pp exp);
+  debug_log "@[[Non-const terms]@ ";
+  List.iter non_const_parts ~f:(fun exp -> debug_log "%a,@ " pp exp);
+  debug_log "@]@,";
 
-  let derivatives = Set.fold (fun var acc ->
-    let derivative_parts = List.filter_map non_const_parts ~f:(fun part ->
-      let derivative = partial_derivative part var true in
-      if is_zero derivative then None else Some derivative
-    )
-    in
-    Map.add var (merge_exp_parts derivative_parts |> simplify) acc
-  ) variables Map.empty
-  in
 
   let why3_solve_task task =
     let prover_call = Why3.Driver.prove_task ~command:prover_data.prover_conf.command
@@ -1184,40 +1213,44 @@ let determine_monotony_why3 exp tenv (prover_data : prover_data) =
       assert(false)
     )
     | x when x > 0 -> (
-      debug_log "  [Variable: %a] Non-decreasing\n" AccessPath.pp var_access;
-      AccessPathMap.add var_access VariableMonotony.NonDecreasing monotony_map
+      debug_log "Monotonicity: Non-decreasing";
+      AccessPathMap.add var_access Monotonicity.NonDecreasing monotony_map
     )
     | _ -> (
-      debug_log "  [Variable: %a] Non-increasing\n" AccessPath.pp var_access;
-      AccessPathMap.add var_access VariableMonotony.NonIncreasing monotony_map
+      debug_log "Monotonicity: Non-increasing";
+      AccessPathMap.add var_access Monotonicity.NonIncreasing monotony_map
     )
   in
 
+
   let why3_conditions = Set.fold (fun condition acc -> 
-      let cond, _ = to_why3_expr condition tenv prover_data in
-      debug_log "[Why3 Condition] %a\n" Why3.Pretty.print_term cond;      
-      cond :: acc
+    let cond, _ = to_why3_expr condition tenv prover_data in
+    (* debug_log "[Why3 Condition] %a\n" Why3.Pretty.print_term cond; *)
+    cond :: acc
   ) conditions []
   in
 
-  debug_log "[Partial derivatives]\n";
   let zero_const = Why3.Term.t_real_const (Why3.BigInt.of_int 0) in
   let ge_symbol = Why3.Theory.ns_find_ls prover_data.theory.th_export ["infix >="] in
   let le_symbol = Why3.Theory.ns_find_ls prover_data.theory.th_export ["infix <="] in
   let base_task = Why3.Task.use_export None prover_data.theory in
   let nonzero_goal = Why3.Decl.create_prsymbol (Why3.Ident.id_fresh "nonzero_goal") in
 
-  Map.fold (fun var derivative acc ->
-    debug_log "Derivative of %a ---> %a\n" pp var pp derivative;
-    let var_access = match var with
-    | Access path -> path
-    | _ -> assert(false)
+
+  debug_log "@[<v2>[Calculating partial derivatives for non-const terms]@,";
+  let derivative_variables = get_accesses simplified in
+  let monotonicities = AccessSet.fold (fun var_access acc ->
+    debug_log "@[<v2>[Derivation variable: %a]@," AccessPath.pp var_access;
+    let derivative_parts = List.filter_map non_const_parts ~f:(fun part ->
+      let derivative = partial_derivative part var_access true in
+      if is_zero derivative then None else Some derivative
+    )
     in
 
-    if is_const derivative then (
-      debug_log "  [Variable %a] --> Monotonic\n" pp var;
-      check_monotonicity var_access acc
-    )
+    let derivative = merge_exp_parts derivative_parts |> simplify in
+    debug_log "Derivative: %a@," pp derivative;
+
+    let monotonicity = if is_const derivative then check_monotonicity var_access acc
     else (
       let why3_derivative, type_constraints = to_why3_expr derivative tenv prover_data in
       let constraints = Why3.Term.t_and_simp_l ((Why3.Term.Sterm.elements type_constraints) @ why3_conditions) in
@@ -1231,24 +1264,29 @@ let determine_monotony_why3 exp tenv (prover_data : prover_data) =
       let goal_formula = Why3.Term.t_or_simp positive_forall negative_forall in
 
       let task = Why3.Task.add_prop_decl base_task Why3.Decl.Pgoal nonzero_goal goal_formula in
-      debug_log "@[Task formula:@ %a@]@." Why3.Pretty.print_term goal_formula;
+      (* debug_log "@[<v2>[Why3 Info]@,Task formula: %a@,Task: %a@]@," 
+        Why3.Pretty.print_term goal_formula
+        Why3.Driver.(print_task prover_data.driver) task; *)
 
-      debug_log "Task: %a\n" Why3.Driver.(print_task prover_data.driver) task;
-
-      let result = why3_solve_task task in
-
-      match result.pr_answer with
+      match (why3_solve_task task).pr_answer with
       | Why3.Call_provers.Valid -> (
-        debug_log "  [Variable: %a] Root does not exist\n" pp var;
+        debug_log "Derivative does not change sign. Checking monotonicity type@,";
         check_monotonicity var_access acc
       )
       | Why3.Call_provers.Invalid | Why3.Call_provers.Unknown _ -> (
-        debug_log "  [Variable: %a] Root might exist?\n" pp var;
-        AccessPathMap.add var_access VariableMonotony.NotMonotonic acc
+        debug_log "Derivative changes sign. Not monotonic";
+        AccessPathMap.add var_access Monotonicity.NotMonotonic acc
       )
       | _ -> assert(false)
     )
-  ) derivatives AccessPathMap.empty
+    in
+    debug_log "@]@,";
+    monotonicity
+
+  ) derivative_variables AccessPathMap.empty
+  in
+  debug_log "@]@]@,";
+  monotonicities
 
 
 let add e1 e2 = match is_zero e1, is_zero e2 with

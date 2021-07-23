@@ -80,7 +80,9 @@ val to_why3_expr : t -> Tenv.t -> LooperUtils.prover_data -> (Why3.Term.term * W
 
 val always_positive_why3 : t -> Tenv.t -> LooperUtils.prover_data -> bool
 
-val get_accesses: t -> Set.t
+val get_accesses: t -> LooperUtils.AccessSet.t
+
+val get_access_exp_set : t -> Set.t
 
 val map_accesses: t -> f:(AccessPath.t -> 'a -> t * 'a) -> 'a -> t * 'a
 
@@ -88,7 +90,7 @@ val subst : t -> (t * Typ.t) list -> FormalMap.t -> t
 
 val normalize_condition : t -> Tenv.t -> t
 
-val determine_monotony_why3 : t -> Tenv.t -> LooperUtils.prover_data -> LooperUtils.VariableMonotony.t LooperUtils.AccessPathMap.t
+val determine_monotonicity : t -> Tenv.t -> LooperUtils.prover_data -> LooperUtils.Monotonicity.t LooperUtils.AccessPathMap.t
 
 val add : t -> t -> t
 

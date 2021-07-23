@@ -44,7 +44,7 @@ and transition = {
   src_node: LTS.Node.t;
   dst_node: LTS.Node.t;
   bound: EdgeExp.t;
-  monotony_map: LooperUtils.VariableMonotony.t LooperUtils.AccessPathMap.t;
+  monotony_map: LooperUtils.Monotonicity.t LooperUtils.AccessPathMap.t;
   calls: call list
 }
 

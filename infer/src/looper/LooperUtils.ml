@@ -84,7 +84,7 @@ module AccessPathMap = Caml.Map.Make(struct
     let compare = AccessPath.compare
   end)
 
-module VariableMonotony = struct
+module Monotonicity = struct
   type t =
     | NonDecreasing
     | NonIncreasing

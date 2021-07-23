@@ -259,40 +259,63 @@ let exec_instr : construction_temp_data -> Sil.instr -> construction_temp_data =
       }
     )
   )
-  | Load {id; e; typ; loc;} -> (
+  | Load {id; e; typ; loc} -> (
     debug_log "[LOAD] (%a) | %a = %a\n" Location.pp loc Ident.pp id Exp.pp e;
+
+    (* TODO: this is quite legacy, map_ident should probably be recursive... *)
     let map_ident exp = match exp with
     | Exp.Lindex _ -> (
       let accesses = access_of_exp ~include_array_indexes:true exp typ ~f_resolve_id:ap_id_resolver in
       assert (Int.equal (List.length accesses) 1);
       let access = List.hd_exn accesses in
-      Ident.Map.add id (EdgeExp.Access access) graph_data.ident_map
+      Ident.Map.add id (EdgeExp.Access access) graph_data.ident_map,
+      graph_data.type_map
     )
-    | Exp.Lfield (struct_exp, name, _) -> (
+    | Exp.Lfield (struct_exp, name, struct_type) -> (
       match struct_exp with
       | Exp.Var struct_id -> (
         match Ident.Map.find struct_id graph_data.ident_map with
         | EdgeExp.Access path -> (
           let access = AccessPath.FieldAccess name in
           let ext_path = EdgeExp.Access (AccessPath.append path [access]) in
-          Ident.Map.add id ext_path graph_data.ident_map
+          Ident.Map.add id ext_path graph_data.ident_map,
+          graph_data.type_map
         )
-        | _ -> assert(false)
+        | exp -> L.die InternalError "Unexpected root structure expression: %a" EdgeExp.pp exp;
+      )      
+      | Exp.Lvar struct_pvar -> (
+        let access_base = AccessPath.base_of_pvar struct_pvar struct_type in
+        let field_access = AccessPath.FieldAccess name in
+        let full_path : AccessPath.t = access_base, [field_access] in
+        Ident.Map.add id (EdgeExp.Access full_path) graph_data.ident_map,
+        PvarMap.add struct_pvar struct_type graph_data.type_map
       )
-      | _ -> assert(false)
+      | Exp.Cast (result_type, original_exp) -> (
+        debug_log "Result type: %a, original exp: %a\n" Typ.(pp Pp.text) result_type Exp.pp original_exp;
+        L.die InternalError "Unexpected structure expression type: %a. Field: %a, Struct type: %a" 
+          Exp.pp exp Fieldname.pp name Typ.(pp Pp.text) struct_type;
+      )
+      | exp -> (
+        L.die InternalError "Unexpected structure expression type: %a. Field: %a, Struct type: %a" 
+          Exp.pp exp Fieldname.pp name Typ.(pp Pp.text) struct_type;
+      )
     )
     | Exp.Lvar pvar -> (
       let access = EdgeExp.Access (AccessPath.of_pvar pvar typ) in
-      Ident.Map.add id access graph_data.ident_map
+      Ident.Map.add id access graph_data.ident_map,
+      PvarMap.add pvar typ graph_data.type_map
     )
     | Exp.Var rhs_id -> (
       let exp = Ident.Map.find rhs_id graph_data.ident_map in
-      Ident.Map.add id exp graph_data.ident_map
+      Ident.Map.add id exp graph_data.ident_map,
+      graph_data.type_map
     )
     | _ -> L.(die InternalError)"Unsupported LOAD lhs-expression type!"
     in
+    
+    let ident_map, type_map = map_ident e in
+    { graph_data with ident_map; type_map}
 
-    { graph_data with ident_map = map_ident e }
   )
   | Call ((ret_id, ret_typ), Exp.Const (Const.Cfun callee_pname), args, loc, _) -> (
     debug_log "[CALL] (%a) | %a\n" Location.pp loc Procname.pp callee_pname;
@@ -391,13 +414,13 @@ let rec traverseCFG : Procdesc.t -> Procdesc.Node.t -> Procdesc.NodeSet.t -> con
   -> (Procdesc.NodeSet.t * construction_temp_data) = 
   fun proc_desc cfg_node visited_cfg_nodes graph_data -> (
 
-  console_log "[Visiting node] %a : %s\n" Procdesc.Node.pp cfg_node (pp_nodekind (Procdesc.Node.get_kind cfg_node));
+  (* console_log "[Visiting node] %a : %s\n" Procdesc.Node.pp cfg_node (pp_nodekind (Procdesc.Node.get_kind cfg_node)); *)
 
   let cfg_predecessors = Procdesc.Node.get_preds cfg_node in
   let cfg_successors = Procdesc.Node.get_succs cfg_node in
   let in_degree = List.length cfg_predecessors in
   let out_degree = List.length cfg_successors in
-  console_log "[%a] In-degree: %d, Out-degree: %d\n" Procdesc.Node.pp cfg_node in_degree out_degree;
+  (* console_log "[%a] In-degree: %d, Out-degree: %d\n" Procdesc.Node.pp cfg_node in_degree out_degree; *)
 
 
   (* TODO: should probably POP loophead from stack if we encounter false branch later on.
@@ -426,12 +449,12 @@ let rec traverseCFG : Procdesc.t -> Procdesc.Node.t -> Procdesc.NodeSet.t -> con
 
   
   if Procdesc.NodeSet.mem cfg_node visited_cfg_nodes then (
-    console_log "[%a] Visited\n" Procdesc.Node.pp cfg_node;
+    (* console_log "[%a] Visited\n" Procdesc.Node.pp cfg_node; *)
 
     let graph_data = if is_join_node cfg_node || in_degree > 1 then (
       let edge_data = LTS.EdgeData.add_invariants graph_data.edge_data graph_data.locals in
       let edge_data = if is_backedge then LTS.EdgeData.set_backedge edge_data else edge_data in
-      console_log "IS_BACKEDGE: %B\n" is_backedge;
+      (* console_log "IS_BACKEDGE: %B\n" is_backedge; *)
       let lts_node = Procdesc.NodeMap.find cfg_node graph_data.node_map in
       (* log "Mapped node %a\n" LTS.Node.pp node; *)
       (* log "[New edge] %a ---> %a\n" LTS.Node.pp graph_data.last_node LTS.Node.pp node; *)
@@ -497,13 +520,13 @@ let rec traverseCFG : Procdesc.t -> Procdesc.Node.t -> Procdesc.NodeSet.t -> con
       in
       let node_map = if is_pred_loophead then (
         let loop_head_node = List.hd_exn cfg_predecessors in
-        console_log "Adding node to map: %a\n" Procdesc.Node.pp loop_head_node;
+        (* console_log "Adding node to map: %a\n" Procdesc.Node.pp loop_head_node; *)
         Procdesc.NodeMap.add loop_head_node prune_node graph_data.node_map
       )
       else if in_degree > 1 then (
         (* Check if current node has 2 direct predecessors and 2 direct successors
          * which would make it merged join + split node *)
-        console_log "Adding node to map: %a\n" Procdesc.Node.pp cfg_node;
+        (* console_log "Adding node to map: %a\n" Procdesc.Node.pp cfg_node; *)
         Procdesc.NodeMap.add cfg_node prune_node graph_data.node_map
       )
       else graph_data.node_map

@@ -42,6 +42,7 @@ let is_reset dc = not (same_norms dc)
 
 let is_decreasing (_, (_, op, const)) = match op with
   | Binop.PlusA _ -> IntLit.isnegative const
+  | Binop.Shiftrt -> not (IntLit.isnegative const || IntLit.iszero const)
   | _ -> false
 
 
@@ -49,6 +50,7 @@ let is_increasing (_, (_, op, const)) = match op with
   | Binop.PlusA _ -> not (IntLit.isnegative const) && not (IntLit.iszero const)
   | _ -> false
 
+let to_string_const_part (op, rhs_const) = F.asprintf "%a %a" Binop.pp op IntLit.pp rhs_const
 
 let to_string (lhs, (rhs_norm, op, rhs_const)) =
   let rhs_str = if EdgeExp.is_zero rhs_norm then (
@@ -77,6 +79,7 @@ let to_string (lhs, (rhs_norm, op, rhs_const)) =
   in
   F.asprintf "%a' <= %s" EdgeExp.pp lhs rhs_str
 
+let pp_const_part fmt rhs_const = F.fprintf fmt "%s" (to_string_const_part rhs_const)
 
 let pp fmt dc = 
   F.fprintf fmt "%s" (to_string dc)
