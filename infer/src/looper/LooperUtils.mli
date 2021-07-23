@@ -55,7 +55,7 @@ module AccessSet : Caml.Set.S with type elt = AccessPath.t
 
 module AccessPathMap : Caml.Map.S with type key = AccessPath.t
 
-module VariableMonotony : sig
+module Monotonicity : sig
    type t =
    | NonDecreasing
    | NonIncreasing

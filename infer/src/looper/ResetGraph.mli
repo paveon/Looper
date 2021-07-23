@@ -2,6 +2,7 @@
 
 open! IStd
 module F = Format
+module DC = DifferenceConstraint
 module DCP = DifferenceConstraintProgram
 
 
@@ -15,7 +16,7 @@ end
 module Edge : sig
   type t = {
     dcp_edge : DCP.E.t option;
-    const : IntLit.t;
+    const_part : DC.rhs_const
   } [@@deriving compare]
 
   val hash : 'a -> int
@@ -24,7 +25,7 @@ module Edge : sig
 
   val dcp_edge : t -> DCP.E.t
 
-  val make : DCP.E.t -> IntLit.t -> t
+  val make : DCP.E.t -> DC.rhs_const -> t
 end
 
 include module type of Graph.Imperative.Digraph.ConcreteBidirectionalLabeled(Node)(Edge)

@@ -27,7 +27,11 @@ val is_decreasing : t -> bool
 
 val is_increasing : t -> bool
 
+val to_string_const_part : rhs_const -> string
+
 val to_string : t -> string
+
+val pp_const_part : F.formatter -> rhs_const -> unit
     
 val pp : F.formatter -> t -> unit
 

@@ -3,6 +3,7 @@
 open! IStd
 module F = Format
 module LTS = LabeledTransitionSystem
+module DC = DifferenceConstraint
 module DCP = DifferenceConstraintProgram
 
 
@@ -16,14 +17,15 @@ end
 module Edge = struct
   type t = {
     dcp_edge : DCP.E.t option;
-    const : IntLit.t;
+    const_part : DC.rhs_const;
   } [@@deriving compare]
 
   let hash = Hashtbl.hash
   let equal = [%compare.equal: t]
+
   let default = {
     dcp_edge = None;
-    const = IntLit.zero;
+    const_part = Binop.PlusA None, IntLit.zero;
   }
 
   let dcp_edge edge = match edge.dcp_edge with
@@ -32,7 +34,7 @@ module Edge = struct
 
   let make dcp_edge const = {
     dcp_edge = Some dcp_edge;
-    const = const;
+    const_part = const;
   }
 end
 
@@ -43,7 +45,7 @@ type graph = t
 
 let edge_attributes : E.t -> 'a list = fun (_, edge, _) -> (
   let label = match edge.dcp_edge with
-  | Some (src, _, dst) -> F.asprintf "%a -- %a\n%a" LTS.Node.pp src LTS.Node.pp dst IntLit.pp edge.const
+  | Some (src, _, dst) -> F.asprintf "%a -- %a\n%a" LTS.Node.pp src LTS.Node.pp dst DC.pp_const_part edge.const_part
   | None -> ""
   in
   [`Label label; `Color 4711]
@@ -76,8 +78,15 @@ module Chain = struct
 
   let origin chain = E.src (List.hd_exn chain.data)
 
-  let value chain = List.fold chain.data ~init:IntLit.zero 
-    ~f:(fun acc (_, (data : Edge.t), _) -> IntLit.add acc data.const)
+  let value chain = List.fold chain.data ~f:(fun acc (_, (data : Edge.t), _) ->
+      let op, const = data.const_part in
+      match op with
+      | Binop.PlusA _ -> IntLit.add acc const
+      | _ -> (
+        (* TODO: currently unsound due to ignored shifts and other operators *)
+        acc
+      )
+    ) ~init:IntLit.zero
 
   let transitions chain = List.fold chain.data ~init:DCP.EdgeSet.empty 
     ~f:(fun acc (_, (edge_data), _) -> DCP.EdgeSet.add (Edge.dcp_edge edge_data) acc)

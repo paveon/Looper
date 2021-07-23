@@ -188,7 +188,15 @@ module EdgeData = struct
         AccessSet.union lexp_accesses rexp_accesses,
         match lexp_derived_opt, rexp_derived_opt with
         | Some lexp_derived, Some rexp_derived -> (
-          Some (EdgeExp.BinOp (op, lexp_derived, rexp_derived))
+          match op with
+          | Binop.Shiftrt -> (
+            match EdgeExp.is_zero lexp_derived, EdgeExp.is_zero rexp_derived with
+            | true, true
+            | true, false -> Some EdgeExp.zero
+            | false, true -> Some lexp_derived
+            | false, false -> Some (EdgeExp.BinOp (op, lexp_derived, rexp_derived))
+          )
+          | _ -> Some (EdgeExp.BinOp (op, lexp_derived, rexp_derived))
         )
         | Some _, None
         | None, Some _ -> (
@@ -232,8 +240,8 @@ module EdgeData = struct
           let rhs_norm, rhs_const_opt = if EdgeExp.is_zero rhs_norm then (
             match rhs_const_opt with
             | Some (rhs_op, rhs_const) -> (match rhs_op with
-              | Binop.PlusA _ -> (EdgeExp.Const (Const.Cint rhs_const), None)
-              | Binop.MinusA _ -> (EdgeExp.Const (Const.Cint (IntLit.neg rhs_const)), None)
+              | Binop.PlusA _ -> EdgeExp.Const (Const.Cint rhs_const), None
+              | Binop.MinusA _ -> EdgeExp.Const (Const.Cint (IntLit.neg rhs_const)), None
               | _ -> assert(false)
             )
             | None -> (
@@ -267,7 +275,11 @@ module EdgeData = struct
             | None, Some (rhs_op, rhs_const) -> (match rhs_op with
               | Binop.PlusA _ -> DC.make_rhs ~const_part:(rhs_op, rhs_const) norm
               | Binop.MinusA typ_opt -> DC.make_rhs ~const_part:(Binop.PlusA typ_opt, IntLit.neg rhs_const) norm
-              | _ -> assert(false)
+              | Binop.Shiftrt -> DC.make_rhs ~const_part:(rhs_op, rhs_const) norm
+              | _ -> (
+                debug_log "%a' <= %a %a %a\n" EdgeExp.pp lhs_norm EdgeExp.pp rhs_norm Binop.pp rhs_op IntLit.pp rhs_const;
+                assert(false)
+              )
             )
             | _ -> assert(false)
             in
@@ -275,6 +287,7 @@ module EdgeData = struct
             AccessSet.empty, Some dc_rhs, None
           ) 
           else (
+            (* TODO: this is incorrect. If we return rhs_norm which is different from  *)
             let dc_rhs = match rhs_const_opt with
             | Some (rhs_op, rhs_const) -> (
               if EdgeExp.is_variable rhs_norm formals then (
@@ -283,7 +296,8 @@ module EdgeData = struct
                 | Binop.MinusA typ_opt -> DC.make_rhs ~const_part:(Binop.PlusA typ_opt, IntLit.neg rhs_const) rhs_norm
                 | Binop.Shiftrt -> (
                   (* TODO *)
-                  DC.make_rhs merged
+                  (* debug_log "Merged: %a\n" EdgeExp.pp merged; *)
+                  DC.make_rhs ~const_part:(rhs_op, rhs_const) rhs_norm
                 )
                 | _ -> assert(false)
               )
