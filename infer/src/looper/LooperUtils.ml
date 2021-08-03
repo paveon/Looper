@@ -70,19 +70,29 @@ let supported_provers = [
 
 
 module ProverMap = Caml.Map.Make(struct
-    type nonrec t = prover
-    let compare = compare_prover
-  end)
+  type nonrec t = prover
+  let compare = compare_prover
+end)
 
 module AccessSet = Caml.Set.Make(struct
-    type nonrec t = AccessPath.t
-    let compare = AccessPath.compare
-  end)
+  type nonrec t = AccessPath.t
+  let compare = AccessPath.compare
+end)
 
 module AccessPathMap = Caml.Map.Make(struct
-    type nonrec t = AccessPath.t
-    let compare = AccessPath.compare
-  end)
+  type nonrec t = AccessPath.t
+  let compare = AccessPath.compare
+end)
+
+module AccessExpressionSet = Caml.Set.Make(struct
+  type nonrec t = HilExp.access_expression
+  let compare = HilExp.compare_access_expression
+end)
+
+module AccessExpressionMap = Caml.Map.Make(struct
+  type nonrec t = HilExp.access_expression
+  let compare = HilExp.compare_access_expression
+end)
 
 module Monotonicity = struct
   type t =

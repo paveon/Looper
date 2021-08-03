@@ -59,7 +59,7 @@ module EdgeData = struct
   type t = {
     backedge: bool;
     conditions: EdgeExp.Set.t;
-    assignments: EdgeExp.t AccessPathMap.t;
+    assignments: EdgeExp.t AccessExpressionMap.t;
     branch_info: (Sil.if_kind * bool * Location.t) option;
     calls: EdgeExp.Set.t;
   }
@@ -71,7 +71,7 @@ module EdgeData = struct
   let default = {
     backedge = false;
     conditions = EdgeExp.Set.empty;
-    assignments = AccessPathMap.empty;
+    assignments = AccessExpressionMap.empty;
     branch_info = None;
     calls = EdgeExp.Set.empty;
   }
@@ -82,19 +82,28 @@ module EdgeData = struct
     else { edge with conditions = EdgeExp.Set.add cond edge.conditions }
 
   let add_assignment edge lhs rhs = { edge with 
-      assignments = AccessPathMap.add lhs rhs edge.assignments;
+      assignments = AccessExpressionMap.add lhs rhs edge.assignments;
     }  
 
   let add_invariants edge locals =
-    let with_invariants = AccessSet.fold (fun local acc ->
-      if AccessPathMap.mem local acc then acc else
-      AccessPathMap.add local (EdgeExp.Access local) acc
+    let with_invariants = AccessPath.BaseMap.fold (fun local_base accesses acc ->
+      let add_assignment access assignments =
+      if AccessExpressionMap.mem access assignments then assignments
+      else AccessExpressionMap.add access (EdgeExp.Access access) assignments
+      in
+
+      let local_base_access = HilExp.AccessExpression.base local_base in
+      let assignments = add_assignment local_base_access acc in
+      AccessExpressionSet.fold add_assignment accesses assignments
+
+      (* if AccessExpressionMap.mem local acc then acc else
+      AccessExpressionMap.add local (EdgeExp.Access local) acc *)
     ) locals edge.assignments
     in
     { edge with assignments = with_invariants }
 
   let get_assignment_rhs edge lhs_access =
-    match AccessPathMap.find_opt lhs_access edge.assignments with
+    match AccessExpressionMap.find_opt lhs_access edge.assignments with
     | Some rhs -> rhs
     | None -> EdgeExp.Access lhs_access
 
@@ -162,11 +171,13 @@ module EdgeData = struct
 
 
   let derive_constraint edge_data norm used_assignments formals =
-    let get_assignment lhs_access = match AccessPathMap.find_opt lhs_access edge_data.assignments with
+    let get_assignment lhs_access = match AccessExpressionMap.find_opt lhs_access edge_data.assignments with
     | Some rhs -> Some rhs
     | None -> (
-      let base_pvar = Option.value_exn (Var.get_pvar (fst (fst lhs_access))) in
-      if Pvar.Set.mem base_pvar formals then Some (EdgeExp.Access lhs_access) else None
+      let lhs_access_base = HilExp.AccessExpression.get_base lhs_access in
+      if AccessPath.BaseSet.mem lhs_access_base formals then Some (EdgeExp.Access lhs_access) else None
+      (* let base_pvar = Option.value_exn (HilExp.AccessExpression.get_base lhs_access |> fst |> Var.get_pvar) in *)
+      (* if Pvar.Set.mem base_pvar formals then Some (EdgeExp.Access lhs_access) else None *)
     )
     in
 
@@ -174,18 +185,18 @@ module EdgeData = struct
       | EdgeExp.Access access -> (
         match get_assignment access with 
         | Some rhs -> (
-          if not (EdgeExp.equal norm rhs) && AccessSet.mem access used_assignments
-          then AccessSet.empty, None
-          else AccessSet.singleton access, get_assignment access
+          if not (EdgeExp.equal norm rhs) && AccessExpressionSet.mem access used_assignments
+          then AccessExpressionSet.empty, None
+          else AccessExpressionSet.singleton access, get_assignment access
         )
-        | None -> AccessSet.empty, None
+        | None -> AccessExpressionSet.empty, None
       )
-      | EdgeExp.Const (Const.Cint _) -> AccessSet.empty, Some norm
+      | EdgeExp.Const (Const.Cint _) -> AccessExpressionSet.empty, Some norm
       | EdgeExp.BinOp (op, lexp, rexp) -> (
         let lexp_accesses, lexp_derived_opt = derive_rhs lexp in
         let rexp_accesses, rexp_derived_opt = derive_rhs rexp in
 
-        AccessSet.union lexp_accesses rexp_accesses,
+        AccessExpressionSet.union lexp_accesses rexp_accesses,
         match lexp_derived_opt, rexp_derived_opt with
         | Some lexp_derived, Some rexp_derived -> (
           match op with
@@ -221,19 +232,19 @@ module EdgeData = struct
       | EdgeExp.UnOp (_, _, _) -> assert(false)
       | EdgeExp.Max _ -> assert(false)
       | EdgeExp.Min _ -> assert(false)
-      | _ -> AccessSet.empty, Some norm
+      | _ -> AccessExpressionSet.empty, Some norm
     in
 
 
     let substituted_accesses, derived_rhs_opt = derive_rhs norm in
     match derived_rhs_opt with
     | Some derived_rhs -> (
-      if EdgeExp.equal derived_rhs norm then AccessSet.empty, Some (DC.make_rhs norm), None
+      if EdgeExp.equal derived_rhs norm then AccessExpressionSet.empty, Some (DC.make_rhs norm), None
       else (
         let rhs_norm, rhs_const_opt = EdgeExp.separate derived_rhs in
         let merged = EdgeExp.merge rhs_norm rhs_const_opt in
 
-        if EdgeExp.equal merged norm then AccessSet.empty, Some (DC.make_rhs norm), None
+        if EdgeExp.equal merged norm then AccessExpressionSet.empty, Some (DC.make_rhs norm), None
         else (
           (* Derived RHS expression is not equal to the original norm *)
           let lhs_norm, lhs_const_opt = EdgeExp.separate norm in
@@ -284,7 +295,7 @@ module EdgeData = struct
             | _ -> assert(false)
             in
 
-            AccessSet.empty, Some dc_rhs, None
+            AccessExpressionSet.empty, Some dc_rhs, None
           ) 
           else (
             (* TODO: this is incorrect. If we return rhs_norm which is different from  *)
@@ -310,7 +321,7 @@ module EdgeData = struct
         )
       )
     )
-    | None -> AccessSet.empty, None, None
+    | None -> AccessExpressionSet.empty, None, None
 end
 
 
@@ -346,8 +357,8 @@ let edge_attributes : E.t -> 'a list = fun (_, edge_data, _) -> (
 
   let calls_str = String.concat ~sep:"\n" call_list in
   let conditions = List.map (EdgeExp.Set.elements edge_data.conditions) ~f:(fun cond -> EdgeExp.to_string cond) in
-  let assignments = List.map (AccessPathMap.bindings edge_data.assignments) ~f:(fun (lhs, rhs) ->
-    F.asprintf "%a = %s" AccessPath.pp lhs (EdgeExp.to_string rhs)
+  let assignments = List.map (AccessExpressionMap.bindings edge_data.assignments) ~f:(fun (lhs, rhs) ->
+    F.asprintf "%a = %s" HilExp.AccessExpression.pp lhs (EdgeExp.to_string rhs)
   )
   in
   let label = F.asprintf "%s\n%s\n%s\n%s" label (String.concat ~sep:"\n" conditions) 

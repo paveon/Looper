@@ -14,8 +14,9 @@ let console_log : ('a, Format.formatter, unit) format -> 'a = fun fmt -> F.print
 type t =
   | BinOp of Binop.t * t * t
   | UnOp of Unop.t * t * Typ.t option
-  | Access of AccessPath.t
+  | Access of HilExp.access_expression
   | Const of Const.t
+  | Cast of Typ.t * t
   | Call of Typ.t * Procname.t * (t * Typ.t) list * Location.t
   | Max of t list
   | Min of t list
@@ -40,8 +41,9 @@ let rec to_string = function
     F.sprintf "(%s %s %s)" (to_string lhs) (Binop.str Pp.text op) (to_string rhs)
   )
   | UnOp (op, exp, _) -> F.sprintf "%s%s" (Unop.to_string op) (to_string exp)
-  | Access path -> F.asprintf "%a" AccessPath.pp path
+  | Access path -> F.asprintf "%a" HilExp.AccessExpression.pp path
   | Const const -> F.asprintf "%a" Const.(pp Pp.text) const
+  | Cast (typ, subexp) -> F.asprintf "(%a) %s" (Typ.pp_full Pp.text) typ (to_string subexp)
   | Call (_, callee, args, _) -> (
     let proc_name = String.drop_suffix (Procname.to_simplified_string callee) 2 in
     let args_string = String.concat ~sep:", " (List.map args ~f:(fun (x, _) -> to_string x)) in
@@ -89,10 +91,21 @@ let is_one = function Const (Const.Cint const) -> IntLit.isone const | _ -> fals
 
 let is_variable norm formals =
   let rec traverse_exp = function
-  | Access ((var, _), _) -> (
-    match Var.get_pvar var with
+  | Access ae -> (
+    let access_base = HilExp.AccessExpression.get_base ae in
+    if AccessPath.BaseSet.mem access_base formals then (
+      (* TODO: hack for now? We want to treat pointer formals as variables
+       * so we can derive DCs for them and track their value so we can then
+       * calculate their variable bounds later on to track function side-effects *)
+      let access_base_typ = snd access_base in
+      Typ.is_pointer access_base_typ
+    ) else (
+      true
+    )
+    (* not (AccessPath.BaseSet.mem access_base formals) *)
+    (* match Var.get_pvar base_var with
     | Some pvar -> not (Pvar.Set.mem pvar formals)
-    | None -> true
+    | None -> true *)
   )
   | BinOp (_, lexp, rexp) -> (traverse_exp lexp) || (traverse_exp rexp)
   | UnOp (_, exp, _) -> (traverse_exp exp)
@@ -112,8 +125,8 @@ let rec is_int exp type_map tenv = match exp with
     | Some typ -> Typ.is_int typ
     | None -> is_int exp type_map tenv
   )
-  | Access path -> (
-    match AccessPath.get_typ path tenv with
+  | Access access -> (
+    match HilExp.AccessExpression.get_typ access tenv with
     | Some typ -> Typ.is_int typ
     | _ -> false
   )
@@ -122,8 +135,54 @@ let rec is_int exp type_map tenv = match exp with
   | _ -> false
 
 
+let rec get_typ tenv = function
+  | Access access_expr -> HilExp.AccessExpression.get_typ access_expr tenv
+  | UnOp (_, _, typ_opt) -> typ_opt
+  | BinOp ((Lt | Gt | Le | Ge | Eq | Ne | LAnd | LOr), _, _) -> Some (Typ.mk (Typ.Tint Typ.IBool))
+  | BinOp (_, e1, e2) -> (
+    (* TODO: taken from HilExp.get_typ, same problem as in the comment below *)
+    (* TODO: doing this properly will require taking account of language-specific coercion
+       semantics. Only return a type when the operands have the same type for now *)
+    match get_typ tenv e1, get_typ tenv e2 with
+    | Some typ1, Some typ2 when Typ.equal typ1 typ2 -> Some typ1
+    | _ -> None 
+  )
+  | Call (ret_typ, _, _, _) -> Some ret_typ
+  | Const (Cfun _) -> None
+  | Const (Cint value) -> (
+    (* TODO: handle signedness, hack for now *)
+    Some (Typ.mk (Typ.Tint (if IntLit.isnegative value then Typ.IInt else Typ.IUInt)))
+  )
+  | Const (Cfloat _) -> Some (Typ.mk (Typ.Tfloat Typ.FFloat))
+  | Const (Cstr _) -> (
+    (* TODO: this will need to behave differently depending on whether we're in C++ or Java 
+     * make it work for C/C++ for now *)
+    Some (Typ.mk_ptr StdTyp.char)
+  )
+  | Cast (typ, _) -> Some typ
+  | _ -> None
+
+
+let is_integer_condition tenv = function
+  | BinOp ((Lt | Gt | Le | Ge | Eq | Ne | LAnd | LOr), lhs, rhs) -> (
+    match get_typ tenv lhs, get_typ tenv rhs with
+    | Some lhs_typ, Some rhs_typ -> Typ.is_int lhs_typ && Typ.is_int rhs_typ
+    | Some typ, None
+    | None, Some typ -> Typ.is_int typ
+    | _ -> false
+  )
+  | exp -> (
+    match get_typ tenv exp with
+    | Some typ -> Typ.is_int typ
+    | None -> false
+  )
+
+
 let rec is_return exp = match exp with
-  | Access ((var, _), _) -> Var.is_return var
+  | Access access -> (match access with
+    | HilExp.Base (base_var, _) -> Var.is_return base_var
+    | _ -> false
+  )
   | Max [arg] -> is_return arg
   | _ -> false
 
@@ -167,8 +226,8 @@ let rec evaluate exp value_map default_value =
   in
 
   match exp with
-  | Access path -> (
-    match AccessPathMap.find_opt path value_map with
+  | Access access -> (
+    match AccessExpressionMap.find_opt access value_map with
     | Some value -> value
     | None -> default_value
   )
@@ -633,16 +692,7 @@ let rec transform_shifts exp = match exp with
   | _ -> exp, Set.empty
 
 
-let access_path_id_resolver ident_map var = match var with
-  | Var.LogicalVar id -> (
-    match Ident.Map.find id ident_map with
-    | Access path -> Some path
-    | _ -> assert(false)
-  )
-  | Var.ProgramVar _ -> assert(false)
-
-
-let rec of_exp exp ident_map typ type_map =
+(* let rec of_exp exp ident_map typ type_map =
   let original_exp = exp in
 
   let aux exp = match exp with
@@ -655,7 +705,7 @@ let rec of_exp exp ident_map typ type_map =
   )
   | Exp.UnOp (Unop.Neg, Exp.Const Const.Cint c, _) -> Const (Const.Cint (IntLit.neg c))
   | Exp.UnOp (op, sub_exp, _) -> UnOp (op, of_exp sub_exp ident_map typ type_map, Some typ)
-  | Exp.Var ident -> Ident.Map.find ident ident_map
+  | Exp.Var ident -> Ident.Map.find ident ident_map |> fst
   | Exp.Cast (_, exp) -> of_exp exp ident_map typ type_map
   | Exp.Lvar pvar -> (
     let pvar_typ = match PvarMap.find_opt pvar type_map with
@@ -669,7 +719,8 @@ let rec of_exp exp ident_map typ type_map =
       else L.die InternalError "[EdgeExp.of_exp] Missing type information for Pvar '%a'" Pvar.(pp Pp.text) pvar;
     )
     in
-    Access (AccessPath.of_pvar pvar pvar_typ)
+    let ap_base = AccessPath.base_of_pvar pvar pvar_typ in
+    Access (HilExp.AccessExpression.base ap_base)
   )
   | Exp.Const const -> Const const
   | Exp.Sizeof {nbytes} -> (
@@ -686,7 +737,31 @@ let rec of_exp exp ident_map typ type_map =
   )
   | _ -> L.(die InternalError)"[EdgeExp.of_exp] Unsupported expression %a!" Exp.pp exp
   in
-  aux exp
+  aux exp *)
+
+
+let rec of_hil_exp exp = match exp with
+  | HilExp.AccessExpression access -> Access access
+  | HilExp.Constant const -> Const const
+  | HilExp.Cast (cast_type, subexp) -> Cast (cast_type, of_hil_exp subexp)
+  | HilExp.BinaryOperator (op, lexp, rexp) -> (
+    let lexp = of_hil_exp lexp in
+    let rexp = of_hil_exp rexp in
+    BinOp (op, lexp, rexp)
+  )
+  | HilExp.UnaryOperator (Unop.Neg, HilExp.Constant Const.Cint c, _) -> Const (Const.Cint (IntLit.neg c))
+  | HilExp.UnaryOperator (op, subexp, subexp_typ) -> UnOp (op, of_hil_exp subexp, subexp_typ)
+  
+  
+  | HilExp.Sizeof (_, subexp_opt) -> (
+    match subexp_opt with
+    | Some subexp -> L.die InternalError "TODO: HilExp.Sizeof subexp: %a" HilExp.pp subexp
+    | None -> L.die InternalError "TODO: HilExp.Sizeof missing size subexp"
+    (* match nbytes with
+    | Some size -> Const (Const.Cint (IntLit.of_int size))
+    | _ -> assert(false) *)
+  )
+  | _ -> L.(die InternalError)"[EdgeExp.of_exp] Unsupported expression %a!" HilExp.pp exp
 
 
 let why3_get_vsymbol name (prover_data : prover_data) = 
@@ -744,9 +819,17 @@ let rec to_why3_expr exp tenv (prover_data : prover_data) =
     why3_make_access_term (Procname.to_string procname) typ
   )
   | Access access -> (
-    match AccessPath.get_typ access tenv with
-    | Some typ -> why3_make_access_term (F.asprintf "%a" AccessPath.pp access) typ
+    match HilExp.AccessExpression.get_typ access tenv with
+    | Some typ -> why3_make_access_term (F.asprintf "%a" HilExp.AccessExpression.pp access) typ
     | _ -> assert(false)
+  )
+  | Cast (typ, subexp) -> (
+    let why3_subexp, constraints = to_why3_expr subexp tenv prover_data in
+    let constraints = if Typ.is_unsigned_int typ
+    then Why3.Term.Sterm.add (Why3.Term.t_app_infer ge_symbol [why3_subexp; zero_const]) constraints
+    else constraints
+    in
+    why3_subexp, constraints
   )
   | BinOp (op, lexp, rexp) -> (
     let why3_lexp, why3_lexp_constraints = to_why3_expr lexp tenv prover_data in
@@ -841,10 +924,15 @@ let rec always_positive_why3 exp tenv (prover_data : prover_data) =
   let aux = function 
   | Const (Const.Cint x) -> not (IntLit.isnegative x)
   | Const (Const.Cfloat x) -> Float.(x >= 0.0)
-  | Access ((_, typ), _) -> (
-    match typ.desc with
-    | Typ.Tint ikind -> Typ.ikind_is_unsigned ikind
-    | _ -> false
+  | Access access -> (
+    let access_typ_opt = HilExp.AccessExpression.get_typ access tenv in
+    match access_typ_opt with
+    | Some access_typ -> (
+      match access_typ.desc with
+      | Typ.Tint ikind -> Typ.ikind_is_unsigned ikind
+      | _ -> false
+    )
+    | None -> false
   )
   | x -> always_positive_why3 x tenv prover_data
   in
@@ -911,7 +999,8 @@ let get_accesses_poly exp set ~f ~g =
   aux exp set
 
 
-let get_accesses exp = get_accesses_poly exp AccessSet.empty ~f:AccessSet.add ~g:(fun x -> x)
+let get_accesses exp = get_accesses_poly exp AccessExpressionSet.empty 
+  ~f:AccessExpressionSet.add ~g:(fun x -> x)
 
 let get_access_exp_set exp = get_accesses_poly exp Set.empty ~f:Set.add ~g:(fun x -> Access x)
 
@@ -972,9 +1061,14 @@ let map_accesses bound ~f:f acc =
 
 let subst bound args formal_map =
   let rec aux bound = match bound with
-  | Access (base, _) -> (
+  | Access access -> (
+    let base = HilExp.AccessExpression.get_base access in
     match FormalMap.get_formal_index base formal_map with
-    | Some idx -> List.nth_exn args idx |> fst
+    | Some idx -> (
+      (* TODO: we're droping the rest of AccessExpression here.
+       * We should just replace the base of the AccessExpression *)
+      List.nth_exn args idx |> fst
+    )
     | None -> bound
   )
   | BinOp (op, lexp, rexp) -> try_eval op (aux lexp) (aux rexp)
@@ -1012,7 +1106,7 @@ let normalize_condition exp tenv =
 
   let rec aux exp = match exp with
   | Access path -> (
-    match AccessPath.get_typ path tenv with
+    match HilExp.AccessExpression.get_typ path tenv with
     | Some typ when Typ.is_int typ || Typ.is_pointer typ -> (Binop.Ne, Access path, zero)
     | _ -> assert(false)
   )
@@ -1109,7 +1203,7 @@ let determine_monotonicity exp tenv (prover_data : prover_data) =
   | _ -> (
     let rec get_degree exp root = match exp with
     | Const _ -> 0, Some exp
-    | Access access -> if AccessPath.equal access var then 1, None else 0, Some exp
+    | Access access -> if HilExp.AccessExpression.equal access var then 1, None else 0, Some exp
     | UnOp (Unop.Neg, subexp, typ) -> (
       assert(root);
       let degree, remainder_opt = get_degree subexp false in
@@ -1118,7 +1212,7 @@ let determine_monotonicity exp tenv (prover_data : prover_data) =
       | None -> degree, Some (UnOp (Unop.Neg, one, typ))
     )
     | BinOp (Binop.Mult _, (Access l_access), (Access r_access)) -> (
-      match AccessPath.equal l_access var, AccessPath.equal r_access var with
+      match HilExp.AccessExpression.equal l_access var, HilExp.AccessExpression.equal r_access var with
       | true, true -> 2, None
       | true, false -> 1, Some (Access r_access)
       | false, true -> 1, Some (Access l_access)
@@ -1128,7 +1222,7 @@ let determine_monotonicity exp tenv (prover_data : prover_data) =
     | BinOp (Binop.Mult typ, subexp, (Access access)) -> (
       let subexp_degree, subexp_opt = get_degree subexp false in
 
-      if AccessPath.equal access var then subexp_degree + 1, subexp_opt
+      if HilExp.AccessExpression.equal access var then subexp_degree + 1, subexp_opt
       else (
         match subexp_opt with
         | Some subexp -> subexp_degree, Some (BinOp (Binop.Mult typ, Access access, subexp))
@@ -1197,8 +1291,8 @@ let determine_monotonicity exp tenv (prover_data : prover_data) =
   (* Try to check monotonicity property based if no root exists  *)
   let check_monotonicity var_access monotony_map =
     (* TODO: needs more robust solution, this is just a "heuristic" *)
-    let value_map_one = AccessPathMap.singleton var_access 1.0 in
-    let value_map_two = AccessPathMap.singleton var_access 2.0 in
+    let value_map_one = AccessExpressionMap.singleton var_access 1.0 in
+    let value_map_two = AccessExpressionMap.singleton var_access 2.0 in
     let y1, y2 = List.fold non_const_parts ~f:(fun (y1, y2) part ->
       let lhs_value = evaluate part value_map_one 1.0 in
       let rhs_value = evaluate part value_map_two 1.0 in
@@ -1214,11 +1308,11 @@ let determine_monotonicity exp tenv (prover_data : prover_data) =
     )
     | x when x > 0 -> (
       debug_log "Monotonicity: Non-decreasing";
-      AccessPathMap.add var_access Monotonicity.NonDecreasing monotony_map
+      AccessExpressionMap.add var_access Monotonicity.NonDecreasing monotony_map
     )
     | _ -> (
       debug_log "Monotonicity: Non-increasing";
-      AccessPathMap.add var_access Monotonicity.NonIncreasing monotony_map
+      AccessExpressionMap.add var_access Monotonicity.NonIncreasing monotony_map
     )
   in
 
@@ -1239,8 +1333,8 @@ let determine_monotonicity exp tenv (prover_data : prover_data) =
 
   debug_log "@[<v2>[Calculating partial derivatives for non-const terms]@,";
   let derivative_variables = get_accesses simplified in
-  let monotonicities = AccessSet.fold (fun var_access acc ->
-    debug_log "@[<v2>[Derivation variable: %a]@," AccessPath.pp var_access;
+  let monotonicities = AccessExpressionSet.fold (fun var_access acc ->
+    debug_log "@[<v2>[Derivation variable: %a]@," HilExp.AccessExpression.pp var_access;
     let derivative_parts = List.filter_map non_const_parts ~f:(fun part ->
       let derivative = partial_derivative part var_access true in
       if is_zero derivative then None else Some derivative
@@ -1275,7 +1369,7 @@ let determine_monotonicity exp tenv (prover_data : prover_data) =
       )
       | Why3.Call_provers.Invalid | Why3.Call_provers.Unknown _ -> (
         debug_log "Derivative changes sign. Not monotonic";
-        AccessPathMap.add var_access Monotonicity.NotMonotonic acc
+        AccessExpressionMap.add var_access Monotonicity.NotMonotonic acc
       )
       | _ -> assert(false)
     )
@@ -1283,7 +1377,7 @@ let determine_monotonicity exp tenv (prover_data : prover_data) =
     debug_log "@]@,";
     monotonicity
 
-  ) derivative_variables AccessPathMap.empty
+  ) derivative_variables AccessExpressionMap.empty
   in
   debug_log "@]@]@,";
   monotonicities

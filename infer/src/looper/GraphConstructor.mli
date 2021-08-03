@@ -9,7 +9,7 @@ type procedure_data = {
   nodes: LTS.NodeSet.t;
   edges: LTS.EdgeSet.t;
   norms: EdgeExp.Set.t;
-  formals: Pvar.Set.t;
+  formals: AccessPath.BaseSet.t;
   analysis_data: LooperSummary.t InterproceduralAnalysis.t;
   call_summaries: LooperSummary.t Location.Map.t;
   lts: LTS.t
