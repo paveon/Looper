@@ -66,7 +66,7 @@ and transition = {
   src_node: LTS.Node.t;
   dst_node: LTS.Node.t;
   bound: EdgeExp.t;
-  monotony_map: Monotonicity.t AccessPathMap.t;
+  monotony_map: Monotonicity.t AccessExpressionMap.t;
   calls: call list
 }
 
@@ -74,6 +74,7 @@ and t = {
   formal_map: FormalMap.t;
   bounds: transition list;
   return_bound: EdgeExp.t option;
+  formal_bounds: (EdgeExp.t * EdgeExp.t) LooperUtils.AccessExpressionMap.t
 }
 
 
@@ -119,7 +120,7 @@ let instantiate (summary : t) args ~upper_bound ~lower_bound tenv active_prover 
     (* Bound increases with the increasing value of this parameter.
       * Maximize value of the argument expression *)
     let evaluated_arg, (cache_acc : cache) = EdgeExp.map_accesses arg_exp ~f:(fun arg_access cache_acc ->
-      let var_monotony = AccessPathMap.find arg_access arg_monotonicity_map in
+      let var_monotony = AccessExpressionMap.find arg_access arg_monotonicity_map in
       match var_monotony with
       | Monotonicity.NonDecreasing -> (
         upper_bound (EdgeExp.Access arg_access) cache_acc
@@ -138,7 +139,7 @@ let instantiate (summary : t) args ~upper_bound ~lower_bound tenv active_prover 
     (* Bound decreases with the increasing value of this parameter.
       * Minimize value of the argument expression *)
     let evaluated_arg, cache_acc = EdgeExp.map_accesses arg_exp ~f:(fun arg_access cache_acc ->
-      let var_monotony = AccessPathMap.find arg_access arg_monotonicity_map in
+      let var_monotony = AccessExpressionMap.find arg_access arg_monotonicity_map in
       match var_monotony with
       | Monotonicity.NonDecreasing -> (
         lower_bound (EdgeExp.Access arg_access) cache_acc
@@ -184,30 +185,30 @@ let instantiate (summary : t) args ~upper_bound ~lower_bound tenv active_prover 
   let instantiate_bound bound formals_monotonicity_map arg_monotonicity_maps cache =
     debug_log "@[<v2>[Instantiating bound] %a@," EdgeExp.pp bound;
     debug_log "@[<v2>[Formals monotonicity map]@,";
-    AccessPathMap.iter (fun access monotonicity ->
+    AccessExpressionMap.iter (fun access monotonicity ->
       match monotonicity with
-      | Monotonicity.NonDecreasing -> debug_log "%a: Non-decreasing@," AccessPath.pp access
-      | Monotonicity.NonIncreasing -> debug_log "%a: Non-increasing@," AccessPath.pp access
-      | Monotonicity.NotMonotonic -> debug_log "%a: Not monotonic@," AccessPath.pp access
+      | Monotonicity.NonDecreasing -> debug_log "%a: Non-decreasing@," HilExp.AccessExpression.pp access
+      | Monotonicity.NonIncreasing -> debug_log "%a: Non-increasing@," HilExp.AccessExpression.pp access
+      | Monotonicity.NotMonotonic -> debug_log "%a: Not monotonic@," HilExp.AccessExpression.pp access
     ) formals_monotonicity_map;
     debug_log "@]@,";
 
     debug_log "@[<v2>[Min-maxing formal bound variables]@,";
     let instantiated_bound = EdgeExp.map_accesses bound ~f:(fun formal_access cache_acc ->
-      debug_log "Mapping formal access: %a@," AccessPath.pp formal_access;
-      let formal_access_base : AccessPath.base = fst formal_access in
+      debug_log "Mapping formal access: %a@," HilExp.AccessExpression.pp formal_access;
+      let formal_access_base = HilExp.AccessExpression.get_base formal_access in
       let formal_idx = Option.value_exn (FormalMap.get_formal_index formal_access_base summary.formal_map) in
       let arg_exp, arg_typ = List.nth_exn args formal_idx in
       let arg_monotonicity_map_opt = List.nth_exn arg_monotonicity_maps formal_idx in
       match arg_monotonicity_map_opt with
       | Some arg_monotonicity_map -> (
-        match AccessPathMap.find_opt formal_access formals_monotonicity_map with
+        match AccessExpressionMap.find_opt formal_access formals_monotonicity_map with
         | Some formal_monotony -> (
           evaluate_bound_argument formal_access_base formal_monotony arg_exp arg_monotonicity_map cache_acc
         )
         | None -> L.die InternalError 
           "[Summary Instantiation] Missing monotonicity \
-          information for formal parameter: %a" AccessPath.pp formal_access;
+          information for formal parameter: %a" HilExp.AccessExpression.pp formal_access;
       )
       | None when EdgeExp.is_const arg_exp -> arg_exp, cache
       | None -> (
@@ -238,7 +239,7 @@ let instantiate (summary : t) args ~upper_bound ~lower_bound tenv active_prover 
     )
     in
 
-    let bound_monotony_map = if EdgeExp.is_const bound then AccessPathMap.empty
+    let bound_monotony_map = if EdgeExp.is_const bound then AccessExpressionMap.empty
     else EdgeExp.determine_monotonicity bound tenv active_prover
     in
 
@@ -290,7 +291,8 @@ let instantiate (summary : t) args ~upper_bound ~lower_bound tenv active_prover 
   transitions, new_cache
 
 
-let pp fmt (summary : t) = EdgeExp.pp fmt (total_bound summary.bounds)
+(* let pp fmt (summary : t) = EdgeExp.pp fmt (total_bound summary.bounds) *)
+let pp fmt (summary : t) = ()
 
 
 module TreeGraph = struct

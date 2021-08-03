@@ -87,3 +87,5 @@ module Abs : sig
 end
 
 module BaseMap : PrettyPrintable.PPMap with type key = base
+
+module BaseSet : PrettyPrintable.PPSet with type elt = base

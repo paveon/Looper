@@ -55,6 +55,10 @@ module AccessSet : Caml.Set.S with type elt = AccessPath.t
 
 module AccessPathMap : Caml.Map.S with type key = AccessPath.t
 
+module AccessExpressionSet : Caml.Set.S with type elt = HilExp.access_expression
+
+module AccessExpressionMap : Caml.Map.S with type key = HilExp.access_expression
+
 module Monotonicity : sig
    type t =
    | NonDecreasing

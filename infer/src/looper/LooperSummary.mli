@@ -44,7 +44,7 @@ and transition = {
   src_node: LTS.Node.t;
   dst_node: LTS.Node.t;
   bound: EdgeExp.t;
-  monotony_map: LooperUtils.Monotonicity.t LooperUtils.AccessPathMap.t;
+  monotony_map: LooperUtils.Monotonicity.t LooperUtils.AccessExpressionMap.t;
   calls: call list
 }
 
@@ -52,6 +52,7 @@ and t = {
   formal_map: FormalMap.t;
   bounds: transition list;
   return_bound: EdgeExp.t option;
+  formal_bounds: (EdgeExp.t * EdgeExp.t) LooperUtils.AccessExpressionMap.t
 }
 
 val total_bound : transition list -> EdgeExp.t

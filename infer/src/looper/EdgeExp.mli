@@ -7,8 +7,9 @@ module F = Format
 type t =
 | BinOp of Binop.t * t * t
 | UnOp of Unop.t * t * Typ.t option
-| Access of AccessPath.t
+| Access of HilExp.access_expression
 | Const of Const.t
+| Cast of Typ.t * t
 | Call of Typ.t * Procname.t * (t * Typ.t) list * Location.t
 | Max of t list
 | Min of t list
@@ -41,11 +42,15 @@ val is_one : t -> bool
 
 val is_const : t -> bool
 
-val is_variable : t -> Pvar.Set.t -> bool
+val is_variable : t -> AccessPath.BaseSet.t -> bool
 
-val is_symbolic_const : t -> Pvar.Set.t -> bool
+val is_symbolic_const : t -> AccessPath.BaseSet.t -> bool
 
 val is_int : t -> Typ.t LooperUtils.PvarMap.t -> Tenv.t -> bool
+
+val get_typ : Tenv.t -> t -> Typ.t option
+
+val is_integer_condition : Tenv.t -> t -> bool
 
 val is_return : t -> bool
 
@@ -53,7 +58,7 @@ val eval_consts : Binop.t -> IntLit.t -> IntLit.t -> IntLit.t
 
 val try_eval : Binop.t -> t -> t -> t
 
-val evaluate : t -> float LooperUtils.AccessPathMap.t -> float -> float
+val evaluate : t -> float LooperUtils.AccessExpressionMap.t -> float -> float
 
 val merge : t -> (Binop.t * IntLit.t) option -> t
 
@@ -72,25 +77,28 @@ val simplify : t -> t
 
 val evaluate_const_exp : t -> IntLit.t option
 
-val access_path_id_resolver : t Ident.Map.t -> Var.t -> AccessPath.t option
+(* val access_path_id_resolver : (t * Typ.t) Ident.Map.t -> Var.t -> AccessPath.t option *)
 
-val of_exp : Exp.t -> t Ident.Map.t -> Typ.t -> Typ.t LooperUtils.PvarMap.t -> t
+(* val of_exp : Exp.t -> (t * Typ.t) Ident.Map.t -> Typ.t -> Typ.t LooperUtils.PvarMap.t -> t *)
+
+val of_hil_exp : HilExp.t -> t
 
 val to_why3_expr : t -> Tenv.t -> LooperUtils.prover_data -> (Why3.Term.term * Why3.Term.Sterm.t)
 
 val always_positive_why3 : t -> Tenv.t -> LooperUtils.prover_data -> bool
 
-val get_accesses: t -> LooperUtils.AccessSet.t
+val get_accesses: t -> LooperUtils.AccessExpressionSet.t
 
 val get_access_exp_set : t -> Set.t
 
-val map_accesses: t -> f:(AccessPath.t -> 'a -> t * 'a) -> 'a -> t * 'a
+val map_accesses: t -> f:(HilExp.access_expression -> 'a -> t * 'a) -> 'a -> t * 'a
 
 val subst : t -> (t * Typ.t) list -> FormalMap.t -> t
 
 val normalize_condition : t -> Tenv.t -> t
 
-val determine_monotonicity : t -> Tenv.t -> LooperUtils.prover_data -> LooperUtils.Monotonicity.t LooperUtils.AccessPathMap.t
+val determine_monotonicity : t -> Tenv.t -> LooperUtils.prover_data 
+    -> LooperUtils.Monotonicity.t LooperUtils.AccessExpressionMap.t
 
 val add : t -> t -> t
 

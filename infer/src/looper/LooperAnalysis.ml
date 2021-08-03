@@ -25,7 +25,7 @@ module VFG_SCC = Graph.Components.Make(VFG)
 
 
 module UnprocessedNormSet = Caml.Set.Make(struct
-  type nonrec t = EdgeExp.t * AccessSet.t LTS.EdgeMap.t
+  type nonrec t = EdgeExp.t * AccessExpressionSet.t LTS.EdgeMap.t
   [@@deriving compare]
 end)
 
@@ -67,10 +67,11 @@ let analyze_procedure (analysis_data : LooperSummary.t InterproceduralAnalysis.t
   let log_file = mk_outfile debug_log_fname in
   debug_fmt := log_file.fmt :: !debug_fmt;
   let debug_log format = F.fprintf log_file.fmt format in
-
+  
 
   let prover_map : prover_data ProverMap.t = if ProverMap.is_empty !why3_data then (
     console_log "=========== Initializing Why3 ===========\n";
+
     let config : Why3.Whyconf.config = Why3.Whyconf.(load_default_config_if_needed (read_config None)) in
     let main : Why3.Whyconf.main = Why3.Whyconf.get_main config in
 
@@ -165,7 +166,7 @@ let analyze_procedure (analysis_data : LooperSummary.t InterproceduralAnalysis.t
       List.fold edge_pairs ~f:(fun unprocessed (((_, lts_edge_data, _) as lts_edge), dcp_edge_data) ->
         let used_assignments = match LTS.EdgeMap.find_opt lts_edge norm_history with
         | Some set -> set
-        | None -> AccessSet.empty
+        | None -> AccessExpressionSet.empty
         in
 
         let substituted_accesses, dc_rhs_opt, new_norm_opt = 
@@ -473,7 +474,8 @@ let analyze_procedure (analysis_data : LooperSummary.t InterproceduralAnalysis.t
     debug_log "SCC count: %d@," (List.length vfg_components);
     let vfg_map, vfg_norm_set = List.foldi vfg_components ~f:(fun idx (map, norm_set) component ->
       let pvar = Pvar.mk (Mangled.from_string ("var_" ^ string_of_int idx)) proc_name in
-      let aux_norm = EdgeExp.Access (AccessPath.of_pvar pvar (Typ.mk (Tint IUInt))) in
+      let pvar_access = HilExp.AccessExpression.base (AccessPath.base_of_pvar pvar (Typ.mk (Tint IUInt))) in
+      let aux_norm = EdgeExp.Access pvar_access in
 
       List.fold component ~init:(map, EdgeExp.Set.add aux_norm norm_set) ~f:(fun (map, norm_set) ((exp, _ as node) : VFG.Node.t) ->
         if EdgeExp.is_return exp then VFG.Map.add node exp map, EdgeExp.Set.add exp norm_set
@@ -520,6 +522,7 @@ let analyze_procedure (analysis_data : LooperSummary.t InterproceduralAnalysis.t
       | EdgeExp.Call (ret_typ, proc_name, args, loc) -> (
         let renamed_args = List.map args ~f:(fun (arg, typ) ->
           if Typ.is_int typ then (
+            debug_log "RENAMING ARG: %a\n" EdgeExp.pp arg;
             let renamed_arg, _ = EdgeExp.map_accesses arg ~f:(fun access _ ->
               let access = EdgeExp.Access access in
               if EdgeExp.is_symbolic_const access graph_data.formals then access, None
@@ -542,7 +545,10 @@ let analyze_procedure (analysis_data : LooperSummary.t InterproceduralAnalysis.t
                   in
                   match ssa_map_key_opt with
                   | Some key -> EdgeExp.Map.find key ssa_variables_map
-                  | None -> assert(false)
+                  | None -> (
+                    debug_log "MAPPING ACCESS: %a\n" EdgeExp.pp access;
+                    assert(false)
+                  )
                 )
                 | vfg_node :: xs -> (match VFG.Map.find_opt vfg_node vfg_map with
                   | Some vfg_var -> vfg_var
@@ -659,10 +665,12 @@ let analyze_procedure (analysis_data : LooperSummary.t InterproceduralAnalysis.t
     ) scc_edges
     in
     match norm with
-    | EdgeExp.Max [EdgeExp.Access ((var, _), _)]
-    | EdgeExp.Access ((var, _), _) -> (
-      let base_pvar = Option.value_exn (Var.get_pvar var) in
-      if Pvar.Set.mem base_pvar graph_data.formals then sets, processed_edges
+    | EdgeExp.Max [EdgeExp.Access access]
+    | EdgeExp.Access access -> (
+
+      (* let base_pvar = Option.value_exn (Var.get_pvar var) in *)
+      let access_base = HilExp.AccessExpression.get_base access in
+      if AccessPath.BaseSet.mem access_base graph_data.formals then sets, processed_edges
       else (
         let bounded_edges = get_edge_set norm in
         let sets = EdgeExp.Map.add norm bounded_edges sets in
@@ -1154,7 +1162,7 @@ let analyze_procedure (analysis_data : LooperSummary.t InterproceduralAnalysis.t
         let bound, cache = transition_bound edge cache in
 
         let monotony_map = if EdgeExp.is_const bound 
-        then AccessPathMap.empty
+        then AccessExpressionMap.empty
         else EdgeExp.determine_monotonicity bound tenv active_prover
         in
 
@@ -1183,7 +1191,9 @@ let analyze_procedure (analysis_data : LooperSummary.t InterproceduralAnalysis.t
   let return_bound = match ret_type.desc with
   | Tint _ -> (
     debug_log "[Return type] %a\n" Typ.(pp Pp.text) ret_type;
-    let return_access = AccessPath.of_pvar (Procdesc.get_ret_var proc_desc) ret_type in
+    let return_access = AccessPath.base_of_pvar (Procdesc.get_ret_var proc_desc) ret_type 
+      |> HilExp.AccessExpression.base
+    in
     let return_norm = EdgeExp.Max [EdgeExp.Access return_access] in
     let return_bound, _ = variable_bound return_norm cache in
     debug_log "[Return bound] %a\n" EdgeExp.pp return_bound;
@@ -1196,6 +1206,7 @@ let analyze_procedure (analysis_data : LooperSummary.t InterproceduralAnalysis.t
     formal_map = FormalMap.make proc_desc;
     bounds = bounds;
     return_bound = return_bound;
+    formal_bounds = AccessExpressionMap.empty;
   }
   in
 

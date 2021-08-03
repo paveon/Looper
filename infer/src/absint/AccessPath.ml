@@ -193,3 +193,10 @@ module BaseMap = PrettyPrintable.MakePPMap (struct
 
   let pp = pp_base
 end)
+
+
+module BaseSet = PrettyPrintable.MakePPSet (struct
+  type nonrec t = base [@@deriving compare]
+
+  let pp = pp_base
+end)

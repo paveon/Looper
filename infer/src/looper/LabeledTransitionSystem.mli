@@ -33,7 +33,7 @@ module EdgeData : sig
   type t = {
     backedge: bool;
     conditions: EdgeExp.Set.t;
-    assignments: EdgeExp.t LooperUtils.AccessPathMap.t;
+    assignments: EdgeExp.t LooperUtils.AccessExpressionMap.t;
     branch_info: (Sil.if_kind * bool * Location.t) option;
     calls: EdgeExp.Set.t;
   }
@@ -48,17 +48,18 @@ module EdgeData : sig
 
   val add_condition : t -> EdgeExp.t -> t
 
-  val add_assignment : t -> AccessPath.t -> EdgeExp.t -> t
+  val add_assignment : t -> HilExp.access_expression -> EdgeExp.t -> t
 
-  val add_invariants : t -> LooperUtils.AccessSet.t -> t
+  val add_invariants : t -> LooperUtils.AccessExpressionSet.t AccessPath.BaseMap.t -> t
 
-  val get_assignment_rhs : t -> AccessPath.t -> EdgeExp.t
+  val get_assignment_rhs : t -> HilExp.access_expression -> EdgeExp.t
 
   val derive_guards : t -> EdgeExp.Set.t -> Tenv.t -> LooperUtils.prover_data -> EdgeExp.Set.t
 
   (* Derive difference constraint "x <= y + c" based on edge assignments *)
-  val derive_constraint : t -> EdgeExp.t -> LooperUtils.AccessSet.t -> Pvar.Set.t 
-    -> LooperUtils.AccessSet.t * DC.rhs option * EdgeExp.t option
+  val derive_constraint : t -> EdgeExp.t -> LooperUtils.AccessExpressionSet.t 
+    -> AccessPath.BaseSet.t 
+    -> LooperUtils.AccessExpressionSet.t * DC.rhs option * EdgeExp.t option
 end
 
 include module type of Graph.Imperative.Digraph.ConcreteBidirectionalLabeled(Node)(EdgeData)
