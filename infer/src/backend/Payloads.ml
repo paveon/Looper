@@ -17,6 +17,7 @@ type t =
   ; config_impact_analysis: ConfigImpactAnalysis.Summary.t option
   ; cost: CostDomain.summary option
   ; looper: LooperSummary.t option
+  ; deadlock: DeadlockDomain.summary option
   ; disjunctive_demo: DisjunctiveDemo.domain option
   ; dotnet_resource_leaks: ResourceLeakCSDomain.summary option
   ; lab_resource_leaks: ResourceLeakDomain.summary option
@@ -53,6 +54,7 @@ let fields =
     ~config_impact_analysis:(fun f -> mk f "ConfigImpactAnalysis" ConfigImpactAnalysis.Summary.pp)
     ~cost:(fun f -> mk f "Cost" CostDomain.pp_summary)
     ~looper:(fun f -> mk f "Looper" LooperSummary.pp)
+    ~deadlock:(fun f -> mk f "Deadlock" DeadlockDomain.pp)
     ~disjunctive_demo:(fun f -> mk f "Disjunctive Demo" DisjunctiveDemo.pp_domain)
     ~litho_required_props:(fun f -> mk f "Litho Required Props" LithoDomain.pp_summary)
     ~pulse:(fun f -> mk f "Pulse" PulseSummary.pp)
@@ -82,6 +84,7 @@ let empty =
   ; config_impact_analysis= None
   ; cost= None
   ; looper= None
+  ; deadlock= None
   ; disjunctive_demo= None
   ; dotnet_resource_leaks= None
   ; lab_resource_leaks= None
