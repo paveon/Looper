@@ -17,6 +17,7 @@ type t =
   | ConfigImpactAnalysis
   | Cost
   | Looper
+  | DeadlockChecker
   | Eradicate
   | FragmentRetainsView
   | ImmutableCast
@@ -198,6 +199,18 @@ let config_unsafe checker =
       ; cli_flags= Some {deprecated= []; show_in_help= true}
       ; enabled_by_default= false
       ; activates= [] }
+  | DeadlockChecker ->
+      { id= "deadlock"
+      ; kind=
+          UserFacing
+            { title= "Deadlock Checker"
+            ; markdown_body= "See https://pajda.fit.vutbr.cz/xmarci10/fbinfer_concurrency/-/wikis/L2D2:-A-Low-Level-Deadlock-Detector"}
+      ; support= supports_clang
+      ; short_documentation= "Deadlock analysis"
+      ; cli_flags= Some {deprecated= []; show_in_help= true}
+      ; enabled_by_default= false
+      ; activates= []
+      }
   | Eradicate ->
       { id= "eradicate"
       ; kind=

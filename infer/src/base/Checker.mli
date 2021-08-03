@@ -16,6 +16,7 @@ type t =
   | ConfigImpactAnalysis
   | Cost
   | Looper
+  | DeadlockChecker
   | Eradicate
   | FragmentRetainsView
   | ImmutableCast

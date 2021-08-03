@@ -2606,6 +2606,12 @@ and disable_vfg_renaming =
   CLOpt.mk_bool ~long:"disable-vfg-renaming" ~default:false
     "Disable variable renaming based on VFG"
 
+and locking_error =
+  CLOpt.mk_bool ~long:"locking-error" ~default:false
+    "enable heurestic which cuts of lock-error (double locking/release before \
+    previous acquisition) paths."
+
+
 
 and incremental_analysis =
   CLOpt.mk_bool ~long:"incremental-analysis" ~default:false
@@ -3182,6 +3188,8 @@ and inclusive_cost = !inclusive_cost
 and incremental_analysis = !incremental_analysis
 
 and disable_vfg_renaming = !disable_vfg_renaming
+
+and locking_error = !locking_error
 
 and issues_tests = !issues_tests
 

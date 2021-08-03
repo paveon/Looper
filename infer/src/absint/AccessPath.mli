@@ -40,6 +40,8 @@ val append : t -> access list -> t
 (** append new accesses to an existing access path; e.g., `append_access x.f [g, h]` produces
     `x.f.g.h` *)
 
+val is_prefix : t -> t -> bool
+
 (* used in infer/src/labs/ *)
 val replace_prefix : prefix:t -> replace_with:t -> t -> t option [@@warning "-32"]
 

@@ -39,6 +39,7 @@ type id =
   | RetainCycles  (** directory of retain cycles dotty files *)
   | RunState  (** internal data about the last infer run *)
   | StarvationIssues  (** directory of issues reported by the starvation analysis *)
+  | DeadlockIssues
   | Temporary  (** directory containing temp files *)
   | TestDeterminatorReport  (** the report produced by the test determinator capture mode *)
   | TestDeterminatorTempResults  (** a directory *)

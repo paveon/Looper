@@ -138,6 +138,7 @@ module Raw = struct
     else if equal_base base1 base2 then chop_prefix_path ~prefix:path1 path2
     else None
 
+  let is_prefix ap1 ap2 = chop_prefix ~prefix:ap1 ap2 |> Option.is_some
 
   let replace_prefix ~prefix ~replace_with access_path =
     match chop_prefix ~prefix access_path with

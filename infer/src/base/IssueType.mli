@@ -151,6 +151,12 @@ val dead_store : t
 
 val deadlock : t
 
+val double_locking : t
+
+val double_unlocking : t
+
+val release_without_acquisition : t
+
 val divide_by_zero : t
 
 val do_not_report : t

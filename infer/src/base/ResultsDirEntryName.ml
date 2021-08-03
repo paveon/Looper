@@ -38,6 +38,7 @@ type id =
   | RetainCycles
   | RunState
   | StarvationIssues
+  | DeadlockIssues
   | Temporary
   | TestDeterminatorReport
   | TestDeterminatorTempResults
@@ -194,6 +195,11 @@ let of_id = function
       ; before_caching_capture= Delete }
   | StarvationIssues ->
       { rel_path= "starvation_issues"
+      ; kind= IssuesDirectory
+      ; before_incremental_analysis= Delete
+      ; before_caching_capture= Delete }
+  | DeadlockIssues ->
+      { rel_path= "deadlock_issues"
       ; kind= IssuesDirectory
       ; before_incremental_analysis= Delete
       ; before_caching_capture= Delete }
