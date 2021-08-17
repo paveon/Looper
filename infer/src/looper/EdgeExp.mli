@@ -75,6 +75,8 @@ val expand_multiplication : t -> IntLit.t option -> t
 
 val simplify : t -> t
 
+val remove_casts_of_consts : t -> Typ.IntegerWidths.t -> t
+
 val evaluate_const_exp : t -> IntLit.t option
 
 (* val access_path_id_resolver : (t * Typ.t) Ident.Map.t -> Var.t -> AccessPath.t option *)

@@ -219,12 +219,20 @@ module EdgeData = struct
           None
         )
       )
+      | EdgeExp.Cast (typ, exp) -> (
+        let accesses, exp_derived_opt = derive_rhs exp in
+        accesses, match exp_derived_opt with
+        | Some exp_derived -> (
+          if EdgeExp.is_zero exp_derived then exp_derived_opt
+          else Some (EdgeExp.Cast (typ, exp_derived))
+        )
+        | None -> None
+      )
       | EdgeExp.UnOp (Unop.Neg, exp, typ) -> (
         let accesses, exp_derived_opt = derive_rhs exp in
         accesses, match exp_derived_opt with
         | Some exp_derived -> (
-          if EdgeExp.is_zero exp_derived 
-          then exp_derived_opt 
+          if EdgeExp.is_zero exp_derived then exp_derived_opt
           else Some (EdgeExp.UnOp (Unop.Neg, exp_derived, typ))
         )
         | None -> None

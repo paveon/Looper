@@ -46,6 +46,8 @@ type construction_temp_data = {
 
   (* type_map: Typ.t PvarMap.t; *)
   tenv: Tenv.t;
+  exe_env: Exe_env.t;
+  procname: Procname.t;
 
   proc_data: procedure_data;
 }
@@ -87,7 +89,7 @@ let exec_instr : construction_temp_data -> Sil.instr -> construction_temp_data =
   | Var.LogicalVar id -> (
     match Ident.Map.find_opt id graph_data.ident_map_2 with
     | Some (EdgeExp.Access path) -> Some path
-    | _ -> None
+    | _ -> L.die InternalError "Missing mapped expression for '%a' identifier" Ident.pp id
   )
   | Var.ProgramVar _ -> None
   in
@@ -217,6 +219,8 @@ let exec_instr : construction_temp_data -> Sil.instr -> construction_temp_data =
 
     (* let lhs_typ = Option.value_exn (AccessPath.get_typ lhs_access graph_data.tenv) in *)
     (* debug_log "LHS AccessPath: %a : %a\n" AccessPath.pp lhs_access Typ.(pp Pp.text) lhs_typ; *)
+    let integer_widths =  Exe_env.get_integer_type_widths graph_data.exe_env graph_data.procname in
+
     let lhs_edge_exp = EdgeExp.of_hil_exp lhs_hil_exp in
     let lhs_access = match lhs_edge_exp with
     | EdgeExp.Access access -> access
@@ -241,6 +245,8 @@ let exec_instr : construction_temp_data -> Sil.instr -> construction_temp_data =
     ) 
     |> EdgeExp.simplify
     in
+    let rhs_edge_exp = EdgeExp.remove_casts_of_consts rhs_edge_exp integer_widths in
+
     debug_log "EdgeExp: %a = %a@," EdgeExp.pp lhs_edge_exp EdgeExp.pp rhs_edge_exp;
 
     (* Check if we can add new norm to the norm set *)
@@ -467,10 +473,11 @@ let exec_instr : construction_temp_data -> Sil.instr -> construction_temp_data =
 
     debug_log "@[<v4>Processing call arguments:@,";
     let args, arg_norms = List.foldi args ~f:(fun idx (args, norms) (arg, arg_typ) ->
-      debug_log "@[<v2>(%d) %a : %a@," idx Exp.pp arg Typ.(pp Pp.text) arg_typ;
+      debug_log "@[<v2>(%d) Exp: %a : %a@," idx Exp.pp arg Typ.(pp Pp.text) arg_typ;
       let arg_hil_exp = HilExp.of_sil ~include_array_indexes:true 
         ~f_resolve_id:ae_id_resolver ~add_deref:false arg arg_typ
       in
+      debug_log "HilExp: %a : %a@," HilExp.pp arg_hil_exp Typ.(pp Pp.text) arg_typ;
       let arg_edge_exp = EdgeExp.of_hil_exp arg_hil_exp |> substitute graph_data.edge_data in
       debug_log "Transformed EdgeExp: %a@," EdgeExp.pp arg_edge_exp;
 
@@ -511,6 +518,7 @@ let exec_instr : construction_temp_data -> Sil.instr -> construction_temp_data =
     debug_log "@]@,";
     { graph_data with
       ident_map = Ident.Map.add ret_id (call, ret_typ) graph_data.ident_map;
+      ident_map_2 = Ident.Map.add ret_id call graph_data.ident_map_2;
       (* type_map = PvarMap.add (Pvar.mk_abduced_ret callee_pname loc) ret_typ graph_data.type_map; *)
 
       edge_data = { graph_data.edge_data with 
@@ -756,22 +764,23 @@ let rec traverseCFG : Procdesc.t -> Procdesc.Node.t -> Procdesc.NodeSet.t -> con
 )
 
 
-let construct : Tenv.t -> Procdesc.t -> LooperSummary.t InterproceduralAnalysis.t -> procedure_data = 
-  fun tenv proc_desc summary -> (
+let construct : LooperSummary.t InterproceduralAnalysis.t -> procedure_data = 
+  fun summary -> (
     debug_log "@[<v>";
 
-    let proc_name = Procdesc.get_proc_name proc_desc in
+    let proc_desc = summary.proc_desc in
+    let procname = Procdesc.get_proc_name proc_desc in
+    let tenv = Exe_env.get_proc_tenv summary.exe_env procname in
     let begin_loc = Procdesc.get_loc proc_desc in
     let start_node = Procdesc.get_start_node proc_desc in
-    let lts_start_node = LTS.Node.Start (proc_name, begin_loc) in
+    let lts_start_node = LTS.Node.Start (procname, begin_loc) in
 
     let locals = Procdesc.get_locals proc_desc in
     let formals = Procdesc.get_pvar_formals proc_desc in
 
-    let proc_name = Procdesc.get_proc_name proc_desc in
     let _, type_map = List.fold locals ~init:(Pvar.Set.empty, PvarMap.empty) ~f:
     (fun (locals, type_map) (local : ProcAttributes.var_data) ->
-      let pvar = Pvar.mk local.name proc_name in
+      let pvar = Pvar.mk local.name procname in
       let type_map = PvarMap.add pvar local.typ type_map in
       let locals = Pvar.Set.add pvar locals in
       locals, type_map
@@ -823,7 +832,9 @@ let construct : Tenv.t -> Procdesc.t -> LooperSummary.t InterproceduralAnalysis.
       locals = AccessPath.BaseMap.empty;
       (* local_accesses = AccessExpressionSet.empty; *)
       (* type_map = type_map; *)
-      tenv = tenv;
+      tenv;
+      exe_env = summary.exe_env;
+      procname;
 
       proc_data = {
         nodes = LTS.NodeSet.singleton lts_start_node;

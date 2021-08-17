@@ -135,7 +135,7 @@ let analyze_procedure (analysis_data : LooperSummary.t InterproceduralAnalysis.t
             - LTS CONSTRUCTION\n\
             ---------------------------------\n";
   let tenv = Exe_env.get_proc_tenv analysis_data.exe_env proc_name in
-  let graph_data = GraphConstructor.construct tenv proc_desc analysis_data in
+  let graph_data = GraphConstructor.construct analysis_data in
 
   output_graph (proc_graph_dir ^/ lts_fname) graph_data.lts LTS_Dot.output_graph;
 

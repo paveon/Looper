@@ -107,8 +107,8 @@ let is_variable norm formals =
     | Some pvar -> not (Pvar.Set.mem pvar formals)
     | None -> true *)
   )
+  | UnOp (_, exp, _) | Cast (_, exp) -> (traverse_exp exp)
   | BinOp (_, lexp, rexp) -> (traverse_exp lexp) || (traverse_exp rexp)
-  | UnOp (_, exp, _) -> (traverse_exp exp)
   | Max args | Min args -> List.exists args ~f:traverse_exp
   | _ -> false
   in
@@ -241,6 +241,16 @@ let rec evaluate exp value_map default_value =
     | Binop.Mult _ -> l_value *. r_value
     | Binop.Div -> l_value /. r_value
     | _ -> assert(false)
+  )
+  | Cast (_, subexp) -> (
+    evaluate subexp value_map default_value
+
+    (* TODO: this should probably be language specific *)
+    (* let value = evaluate subexp value_map default_value in
+    if Typ.is_int typ then (
+      if Typ.is_unsigned_int typ then Float.max value 0.0 |> Float.round_down
+      else Float.round_down value
+    ) else value *)
   )
   | UnOp (Unop.Neg, subexp, _) -> -.(evaluate subexp value_map default_value)
   | Max args -> eval_min_max args List.max_elt
@@ -468,6 +478,10 @@ let rec separate exp =
       )
     )
   )
+  | Cast (typ, exp) -> (
+    let derived_exp, const_opt = separate exp in
+    Cast (typ, derived_exp), const_opt
+  )
   | UnOp (unop, exp, typ) -> (
     match unop with
     | Unop.Neg -> (
@@ -627,6 +641,36 @@ let simplify exp =
   simplified_exp
 
 
+let rec remove_casts_of_consts exp integer_widths = match exp with
+  | Cast (typ, Const (Const.Cint c)) -> (
+    (* Get rid of unnecessary casts over constants. This should be language
+     * specific probably. Should work correctly for C/C++ for now (I think). *)    
+    if Typ.is_unsigned_int typ && IntLit.isnegative c then (
+      match Typ.get_ikind_opt typ with
+      | Some ikind -> (
+        let type_max_value = Z.((Typ.range_of_ikind integer_widths ikind |> snd) + ~$1) in
+        let value_after_cast = IntLit.of_big_int Z.(type_max_value - (IntLit.to_big_int c)) in
+        Const (Const.Cint value_after_cast)
+      )
+      | None -> L.die InternalError 
+        "Missing ikind data of integer type: %a. Cannot remove cast of constant"
+        Typ.(pp Pp.text) typ
+    )
+    else Const (Const.Cint c)
+  )
+  | BinOp (op, lexp, rexp) -> 
+    BinOp (op, remove_casts_of_consts lexp integer_widths, remove_casts_of_consts rexp integer_widths)
+  | UnOp (unop, exp, typ_opt) -> 
+    UnOp (unop, remove_casts_of_consts exp integer_widths, typ_opt)
+  | Call (typ, procname, args, loc) -> (
+    let args = (List.map args ~f:(fun (arg, typ) -> remove_casts_of_consts arg integer_widths, typ)) in
+    Call (typ, procname, args, loc)
+  )
+  | Max args | Min args ->
+    Max (List.map args ~f:(fun arg -> remove_casts_of_consts arg integer_widths))
+  | _ -> exp
+
+
 let rec evaluate_const_exp exp = 
   let rec get_min_max op args = match args with
   | [] -> None
@@ -753,10 +797,10 @@ let rec of_hil_exp exp = match exp with
   | HilExp.UnaryOperator (op, subexp, subexp_typ) -> UnOp (op, of_hil_exp subexp, subexp_typ)
   
   
-  | HilExp.Sizeof (_, subexp_opt) -> (
-    match subexp_opt with
-    | Some subexp -> L.die InternalError "TODO: HilExp.Sizeof subexp: %a" HilExp.pp subexp
-    | None -> L.die InternalError "TODO: HilExp.Sizeof missing size subexp"
+  | HilExp.Sizeof {nbytes} -> (
+    match nbytes with
+    | Some size -> Const (Const.Cint (IntLit.of_int size))
+    | None -> L.die InternalError "TODO: HilExp.Sizeof missing size information"
     (* match nbytes with
     | Some size -> Const (Const.Cint (IntLit.of_int size))
     | _ -> assert(false) *)
@@ -1240,9 +1284,10 @@ let determine_monotonicity exp tenv (prover_data : prover_data) =
       in
       lexp_degree + rexp_degree, merged_exp
     )
-    | _ -> (
+    | Cast (_, subexp) -> get_degree subexp root
+    | exp -> (
       (* TODO: implement remaining possible cases *)
-      assert(false)
+      L.die InternalError "Partial derivative: case not implemented. Expression: %a" pp exp;
     )
     in
 
