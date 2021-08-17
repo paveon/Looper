@@ -16,4 +16,4 @@ type procedure_data = {
 }
 
 
-val construct: Tenv.t -> Procdesc.t -> LooperSummary.t InterproceduralAnalysis.t -> procedure_data
+val construct: LooperSummary.t InterproceduralAnalysis.t -> procedure_data

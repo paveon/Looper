@@ -26,7 +26,9 @@ module Access : sig
   val is_field_or_array_access : 'a t -> bool
 end
 
-type t =
+type sizeof_data = {typ: Typ.t; nbytes: int option; dynamic_length: t option; subtype: Subtype.t}
+
+and t =
   | AccessExpression of access_expression  (** access path (e.g., x.f.g or x[i]) *)
   | UnaryOperator of Unop.t * t * Typ.t option
       (** Unary operator with type of the result if known *)
@@ -35,7 +37,8 @@ type t =
   | Closure of Procname.t * (AccessPath.base * t) list  (** Name of function + environment *)
   | Constant of Const.t  (** Constants *)
   | Cast of Typ.t * t  (** Type cast *)
-  | Sizeof of Typ.t * t option
+  | Sizeof of sizeof_data
+  (* | Sizeof of Typ.t * t option *)
       (** C-style sizeof(), and also used to treate a type as an expression. Refer to [Exp] module
           for canonical documentation *)
 
