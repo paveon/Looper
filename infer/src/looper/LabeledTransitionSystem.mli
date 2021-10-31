@@ -58,7 +58,7 @@ module EdgeData : sig
 
   (* Derive difference constraint "x <= y + c" based on edge assignments *)
   val derive_constraint : t -> EdgeExp.t -> LooperUtils.AccessExpressionSet.t 
-    -> AccessPath.BaseSet.t 
+    -> AccessPath.BaseSet.t -> Tenv.t
     -> LooperUtils.AccessExpressionSet.t * DC.rhs option * EdgeExp.t option
 end
 
