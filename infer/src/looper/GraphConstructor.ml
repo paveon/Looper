@@ -85,11 +85,43 @@ let exec_instr : construction_temp_data -> Sil.instr -> construction_temp_data =
 
   (* let ap_id_resolver = EdgeExp.access_path_id_resolver graph_data.ident_map in *)
 
+  (* let rec map_idents hil_exp = match hil_exp with
+  | HilExp.AccessExpression ae -> (
+
+  )
+  | HilExp.UnaryOperator (unop, exp, typ) ->
+      HilExp.UnaryOperator (unop, map_idents exp, typ)
+  | HilExp.BinaryOperator (op, lexp, rexp) ->
+      HilExp.BinaryOperator (op, map_idents lexp, map_idents rexp)
+  | HilExp.Cast (typ, exp) ->
+      HilExp.Cast (typ, map_idents exp)
+  | HilExp.Closure _
+  | HilExp.Constant _
+  | HilExp.Exception _
+  | HilExp.Sizeof _ -> hil_exp
+  in *)
+
+  let call_id_resolver ident =
+    match Ident.Map.find_opt ident graph_data.ident_map_2 with
+    | Some exp -> exp
+    | None -> assert(false)
+  in
+
   let ae_id_resolver var = match var with
   | Var.LogicalVar id -> (
     match Ident.Map.find_opt id graph_data.ident_map_2 with
-    | Some (EdgeExp.Access path) -> Some path
-    | _ -> L.die InternalError "Missing mapped expression for '%a' identifier" Ident.pp id
+    | Some exp -> (
+      match exp with
+      | EdgeExp.Access path -> Some path
+      | _ -> (
+        (* Replace idents mapped to more complex expressions later.
+         * HilExp.of_sil signature requires this function to return 
+         * access expression type. More complex expressions occur due
+         * to return values of function calls *)
+        None
+      )
+    )
+    | None -> L.die InternalError "Missing mapped expression for '%a' identifier" Ident.pp id
   )
   | Var.ProgramVar _ -> None
   in
@@ -125,9 +157,9 @@ let exec_instr : construction_temp_data -> Sil.instr -> construction_temp_data =
   | Prune (cond, loc, branch, kind) -> (
     (* debug_log "[PRUNE (%s)] (%a) | %a\n" (Sil.if_kind_to_string kind) Location.pp loc Exp.pp cond; *)
     let hil_exp_cond = HilExp.of_sil ~include_array_indexes:true
-      ~f_resolve_id:ae_id_resolver  ~add_deref:false cond (Typ.mk (Tint IBool))
+      ~f_resolve_id:ae_id_resolver  ~add_deref:true cond (Typ.mk (Tint IBool))
     in
-    let edge_exp_cond = EdgeExp.of_hil_exp hil_exp_cond in
+    let edge_exp_cond = EdgeExp.of_hil_exp hil_exp_cond call_id_resolver in
 
     (* let edge_exp_cond = EdgeExp.of_exp cond graph_data.ident_map (Typ.mk (Tint IBool)) graph_data.type_map in *)
     debug_log "@[<v4>[PRUNE] %a@,Prune type: %s@,Branch: %B@,Exp condition: %a@,EdgeExp condition: %a@,"
@@ -199,7 +231,7 @@ let exec_instr : construction_temp_data -> Sil.instr -> construction_temp_data =
     debug_log "@[<v4>[STORE] %a@,Type: %a@,Exp: %a = %a@," 
       Location.pp loc Typ.(pp Pp.text) typ Exp.pp lhs Exp.pp rhs;
 
-    let rhs_hil_exp = HilExp.of_sil ~include_array_indexes:true ~f_resolve_id:ae_id_resolver ~add_deref:false rhs typ in
+    let rhs_hil_exp = HilExp.of_sil ~include_array_indexes:true ~f_resolve_id:ae_id_resolver ~add_deref:true rhs typ in
     let lhs_hil_exp = HilExp.of_sil ~include_array_indexes:true ~f_resolve_id:ae_id_resolver ~add_deref:true lhs typ in
     
     debug_log "@[<v4>HilExp: %a = %a" HilExp.pp lhs_hil_exp HilExp.pp rhs_hil_exp;
@@ -221,7 +253,7 @@ let exec_instr : construction_temp_data -> Sil.instr -> construction_temp_data =
     (* debug_log "LHS AccessPath: %a : %a\n" AccessPath.pp lhs_access Typ.(pp Pp.text) lhs_typ; *)
     let integer_widths =  Exe_env.get_integer_type_widths graph_data.exe_env graph_data.procname in
 
-    let lhs_edge_exp = EdgeExp.of_hil_exp lhs_hil_exp in
+    let lhs_edge_exp = EdgeExp.of_hil_exp lhs_hil_exp call_id_resolver in
     let lhs_access = match lhs_edge_exp with
     | EdgeExp.Access access -> access
     | _ -> L.die InternalError "Left-hand side expression of Store instruction is not an AccessExpression: %a" 
@@ -229,7 +261,10 @@ let exec_instr : construction_temp_data -> Sil.instr -> construction_temp_data =
     in
     let lhs_access_base = HilExp.AccessExpression.get_base lhs_access in
 
-    let rhs_edge_exp = match EdgeExp.of_hil_exp rhs_hil_exp with
+    let rhs_edge_exp = EdgeExp.of_hil_exp rhs_hil_exp call_id_resolver in
+    debug_log "EdgeExp: %a = %a@," EdgeExp.pp lhs_edge_exp EdgeExp.pp rhs_edge_exp;
+
+    let rhs_edge_exp = match rhs_edge_exp with
     | EdgeExp.Call (_, _, _, loc) as call -> (
       match Location.Map.find_opt loc graph_data.proc_data.call_summaries with
       | Some summary -> (
@@ -352,7 +387,8 @@ let exec_instr : construction_temp_data -> Sil.instr -> construction_temp_data =
      * expression to norms if it is. We need to track pointer formals due to possible side-effects *)
     let lhs_access_base_typ = snd lhs_access_base in
     let norms = if AccessPath.BaseSet.mem lhs_access_base graph_data.proc_data.formals 
-    && Typ.is_pointer lhs_access_base_typ then (
+    && Typ.is_pointer lhs_access_base_typ
+    && Typ.is_int typ then (
       debug_log "Formal base '%a' is a pointer: %a. Adding access expression '%a' to norms.@,"
         AccessPath.pp_base lhs_access_base 
         Typ.(pp Pp.text) lhs_access_base_typ
@@ -384,10 +420,10 @@ let exec_instr : construction_temp_data -> Sil.instr -> construction_temp_data =
     debug_log "@[<v4>[LOAD] %a@,Type: %a@,Exp: %a = %a@,"
       Location.pp loc Typ.(pp Pp.text) typ Ident.pp id Exp.pp e;
 
-    let rhs_hil_expr = HilExp.of_sil ~include_array_indexes:true ~f_resolve_id:ae_id_resolver ~add_deref:true e typ in
+    let rhs_hil_expr = HilExp.of_sil ~include_array_indexes:true ~f_resolve_id:ae_id_resolver ~add_deref:false e typ in
     debug_log "RHS HilExp: %a = %a@," Ident.pp id HilExp.pp rhs_hil_expr;
 
-    let rhs_edge_exp = EdgeExp.of_hil_exp rhs_hil_expr in
+    let rhs_edge_exp = EdgeExp.of_hil_exp rhs_hil_expr call_id_resolver in
     debug_log "RHS EdgeExp: %a = %a@," Ident.pp id EdgeExp.pp rhs_edge_exp;
 
     let ident_map_2 = Ident.Map.add id rhs_edge_exp graph_data.ident_map_2 in
@@ -475,16 +511,22 @@ let exec_instr : construction_temp_data -> Sil.instr -> construction_temp_data =
     let args, arg_norms = List.foldi args ~f:(fun idx (args, norms) (arg, arg_typ) ->
       debug_log "@[<v2>(%d) Exp: %a : %a@," idx Exp.pp arg Typ.(pp Pp.text) arg_typ;
       let arg_hil_exp = HilExp.of_sil ~include_array_indexes:true 
-        ~f_resolve_id:ae_id_resolver ~add_deref:false arg arg_typ
+        ~f_resolve_id:ae_id_resolver ~add_deref:true arg arg_typ
       in
       debug_log "HilExp: %a : %a@," HilExp.pp arg_hil_exp Typ.(pp Pp.text) arg_typ;
-      let arg_edge_exp = EdgeExp.of_hil_exp arg_hil_exp |> substitute graph_data.edge_data in
+      let arg_edge_exp = EdgeExp.of_hil_exp arg_hil_exp call_id_resolver
+        |> substitute graph_data.edge_data
+      in
       debug_log "Transformed EdgeExp: %a@," EdgeExp.pp arg_edge_exp;
 
       if Typ.is_int arg_typ then (
         let simplified_arg_edge_exp = EdgeExp.simplify arg_edge_exp in
         debug_log "Integer argument type, simplified: %a@]@," EdgeExp.pp simplified_arg_edge_exp;
         let arg_norms = EdgeExp.get_access_exp_set simplified_arg_edge_exp in
+        debug_log "New norms: ";
+        EdgeExp.Set.iter (fun norm -> debug_log "%a, " EdgeExp.pp norm) arg_norms;
+        debug_log "@,";
+
         (simplified_arg_edge_exp, arg_typ) :: args, EdgeExp.Set.union arg_norms norms
       ) else (
         debug_log "Non-integer argument type, ignoring@]@,";
@@ -499,7 +541,7 @@ let exec_instr : construction_temp_data -> Sil.instr -> construction_temp_data =
 
     debug_log "@[<v4>Loading call summary@,";
     let payload_opt = graph_data.proc_data.analysis_data.analyze_dependency callee_pname in
-    let call_summaries = match payload_opt with
+    let call_summaries, return_bound = match payload_opt with
     | Some (_, payload) -> (
       debug_log "Payload exists, substituting return bound@]@,";
       let subst_ret_bound = match payload.return_bound with
@@ -507,18 +549,19 @@ let exec_instr : construction_temp_data -> Sil.instr -> construction_temp_data =
       | None -> None
       in
       let summary = { payload with return_bound = subst_ret_bound } in
-      Location.Map.add loc summary graph_data.proc_data.call_summaries
+      Location.Map.add loc summary graph_data.proc_data.call_summaries,
+      Option.value subst_ret_bound ~default:call
     )
     | None -> (
       debug_log "Payload missing, ignoring@]@,";
-      graph_data.proc_data.call_summaries
+      graph_data.proc_data.call_summaries, call
     )
     in
+    debug_log "@]Adding return id mapping: %a = %a@,@," Ident.pp ret_id EdgeExp.pp return_bound;
 
-    debug_log "@]@,";
     { graph_data with
       ident_map = Ident.Map.add ret_id (call, ret_typ) graph_data.ident_map;
-      ident_map_2 = Ident.Map.add ret_id call graph_data.ident_map_2;
+      ident_map_2 = Ident.Map.add ret_id return_bound graph_data.ident_map_2;
       (* type_map = PvarMap.add (Pvar.mk_abduced_ret callee_pname loc) ret_typ graph_data.type_map; *)
 
       edge_data = { graph_data.edge_data with 

@@ -88,7 +88,7 @@ module EdgeData = struct
   let add_guards edge guards = edge.guards <- guards
 
   let add_constraint edge ((norm, dc_rhs) as dc) =
-    debug_log "[DC derivation] Adding new DC: %a\n" DC.pp dc;
+    (* debug_log "[DC derivation] Adding new DC: %a\n" DC.pp dc; *)
     edge.constraints <- DC.Map.add_dc norm dc_rhs edge.constraints
 end
 

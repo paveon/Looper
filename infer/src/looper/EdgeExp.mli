@@ -42,9 +42,9 @@ val is_one : t -> bool
 
 val is_const : t -> bool
 
-val is_variable : t -> AccessPath.BaseSet.t -> bool
+val is_variable : t -> AccessPath.BaseSet.t -> Tenv.t -> bool
 
-val is_symbolic_const : t -> AccessPath.BaseSet.t -> bool
+val is_symbolic_const : t -> AccessPath.BaseSet.t -> Tenv.t -> bool
 
 val is_int : t -> Typ.t LooperUtils.PvarMap.t -> Tenv.t -> bool
 
@@ -83,7 +83,7 @@ val evaluate_const_exp : t -> IntLit.t option
 
 (* val of_exp : Exp.t -> (t * Typ.t) Ident.Map.t -> Typ.t -> Typ.t LooperUtils.PvarMap.t -> t *)
 
-val of_hil_exp : HilExp.t -> t
+val of_hil_exp : HilExp.t -> (Ident.t -> t) -> t
 
 val to_why3_expr : t -> Tenv.t -> LooperUtils.prover_data -> (Why3.Term.term * Why3.Term.Sterm.t)
 

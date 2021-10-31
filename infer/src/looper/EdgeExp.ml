@@ -89,7 +89,7 @@ let is_zero = function
 let is_one = function Const (Const.Cint const) -> IntLit.isone const | _ -> false
 
 
-let is_variable norm formals =
+let is_variable norm formals tenv =
   let rec traverse_exp = function
   | Access ae -> (
     let access_base = HilExp.AccessExpression.get_base ae in
@@ -98,7 +98,11 @@ let is_variable norm formals =
        * so we can derive DCs for them and track their value so we can then
        * calculate their variable bounds later on to track function side-effects *)
       let access_base_typ = snd access_base in
-      Typ.is_pointer access_base_typ
+      let is_access_ptr = match HilExp.AccessExpression.get_typ ae tenv with
+      | Some access_typ -> Typ.is_pointer access_typ
+      | None -> false
+      in 
+      Typ.is_pointer access_base_typ && is_access_ptr
     ) else (
       true
     )
@@ -115,7 +119,7 @@ let is_variable norm formals =
   traverse_exp norm
 
 
-let is_symbolic_const norm formals = not (is_variable norm formals)
+let is_symbolic_const norm formals tenv = not (is_variable norm formals tenv)
 
 
 let rec is_int exp type_map tenv = match exp with
@@ -188,7 +192,7 @@ let rec is_return exp = match exp with
 
 
 let eval_consts op c1 c2 = match op with
-  | Binop.PlusA _ -> IntLit.add c1 c2
+  | Binop.PlusA _ | Binop.PlusPI -> IntLit.add c1 c2
   | Binop.MinusA _ -> IntLit.sub c1 c2
   | Binop.Mult _ -> IntLit.mul c1 c2
   | Binop.Div -> IntLit.div c1 c2
@@ -272,6 +276,10 @@ let merge exp const_opt = match const_opt with
         match op with
         | Binop.MinusA kind -> try_eval (Binop.PlusA kind) exp const_neg
         | Binop.PlusA kind -> try_eval (Binop.MinusA kind) exp const_neg
+        | Binop.Mult kind -> (
+          if IntLit.isminusone const then UnOp (Unop.Neg, exp, None)
+          else try_eval (Binop.Mult kind) exp (Const (Const.Cint const))
+        )
         | _ -> try_eval op exp (Const (Const.Cint const))
       )
       else try_eval op exp (Const (Const.Cint const))
@@ -282,6 +290,7 @@ let merge exp const_opt = match const_opt with
 
 let split_exp exp = 
   let rec aux exp last_op acc = match exp with
+  | Cast (_, exp) -> aux exp last_op acc
   | BinOp (op, lexp, rexp) -> (
     match op with
     | Binop.PlusA _ -> (
@@ -333,12 +342,14 @@ let rec separate exp =
       match l_const_opt, r_const_opt with
       | Some (l_op, l_const), Some (r_op, r_const) -> (
         match l_op, r_op with
-        | Binop.PlusA _, Binop.PlusA _ -> lexp_derived, rexp_derived, Some (Binop.PlusA None, IntLit.add l_const r_const)
-        | Binop.MinusA _, Binop.PlusA _ -> lexp_derived, rexp_derived, Some (Binop.PlusA None, IntLit.sub r_const l_const)
-        | Binop.MinusA typ, Binop.MinusA _ -> lexp_derived, rexp_derived, Some (Binop.MinusA typ, IntLit.add r_const l_const)
-        | Binop.Shiftrt, Binop.PlusA _ -> merge lexp_derived l_const_opt, rexp_derived, Some (Binop.PlusA None, r_const)
+        | Binop.PlusA _, Binop.PlusA _ -> lexp_derived, rexp_derived, Some (l_op, IntLit.add l_const r_const)
+        | Binop.MinusA _, Binop.PlusA _ -> lexp_derived, rexp_derived, Some (r_op, IntLit.sub r_const l_const)
+        | Binop.MinusA _, Binop.MinusA _ -> lexp_derived, rexp_derived, Some (l_op, IntLit.add r_const l_const)        
+        | Binop.PlusA _, Binop.Mult _ -> lexp_derived, merge rexp_derived r_const_opt, Some (l_op, r_const)
+        | Binop.Shiftrt, Binop.PlusA _
+        | Binop.Mult _, Binop.PlusA _ -> merge lexp_derived l_const_opt, rexp_derived, Some (r_op, r_const)
         | _ -> (
-          (* debug_log "lop: %s, rop: %s\n" (Binop.str Pp.text l_op) (Binop.str Pp.text r_op); *)
+          console_log "exp: %a,  lop: %s, rop: %s\n" pp exp (Binop.str Pp.text l_op) (Binop.str Pp.text r_op);
           assert(false)
         )
       )
@@ -492,12 +503,16 @@ let rec separate exp =
         if IntLit.iszero const then UnOp (unop, derived_exp, typ), None
         else (
           match binop with
-          | Binop.PlusA typ_opt -> UnOp (unop, derived_exp, typ), Some (Binop.MinusA typ_opt, const)
-          | Binop.MinusA typ_opt -> UnOp (unop, derived_exp, typ), Some (Binop.PlusA typ_opt, const)
+          | Binop.PlusA ikind_opt -> UnOp (unop, derived_exp, typ), Some (Binop.MinusA ikind_opt, const)
+          | Binop.MinusA ikind_opt -> UnOp (unop, derived_exp, typ), Some (Binop.PlusA ikind_opt, const)
           | _ -> assert(false)
         )
       )
-      | None -> UnOp (unop, derived_exp, typ), None
+      | None -> (
+        let ikind = Option.value_map typ ~default:None ~f:(fun x -> Typ.get_ikind_opt x) in
+        derived_exp, Some (Binop.Mult ikind, IntLit.minus_one)
+      )
+      (* | None -> UnOp (unop, derived_exp, typ), None *)
     )
     | _ -> assert(false)
   )
@@ -539,11 +554,15 @@ let rec expand_multiplication exp const_opt =
     | Some const -> Const (Const.Cint (IntLit.mul c const))
     | None -> exp
   )
+  | Cast (typ, exp) -> Cast (typ, expand_multiplication exp const_opt)
   | Max [arg] -> Max [expand_multiplication arg const_opt]
-  | Max _ -> (
+  | Max args -> (
     (* TODO: probably leave as is, in general we cannot simply multiply each
      * argument, i.e., C * max(arg_2,arg_2, ...) != max(C * arg_1, C * arg_2, ...) *)
-    assert(false)
+    let args = List.map args ~f:(fun arg -> expand_multiplication arg None) in
+    Option.value_map const_opt ~default:(Max args) ~f:(fun c -> 
+      try_eval (Binop.Mult None) (Const (Const.Cint c)) (Max args)
+    )
   )
   | BinOp (Binop.Mult _, Const (Const.Cint c), subexp)
   | BinOp (Binop.Mult _, subexp, Const (Const.Cint c)) -> (
@@ -560,9 +579,13 @@ let rec expand_multiplication exp const_opt =
     let multiplied_parts = List.fold x_parts ~init:[] ~f:(fun acc x_part ->
       List.fold y_parts ~init:acc ~f:(fun parts_acc y_part ->
         let mult_exp = match x_part, y_part with
-        | Const (Const.Cint _), _ 
-        | _, Const (Const.Cint _) -> (
-          expand_multiplication (try_eval op x_part y_part) const_opt
+        | Const (Const.Cint c), _ -> (
+          let exp = if IntLit.isone c then y_part else try_eval op x_part y_part in
+          expand_multiplication exp const_opt
+        )
+        | _, Const (Const.Cint c) -> (
+          let exp = if IntLit.isone c then x_part else try_eval op x_part y_part in
+          expand_multiplication exp const_opt
         )
         | BinOp (Binop.Div, lexp_numer, lexp_denom), BinOp (Binop.Div, rexp_numer, rexp_denom) -> (
           let numerator = multiply_sub_exps lexp_numer rexp_numer in
@@ -614,20 +637,28 @@ let rec expand_multiplication exp const_opt =
     process_div lexp (Const (Const.Cint divisor)) const_opt *)
   )
   | BinOp (Binop.Shiftrt, lexp, rexp) -> (
-    match const_opt with
-    | Some const -> (
+    Option.value_map const_opt ~default:exp ~f:(fun c ->
       (* C * (x >> y)  --->  (C * x) >> y
        * this is probably incorrect in edge cases due to
        * the order of operations which should matter? *)
+      let lexp = try_eval (Binop.Mult None) (Const (Const.Cint c)) lexp in
+      BinOp (Binop.Shiftrt, lexp, rexp)
+    )
+    (* match const_opt with
+    | Some const -> (
+
       let lexp = try_eval (Binop.Mult None) (Const (Const.Cint const)) lexp in
       BinOp (Binop.Shiftrt, lexp, rexp)
     )
-    | None -> exp
+    | None -> exp *)
   )
   | _ -> (
-    match const_opt with
+    Option.value_map const_opt ~default:exp ~f:(fun c ->
+      try_eval (Binop.Mult None) (Const (Const.Cint c)) exp
+    )
+    (* match const_opt with
     | Some const -> try_eval (Binop.Mult None) (Const (Const.Cint const)) exp
-    | None -> exp
+    | None -> exp *)
   )
 
 
@@ -709,6 +740,10 @@ let rec transform_shifts exp = match exp with
     let arg, conditions = transform_shifts arg in
     arg, Set.add (BinOp (Binop.Ge, arg, zero)) conditions
   )
+  | Cast (typ, exp) -> (
+    let exp, exp_conditions = transform_shifts exp in
+    Cast (typ, exp), exp_conditions
+  )
   | BinOp (Binop.Shiftrt, lexp, rexp) -> (
     let lexp, lexp_conditions = transform_shifts lexp in
 
@@ -784,19 +819,33 @@ let rec transform_shifts exp = match exp with
   aux exp *)
 
 
-let rec of_hil_exp exp = match exp with
-  | HilExp.AccessExpression access -> Access access
+let rec of_hil_exp exp id_resolver = match exp with
+  | HilExp.AccessExpression access -> (
+    let base_var = HilExp.AccessExpression.get_base access |> fst in
+    match Var.get_ident base_var with
+    | Some ident -> (
+      (* Idents should occur only for previously unsubstituted
+       * return idents of function calls, try to substitute now *)
+      id_resolver ident
+    )
+    | None -> Access access
+  )
   | HilExp.Constant const -> Const const
-  | HilExp.Cast (cast_type, subexp) -> Cast (cast_type, of_hil_exp subexp)
+  | HilExp.Cast (cast_type, HilExp.Constant (Const.Cint c)) -> (
+    (* TODO: do something based on signedness of the int type and value of const *)
+    assert(Typ.is_int cast_type || Typ.is_pointer_to_int cast_type);
+    Const (Const.Cint c)
+  )
+  | HilExp.Cast (cast_type, subexp) -> Cast (cast_type, of_hil_exp subexp id_resolver)
   | HilExp.BinaryOperator (op, lexp, rexp) -> (
-    let lexp = of_hil_exp lexp in
-    let rexp = of_hil_exp rexp in
+    let lexp = of_hil_exp lexp id_resolver in
+    let rexp = of_hil_exp rexp id_resolver in
     BinOp (op, lexp, rexp)
   )
-  | HilExp.UnaryOperator (Unop.Neg, HilExp.Constant Const.Cint c, _) -> Const (Const.Cint (IntLit.neg c))
-  | HilExp.UnaryOperator (op, subexp, subexp_typ) -> UnOp (op, of_hil_exp subexp, subexp_typ)
-  
-  
+  | HilExp.UnaryOperator (Unop.Neg, HilExp.Constant Const.Cint c, _) ->
+      Const (Const.Cint (IntLit.neg c))
+  | HilExp.UnaryOperator (op, subexp, subexp_typ) ->
+      UnOp (op, of_hil_exp subexp id_resolver, subexp_typ)
   | HilExp.Sizeof {nbytes} -> (
     match nbytes with
     | Some size -> Const (Const.Cint (IntLit.of_int size))
@@ -902,6 +951,8 @@ let rec to_why3_expr exp tenv (prover_data : prover_data) =
     | Binop.MinusA ikind_opt -> aux (Why3.Term.t_app_infer minus_symbol [why3_lexp; why3_rexp]) ikind_opt
     | Binop.PlusA ikind_opt -> aux (Why3.Term.t_app_infer plus_symbol [why3_lexp; why3_rexp]) ikind_opt
     | Binop.Mult ikind_opt -> aux (Why3.Term.t_app_infer mul_symbol [why3_lexp; why3_rexp]) ikind_opt
+    | Binop.PlusPI -> Why3.Term.t_app_infer plus_symbol [why3_lexp; why3_rexp], Why3.Term.Sterm.empty
+    | Binop.MinusPI | Binop.MinusPP -> Why3.Term.t_app_infer minus_symbol [why3_lexp; why3_rexp], Why3.Term.Sterm.empty
     | Binop.Div -> (
       let conditions = if is_const rexp then (
         assert(not (is_zero rexp));
@@ -1036,6 +1087,7 @@ let get_accesses_poly exp set ~f ~g =
   | Access access -> f (g access) set
   | BinOp (_, lexp, rexp) -> aux rexp (aux lexp set)
   | UnOp (_, exp, _) -> aux exp set
+  | Cast (_, exp) -> aux exp set
   | Max args -> List.fold args ~init:set ~f:(fun acc arg -> aux arg acc)
   | Min args -> List.fold args ~init:set ~f:(fun acc arg -> aux arg acc)
   | _ -> set
@@ -1139,16 +1191,33 @@ let subst bound args formal_map =
 
 let normalize_condition exp tenv = 
   let negate_lop (op, lexp, rexp) = match op with
-  | Binop.Lt -> (Binop.Ge, lexp, rexp)
-  | Binop.Le -> (Binop.Gt, lexp, rexp)
-  | Binop.Gt -> (Binop.Ge, rexp, lexp)
-  | Binop.Ge -> (Binop.Gt, rexp, lexp)
-  | Binop.Eq -> (Binop.Ne, lexp, rexp)
-  | Binop.Ne -> (Binop.Eq, lexp, rexp)
-  | _ -> (op, lexp, rexp)
+  | Binop.Lt -> Binop.Ge, lexp, rexp
+  | Binop.Le -> Binop.Gt, lexp, rexp
+  | Binop.Gt -> Binop.Ge, rexp, lexp
+  | Binop.Ge -> Binop.Gt, rexp, lexp
+  | Binop.Eq -> Binop.Ne, lexp, rexp
+  | Binop.Ne -> Binop.Eq, lexp, rexp
+  | _ -> op, lexp, rexp
   in
 
-  let rec aux exp = match exp with
+  let rec create_condition exp = match exp with
+  | UnOp (Unop.LNot, subexp, _) -> (
+    let op, lexp, rexp = create_condition subexp in
+    negate_lop (op, lexp, rexp)
+  )
+  | BinOp (op, lexp, rexp) -> (
+    match op with
+    | Binop.Lt -> Binop.Gt, rexp, lexp
+    | Binop.Le -> Binop.Ge, rexp, lexp
+    | Binop.Gt | Binop.Ge | Binop.Eq | Binop.Ne -> op, lexp, rexp
+    | _ -> Binop.Ne, exp, zero
+  )
+  | _ -> Binop.Ne, exp, zero
+  in
+  let op, lexp, rexp = create_condition exp in
+  BinOp (op, lexp, rexp)
+
+  (* let rec aux exp = match exp with
   | Access path -> (
     match HilExp.AccessExpression.get_typ path tenv with
     | Some typ when Typ.is_int typ || Typ.is_pointer typ -> (Binop.Ne, Access path, zero)
@@ -1169,7 +1238,7 @@ let normalize_condition exp tenv =
   | _ -> L.(die InternalError)"Unsupported condition expression '%a'" pp exp
   in
   let (op, lexp, rexp) = aux exp in
-  BinOp (op, lexp, rexp)
+  BinOp (op, lexp, rexp) *)
 
 
 let determine_monotonicity exp tenv (prover_data : prover_data) =
@@ -1262,8 +1331,8 @@ let determine_monotonicity exp tenv (prover_data : prover_data) =
       | false, true -> 1, Some (Access l_access)
       | _ -> 0, Some exp
     )
-    | BinOp (Binop.Mult typ, (Access access), subexp)
-    | BinOp (Binop.Mult typ, subexp, (Access access)) -> (
+    | BinOp (Binop.Mult typ, Access access, subexp)
+    | BinOp (Binop.Mult typ, subexp, Access access) -> (
       let subexp_degree, subexp_opt = get_degree subexp false in
 
       if HilExp.AccessExpression.equal access var then subexp_degree + 1, subexp_opt
@@ -1283,6 +1352,13 @@ let determine_monotonicity exp tenv (prover_data : prover_data) =
       | _ -> None
       in
       lexp_degree + rexp_degree, merged_exp
+    )
+    | BinOp (Binop.Div, Access access, (Const (Const.Cint _) as div_const)) -> (
+      if HilExp.AccessExpression.equal access var then (
+        let const_one = Const (Const.Cint (IntLit.one)) in
+        1, Some (BinOp (Binop.Div, const_one, div_const))
+      )
+      else 0, Some exp
     )
     | Cast (_, subexp) -> get_degree subexp root
     | exp -> (
@@ -1314,12 +1390,51 @@ let determine_monotonicity exp tenv (prover_data : prover_data) =
   )
   in
 
+  let rec deduplicate_parts parts = match parts with
+  | [] -> []
+  | x::xs -> (
+    let x_var, x_const = separate x in
+    let x, part_count = match x_const with
+    | Some (Binop.Mult _, const) -> x_var, const
+    | _ -> x, IntLit.one
+    in
+
+    (* Find all duplicates of expression 'x' and store
+     * just one multiplied by the number of occurences *)
+    let filtered_xs, part_count = List.fold xs 
+    ~f:(fun (new_list, part_count) xs_part ->
+      let var, const_opt = separate xs_part in
+      match const_opt with
+      | Some (Binop.Mult _, const) -> (
+        if equal x var then new_list, IntLit.add part_count const
+        else new_list @ [xs_part], part_count
+      )
+      | _ -> (
+        if equal x xs_part then new_list, IntLit.add part_count IntLit.one
+        else new_list @ [xs_part], part_count
+      )
+    ) ~init:([], part_count)
+    in
+    if IntLit.iszero part_count then deduplicate_parts filtered_xs
+    else (
+      let part = if IntLit.isone part_count then x else (
+        let part_count_exp = Const (Const.Cint part_count) in
+        BinOp (Binop.Mult None, part_count_exp, x)
+      )
+      in
+      part :: deduplicate_parts filtered_xs
+    )
+  )
+  in
+
   let parts = split_exp simplified in
   debug_log "@[[Expression terms]@ ";
   List.iter parts ~f:(fun exp -> debug_log "%a,@ " pp exp);
   debug_log "@]@,";
 
-  let non_const_parts = List.filter parts ~f:(fun part -> not (is_const part)) in
+  let non_const_parts = List.filter parts ~f:(fun part -> not (is_const part)) 
+    |> deduplicate_parts
+  in
   debug_log "@[[Non-const terms]@ ";
   List.iter non_const_parts ~f:(fun exp -> debug_log "%a,@ " pp exp);
   debug_log "@]@,";
@@ -1336,6 +1451,7 @@ let determine_monotonicity exp tenv (prover_data : prover_data) =
   (* Try to check monotonicity property based if no root exists  *)
   let check_monotonicity var_access monotony_map =
     (* TODO: needs more robust solution, this is just a "heuristic" *)
+    debug_log "Var access: %a@," HilExp.AccessExpression.pp var_access;
     let value_map_one = AccessExpressionMap.singleton var_access 1.0 in
     let value_map_two = AccessExpressionMap.singleton var_access 2.0 in
     let y1, y2 = List.fold non_const_parts ~f:(fun (y1, y2) part ->
@@ -1344,6 +1460,12 @@ let determine_monotonicity exp tenv (prover_data : prover_data) =
       y1 +. lhs_value, y2 +. rhs_value
     ) ~init:(0.0, 0.0)
     in
+
+    debug_log "@[[Evaluating non-const parts]@ ";
+    List.iter non_const_parts ~f:(fun exp -> debug_log "%a,@ " pp exp);
+    debug_log "@]@,";
+    debug_log "y1 =  %f, y2 = %f@," y1 y2;
+
 
     match Float.compare y2 y1 with
     | 0 -> (
@@ -1377,7 +1499,11 @@ let determine_monotonicity exp tenv (prover_data : prover_data) =
 
 
   debug_log "@[<v2>[Calculating partial derivatives for non-const terms]@,";
-  let derivative_variables = get_accesses simplified in
+  let non_const_part_exp = merge_exp_parts non_const_parts in
+  (* let non_const_part_exp_variables = get_accesses non_const_part_exp in *)
+  let derivative_variables = get_accesses non_const_part_exp
+  in
+
   let monotonicities = AccessExpressionSet.fold (fun var_access acc ->
     debug_log "@[<v2>[Derivation variable: %a]@," HilExp.AccessExpression.pp var_access;
     let derivative_parts = List.filter_map non_const_parts ~f:(fun part ->

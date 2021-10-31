@@ -170,7 +170,7 @@ module EdgeData = struct
     )
 
 
-  let derive_constraint edge_data norm used_assignments formals =
+  let derive_constraint edge_data norm used_assignments formals tenv =
     let get_assignment lhs_access = match AccessExpressionMap.find_opt lhs_access edge_data.assignments with
     | Some rhs -> Some rhs
     | None -> (
@@ -185,9 +185,18 @@ module EdgeData = struct
       | EdgeExp.Access access -> (
         match get_assignment access with 
         | Some rhs -> (
-          if not (EdgeExp.equal norm rhs) && AccessExpressionSet.mem access used_assignments
-          then AccessExpressionSet.empty, None
-          else AccessExpressionSet.singleton access, get_assignment access
+          let rhs_exp, rhs_const_opt = EdgeExp.separate rhs in
+          if not (EdgeExp.equal norm rhs_exp) && AccessExpressionSet.mem access used_assignments
+          then (
+            debug_log "############ FAIL ###########@,";
+            AccessExpressionSet.empty, None
+          )
+          else (
+            let accesses = if not (EdgeExp.equal norm rhs)  && not (EdgeExp.is_zero rhs)
+            then AccessExpressionSet.singleton access else AccessExpressionSet.empty
+            in
+            accesses, Some rhs
+          )
         )
         | None -> AccessExpressionSet.empty, None
       )
@@ -238,7 +247,27 @@ module EdgeData = struct
         | None -> None
       )
       | EdgeExp.UnOp (_, _, _) -> assert(false)
-      | EdgeExp.Max _ -> assert(false)
+      | EdgeExp.Max args -> (
+        (* Derive each argument and collect set of accesses *)
+        let accesses, derived_args = List.fold args
+        ~f:(fun (accesses_acc, args_acc) arg ->
+          let accesses, derived_arg = derive_rhs arg in
+          AccessExpressionSet.union accesses_acc accesses,
+          args_acc @ [derived_arg]
+        ) ~init:(AccessExpressionSet.empty, [])
+        in
+
+        (* Return derived max expression only if all variables
+         * of all arguments are defined at this LTS location *)
+        let rhs = if List.exists derived_args ~f:Option.is_none 
+        then None
+        else (
+          let args = List.map derived_args ~f:(fun arg_opt -> Option.value_exn arg_opt) in
+          Some (EdgeExp.Max args)
+        )
+        in
+        accesses, rhs
+      )
       | EdgeExp.Min _ -> assert(false)
       | _ -> AccessExpressionSet.empty, Some norm
     in
@@ -309,7 +338,7 @@ module EdgeData = struct
             (* TODO: this is incorrect. If we return rhs_norm which is different from  *)
             let dc_rhs = match rhs_const_opt with
             | Some (rhs_op, rhs_const) -> (
-              if EdgeExp.is_variable rhs_norm formals then (
+              if EdgeExp.is_variable rhs_norm formals tenv then (
                 match rhs_op with
                 | Binop.PlusA _ -> DC.make_rhs ~const_part:(rhs_op, rhs_const) rhs_norm
                 | Binop.MinusA typ_opt -> DC.make_rhs ~const_part:(Binop.PlusA typ_opt, IntLit.neg rhs_const) rhs_norm

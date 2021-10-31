@@ -9,9 +9,9 @@ module DCP = DifferenceConstraintProgram
 
 (* Reset graph *)
 module Node = struct
-  type t = EdgeExp.t [@@deriving compare]
+  type t = EdgeExp.t * bool [@@deriving equal, compare]
   let hash x = Hashtbl.hash_param 100 100 x
-  let equal = EdgeExp.equal
+  let equal = equal
 end
 
 module Edge = struct
@@ -53,8 +53,9 @@ let edge_attributes : E.t -> 'a list = fun (_, edge, _) -> (
 
 let default_edge_attributes _ = []
 let get_subgraph _ = None
-let vertex_attributes : V.t -> 'a list = fun node -> (
-  [ `Shape `Box; `Label (EdgeExp.to_string node) ]
+let vertex_attributes : V.t -> 'a list = fun (norm, formal) -> (
+  let color : int = if formal then 0xFF0000 else 0x00FF00 in
+  [ `Shape `Box; `Label (EdgeExp.to_string norm); `Fillcolor color; `Style `Filled]
 )
 
 let vertex_name : V.t -> string = fun node -> string_of_int (Node.hash node)
@@ -99,9 +100,11 @@ module Chain = struct
         if Node.equal origin path_end then counter + 1 else (
           let next = succ_e reset_graph origin in
           if List.is_empty next then counter else (
-            let visited = EdgeExp.Set.add origin visited in
+            let visited = EdgeExp.Set.add (fst origin) visited in
             List.fold next ~init:counter ~f:(fun counter (_, _, dst) ->
-              if EdgeExp.Set.mem dst visited then counter else find_paths dst visited counter
+              let dst_norm = fst dst in
+              if EdgeExp.Set.mem dst_norm visited then counter 
+              else find_paths dst visited counter
             )
           )
         )
@@ -109,8 +112,9 @@ module Chain = struct
 
       let norms = List.fold chain.data ~f:(fun (norms_1, norms_2) (_, _, (dst : Node.t)) ->
         let path_count = find_paths dst EdgeExp.Set.empty 0 in
-        if path_count < 2 then EdgeExp.Set.add dst norms_1, norms_2
-        else norms_1, EdgeExp.Set.add dst norms_2
+        let dst_norm = fst dst in
+        if path_count < 2 then EdgeExp.Set.add dst_norm norms_1, norms_2
+        else norms_1, EdgeExp.Set.add dst_norm norms_2
       ) ~init:(EdgeExp.Set.empty, EdgeExp.Set.empty)
       in
 
@@ -119,10 +123,10 @@ module Chain = struct
     )
 
   let pp fmt chain = List.iter chain.data ~f:(fun ((src : Node.t), _, _) ->
-      F.fprintf fmt "%a --> " EdgeExp.pp src
+      F.fprintf fmt "%a --> " EdgeExp.pp (fst src)
     );
     let _, _, (dst : Node.t) = List.last_exn chain.data in
-    F.fprintf fmt "%a" EdgeExp.pp dst
+    F.fprintf fmt "%a" EdgeExp.pp (fst dst)
 
   module Set = Caml.Set.Make(struct
     type nonrec t = t
@@ -160,7 +164,7 @@ let get_reset_chains origin reset_graph dcp =
       match edge_data.dcp_edge with
       | Some (_, _, path_end) -> (
         (* Find all paths from origin to end and check if they reset the end norm *)
-        let current_norm = dst in
+        let current_norm = fst dst in
         let rec checkPaths origin current visited_nodes norm_reset =
           if LTS.Node.equal current path_end && not (LTS.NodeSet.is_empty visited_nodes) then (
             (* Found path, return info if norm was reset along the path *)
