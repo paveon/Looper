@@ -42,6 +42,8 @@ val is_one : t -> bool
 
 val is_const : t -> bool
 
+val is_formal_variable : t -> AccessPath.BaseSet.t -> Tenv.t -> bool
+
 val is_variable : t -> AccessPath.BaseSet.t -> Tenv.t -> bool
 
 val is_symbolic_const : t -> AccessPath.BaseSet.t -> Tenv.t -> bool

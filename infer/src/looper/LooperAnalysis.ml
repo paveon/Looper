@@ -422,7 +422,7 @@ let analyze_procedure (analysis_data : LooperSummary.t InterproceduralAnalysis.t
 
   (* debug_log "@[<v>"; *)
 
-  let norm_set = if not Config.disable_vfg_renaming then (
+  let norm_set, formal_variables_mapping = if not Config.disable_vfg_renaming then (
     (* Create variable flow graph which is necessary for
      * DCP preprocessing which renames variables and consequently
      * ensures that we get an acyclic reset graph *)
@@ -515,10 +515,20 @@ let analyze_procedure (analysis_data : LooperSummary.t InterproceduralAnalysis.t
       )
     ) ~init:(VFG.Map.empty, EdgeExp.Set.empty)
     in
+
     debug_log "@[<v2>[Mapping]@,";
-    VFG.Map.iter (fun (norm, dcp_node) aux_norm -> 
+    let formal_variables_mapping = VFG.Map.fold (fun (norm, dcp_node) aux_norm acc -> 
       debug_log "(%a, %a)   --->   %a@," LTS.Node.pp dcp_node EdgeExp.pp norm EdgeExp.pp aux_norm;
-    ) vfg_map;
+      if EdgeExp.is_formal_variable norm formals tenv then (
+        let exit_aux_norm = match dcp_node with
+        | LTS.Node.Exit -> true
+        | _ -> false
+        in
+        EdgeExp.Map.add aux_norm (norm, exit_aux_norm) acc
+      )
+      else acc
+    ) vfg_map EdgeExp.Map.empty
+    in
     debug_log "@]@,";
 
 
@@ -611,9 +621,14 @@ let analyze_procedure (analysis_data : LooperSummary.t InterproceduralAnalysis.t
     debug_log "@]@,";
 
     output_graph (proc_graph_dir ^/ ssa_dcp_fname) dcp DCP_Dot.output_graph;
-    vfg_norm_set
+    vfg_norm_set, formal_variables_mapping
   ) 
-  else final_norm_set
+  else (
+    final_norm_set, EdgeExp.Set.fold (fun norm map ->
+      if EdgeExp.is_formal_variable norm formals tenv
+      then EdgeExp.Map.add norm (norm, true) map else map
+    ) final_norm_set EdgeExp.Map.empty
+  ) 
   in
 
 
@@ -926,10 +941,21 @@ let analyze_procedure (analysis_data : LooperSummary.t InterproceduralAnalysis.t
           let increment_sum, cache = calculate_increment_sum (EdgeExp.Set.singleton norm) cache in
 
           if LooperSummary.Resets.is_empty norm_updates.resets then (
-            L.user_error "[%a] Variable norm '%a' has no existing reset. \
-            Returning Infinity variable bound."
-            Procname.pp proc_name EdgeExp.pp norm;
-            EdgeExp.Inf, cache
+            match EdgeExp.Map.find_opt norm formal_variables_mapping with
+            | Some (original_norm, _) 
+              when EdgeExp.is_formal_variable original_norm formals tenv -> (
+              (* TODO: Hack around for now. When we reach the end of reset
+               * chain for formal variable we treat it as a symbolic constant.
+               * What should we do in those instances? Formals cannot be variables
+               * and symbolic constants at the same time. *)
+              EdgeExp.add original_norm increment_sum, cache
+            )
+            | _ -> (
+              L.user_error "[%a] Variable norm '%a' has no existing reset. \
+              Returning Infinity variable bound."
+              Procname.pp proc_name EdgeExp.pp norm;
+              EdgeExp.Inf, cache
+            )
           ) 
           else (
             let max_args, (cache : LooperSummary.cache) = 
@@ -976,6 +1002,9 @@ let analyze_procedure (analysis_data : LooperSummary.t InterproceduralAnalysis.t
               (if is_always_positive then arg else EdgeExp.Max [arg]), cache
             )
             | _ -> EdgeExp.Max flattened_args, cache
+            in
+            let max_subexp = Option.value_map (EdgeExp.evaluate_const_exp max_subexp)
+              ~default:max_subexp ~f:(fun const -> EdgeExp.Const (Const.Cint const))
             in
             EdgeExp.add max_subexp increment_sum, cache
           )
@@ -1228,20 +1257,15 @@ let analyze_procedure (analysis_data : LooperSummary.t InterproceduralAnalysis.t
 
 
   debug_log "@[<v2>Calculating bounds for values under formal pointers@,";
-  let formals_side_effects = EdgeExp.Set.iter (fun norm ->
-    debug_log "Checking: %a@," EdgeExp.pp norm;
-    match norm with
-    | EdgeExp.Access access -> (
-      let base = HilExp.AccessExpression.get_base access in
-      let base_typ = snd base in
-      if AccessPath.BaseSet.mem base formals && Typ.is_pointer base_typ then (
-        debug_log "%a: formal pointer@," EdgeExp.pp norm;
-      )
-      else ()
-      (* graph_data.formals *)
+  let cache = EdgeExp.Map.fold (fun aux_norm (formal_variable, exit_norm) cache ->
+    if exit_norm then (
+      debug_log "%a   --->    %a@," EdgeExp.pp formal_variable EdgeExp.pp aux_norm;
+      let upper_bound, cache = variable_bound aux_norm cache in
+      (* let lower_bound, cache = variable_lower_bound aux_norm cache in *)
+      cache
     )
-    | _ -> ()
-  ) norm_set
+    else cache
+  ) formal_variables_mapping cache
   in
   debug_log "@]@,";
 
