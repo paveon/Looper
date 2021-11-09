@@ -157,7 +157,7 @@ let exec_instr : construction_temp_data -> Sil.instr -> construction_temp_data =
   | Prune (cond, loc, branch, kind) -> (
     (* debug_log "[PRUNE (%s)] (%a) | %a\n" (Sil.if_kind_to_string kind) Location.pp loc Exp.pp cond; *)
     let hil_exp_cond = HilExp.of_sil ~include_array_indexes:true
-      ~f_resolve_id:ae_id_resolver  ~add_deref:true cond (Typ.mk (Tint IBool))
+      ~f_resolve_id:ae_id_resolver  ~add_deref:false cond (Typ.mk (Tint IBool))
     in
     let edge_exp_cond = EdgeExp.of_hil_exp hil_exp_cond call_id_resolver in
 
@@ -231,7 +231,7 @@ let exec_instr : construction_temp_data -> Sil.instr -> construction_temp_data =
     debug_log "@[<v4>[STORE] %a@,Type: %a@,Exp: %a = %a@," 
       Location.pp loc Typ.(pp Pp.text) typ Exp.pp lhs Exp.pp rhs;
 
-    let rhs_hil_exp = HilExp.of_sil ~include_array_indexes:true ~f_resolve_id:ae_id_resolver ~add_deref:true rhs typ in
+    let rhs_hil_exp = HilExp.of_sil ~include_array_indexes:true ~f_resolve_id:ae_id_resolver ~add_deref:false rhs typ in
     let lhs_hil_exp = HilExp.of_sil ~include_array_indexes:true ~f_resolve_id:ae_id_resolver ~add_deref:true lhs typ in
     
     debug_log "@[<v4>HilExp: %a = %a" HilExp.pp lhs_hil_exp HilExp.pp rhs_hil_exp;
@@ -388,13 +388,18 @@ let exec_instr : construction_temp_data -> Sil.instr -> construction_temp_data =
     let lhs_access_base_typ = snd lhs_access_base in
     let norms = if AccessPath.BaseSet.mem lhs_access_base graph_data.proc_data.formals 
     && Typ.is_pointer lhs_access_base_typ
-    && Typ.is_int typ then (
-      debug_log "Formal base '%a' is a pointer: %a. Adding access expression '%a' to norms.@,"
-        AccessPath.pp_base lhs_access_base 
-        Typ.(pp Pp.text) lhs_access_base_typ
-        HilExp.AccessExpression.pp lhs_access;
+    && (Typ.is_int typ || Typ.is_pointer typ) then (
+      match lhs_access with
+      | HilExp.AccessExpression.FieldOffset (Dereference _, _)
+      | HilExp.AccessExpression.Dereference _ -> (
+        debug_log "Formal base '%a' is a pointer: %a. Adding access expression '%a' to norms.@,"
+          AccessPath.pp_base lhs_access_base 
+          Typ.(pp Pp.text) lhs_access_base_typ
+          HilExp.AccessExpression.pp lhs_access;
 
-      EdgeExp.Set.add lhs_edge_exp norms
+        EdgeExp.Set.add lhs_edge_exp norms
+      )
+      | _ -> norms
     ) else norms
     in
 
@@ -420,7 +425,11 @@ let exec_instr : construction_temp_data -> Sil.instr -> construction_temp_data =
     debug_log "@[<v4>[LOAD] %a@,Type: %a@,Exp: %a = %a@,"
       Location.pp loc Typ.(pp Pp.text) typ Ident.pp id Exp.pp e;
 
-    let rhs_hil_expr = HilExp.of_sil ~include_array_indexes:true ~f_resolve_id:ae_id_resolver ~add_deref:false e typ in
+    let rhs_hil_expr = HilExp.of_sil ~include_array_indexes:true
+      ~f_resolve_id:ae_id_resolver
+      ~add_deref:true e typ
+    in
+
     debug_log "RHS HilExp: %a = %a@," Ident.pp id HilExp.pp rhs_hil_expr;
 
     let rhs_edge_exp = EdgeExp.of_hil_exp rhs_hil_expr call_id_resolver in
@@ -511,7 +520,7 @@ let exec_instr : construction_temp_data -> Sil.instr -> construction_temp_data =
     let args, arg_norms = List.foldi args ~f:(fun idx (args, norms) (arg, arg_typ) ->
       debug_log "@[<v2>(%d) Exp: %a : %a@," idx Exp.pp arg Typ.(pp Pp.text) arg_typ;
       let arg_hil_exp = HilExp.of_sil ~include_array_indexes:true 
-        ~f_resolve_id:ae_id_resolver ~add_deref:true arg arg_typ
+        ~f_resolve_id:ae_id_resolver ~add_deref:false arg arg_typ
       in
       debug_log "HilExp: %a : %a@," HilExp.pp arg_hil_exp Typ.(pp Pp.text) arg_typ;
       let arg_edge_exp = EdgeExp.of_hil_exp arg_hil_exp call_id_resolver
