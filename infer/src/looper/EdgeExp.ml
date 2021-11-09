@@ -89,6 +89,30 @@ let is_zero = function
 let is_one = function Const (Const.Cint const) -> IntLit.isone const | _ -> false
 
 
+let is_formal_variable norm formals tenv = match norm with
+  | Max [Access ae]
+  | Access ae -> (
+    let access_base = HilExp.AccessExpression.get_base ae in
+    if AccessPath.BaseSet.mem access_base formals then (
+      (* TODO: hack for now? We want to treat pointer formals as variables
+       * so we can derive DCs for them and track their value so we can then
+       * calculate their variable bounds later on to track function side-effects *)
+      let access_base_typ = snd access_base in
+      Typ.is_pointer access_base_typ &&
+      match ae with
+      | HilExp.AccessExpression.FieldOffset (Dereference _, _)
+      | HilExp.AccessExpression.Dereference _ -> (
+        match HilExp.AccessExpression.get_typ ae tenv with
+        | Some access_typ -> Typ.is_int access_typ || Typ.is_pointer access_typ
+        | None -> false
+      )
+      | _ -> false
+    )
+    else false
+  )
+  | _ -> false
+
+
 let is_variable norm formals tenv =
   let rec traverse_exp = function
   | Access ae -> (
@@ -98,11 +122,15 @@ let is_variable norm formals tenv =
        * so we can derive DCs for them and track their value so we can then
        * calculate their variable bounds later on to track function side-effects *)
       let access_base_typ = snd access_base in
-      let is_access_ptr = match HilExp.AccessExpression.get_typ ae tenv with
-      | Some access_typ -> Typ.is_pointer access_typ
-      | None -> false
-      in 
-      Typ.is_pointer access_base_typ && is_access_ptr
+      Typ.is_pointer access_base_typ &&
+      match ae with
+      | HilExp.AccessExpression.FieldOffset (Dereference _, _)
+      | HilExp.AccessExpression.Dereference _ -> (
+        match HilExp.AccessExpression.get_typ ae tenv with
+        | Some access_typ -> Typ.is_int access_typ || Typ.is_pointer access_typ
+        | None -> false
+      )
+      | _ -> false
     ) else (
       true
     )
@@ -338,7 +366,8 @@ let rec separate exp =
     let lexp_derived, l_const_opt = separate lexp in
     let rexp_derived, r_const_opt = separate rexp in
     let lexp_derived, rexp_derived, const_part = match op with
-    | Binop.PlusA _ -> (
+    | Binop.PlusA _
+    | Binop.PlusPI -> (
       match l_const_opt, r_const_opt with
       | Some (l_op, l_const), Some (r_op, r_const) -> (
         match l_op, r_op with
@@ -879,6 +908,7 @@ let rec is_typ_unsigned (typ : Typ.t) = match typ.desc with
 
 
 let rec to_why3_expr exp tenv (prover_data : prover_data) =
+  (* console_log "@[Exp: %a@,@]" pp exp; *)
   let plus_symbol : Why3.Term.lsymbol = Why3.Theory.ns_find_ls prover_data.theory.th_export ["infix +"] in
   let minus_symbol : Why3.Term.lsymbol = Why3.Theory.ns_find_ls prover_data.theory.th_export ["infix -"] in
   let unary_minus_symbol : Why3.Term.lsymbol = Why3.Theory.ns_find_ls prover_data.theory.th_export ["prefix -"] in
