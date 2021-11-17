@@ -59,7 +59,7 @@ module EdgeData = struct
   type t = {
     backedge: bool;
     conditions: EdgeExp.Set.t;
-    assignments: EdgeExp.t AccessExpressionMap.t;
+    assignments: EdgeExp.T.t AccessExpressionMap.t;
     branch_info: (Sil.if_kind * bool * Location.t) option;
     calls: EdgeExp.Set.t;
   }
@@ -89,7 +89,7 @@ module EdgeData = struct
     let with_invariants = AccessPath.BaseMap.fold (fun local_base accesses acc ->
       let add_assignment access assignments =
       if AccessExpressionMap.mem access assignments then assignments
-      else AccessExpressionMap.add access (EdgeExp.Access access) assignments
+      else AccessExpressionMap.add access (EdgeExp.T.Access access) assignments
       in
 
       let local_base_access = HilExp.AccessExpression.base local_base in
@@ -97,7 +97,7 @@ module EdgeData = struct
       AccessExpressionSet.fold add_assignment accesses assignments
 
       (* if AccessExpressionMap.mem local acc then acc else
-      AccessExpressionMap.add local (EdgeExp.Access local) acc *)
+      AccessExpressionMap.add local (EdgeExp.T.Access local) acc *)
     ) locals edge.assignments
     in
     { edge with assignments = with_invariants }
@@ -105,14 +105,14 @@ module EdgeData = struct
   let get_assignment_rhs edge lhs_access =
     match AccessExpressionMap.find_opt lhs_access edge.assignments with
     | Some rhs -> rhs
-    | None -> EdgeExp.Access lhs_access
+    | None -> EdgeExp.T.Access lhs_access
 
 
   let derive_guards edge norms tenv prover_data =
     let cond_expressions = EdgeExp.Set.fold (fun cond acc -> 
       match cond with
-      | EdgeExp.BinOp (_, EdgeExp.Const _, EdgeExp.Const _) -> acc
-      | EdgeExp.BinOp _ -> (
+      | EdgeExp.T.BinOp (_, EdgeExp.T.Const _, EdgeExp.T.Const _) -> acc
+      | EdgeExp.T.BinOp _ -> (
         let cond_why3, type_conditions = EdgeExp.to_why3_expr cond tenv prover_data in
         Why3.Term.Sterm.add cond_why3 (Why3.Term.Sterm.union type_conditions acc)
       )
@@ -175,14 +175,14 @@ module EdgeData = struct
     | Some rhs -> Some rhs
     | None -> (
       let lhs_access_base = HilExp.AccessExpression.get_base lhs_access in
-      if AccessPath.BaseSet.mem lhs_access_base formals then Some (EdgeExp.Access lhs_access) else None
+      if AccessPath.BaseSet.mem lhs_access_base formals then Some (EdgeExp.T.Access lhs_access) else None
       (* let base_pvar = Option.value_exn (HilExp.AccessExpression.get_base lhs_access |> fst |> Var.get_pvar) in *)
-      (* if Pvar.Set.mem base_pvar formals then Some (EdgeExp.Access lhs_access) else None *)
+      (* if Pvar.Set.mem base_pvar formals then Some (EdgeExp.T.Access lhs_access) else None *)
     )
     in
 
     let rec derive_rhs norm = match norm with
-      | EdgeExp.Access access -> (
+      | EdgeExp.T.Access access -> (
         match get_assignment access with 
         | Some rhs -> (
           let rhs_exp, rhs_const_opt = EdgeExp.separate rhs in
@@ -200,8 +200,8 @@ module EdgeData = struct
         )
         | None -> AccessExpressionSet.empty, None
       )
-      | EdgeExp.Const (Const.Cint _) -> AccessExpressionSet.empty, Some norm
-      | EdgeExp.BinOp (op, lexp, rexp) -> (
+      | EdgeExp.T.Const (Const.Cint _) -> AccessExpressionSet.empty, Some norm
+      | EdgeExp.T.BinOp (op, lexp, rexp) -> (
         let lexp_accesses, lexp_derived_opt = derive_rhs lexp in
         let rexp_accesses, rexp_derived_opt = derive_rhs rexp in
 
@@ -214,9 +214,9 @@ module EdgeData = struct
             | true, true
             | true, false -> Some EdgeExp.zero
             | false, true -> Some lexp_derived
-            | false, false -> Some (EdgeExp.BinOp (op, lexp_derived, rexp_derived))
+            | false, false -> Some (EdgeExp.T.BinOp (op, lexp_derived, rexp_derived))
           )
-          | _ -> Some (EdgeExp.BinOp (op, lexp_derived, rexp_derived))
+          | _ -> Some (EdgeExp.T.BinOp (op, lexp_derived, rexp_derived))
         )
         | Some _, None
         | None, Some _ -> (
@@ -228,26 +228,26 @@ module EdgeData = struct
           None
         )
       )
-      | EdgeExp.Cast (typ, exp) -> (
+      | EdgeExp.T.Cast (typ, exp) -> (
         let accesses, exp_derived_opt = derive_rhs exp in
         accesses, match exp_derived_opt with
         | Some exp_derived -> (
           if EdgeExp.is_zero exp_derived then exp_derived_opt
-          else Some (EdgeExp.Cast (typ, exp_derived))
+          else Some (EdgeExp.T.Cast (typ, exp_derived))
         )
         | None -> None
       )
-      | EdgeExp.UnOp (Unop.Neg, exp, typ) -> (
+      | EdgeExp.T.UnOp (Unop.Neg, exp, typ) -> (
         let accesses, exp_derived_opt = derive_rhs exp in
         accesses, match exp_derived_opt with
         | Some exp_derived -> (
           if EdgeExp.is_zero exp_derived then exp_derived_opt
-          else Some (EdgeExp.UnOp (Unop.Neg, exp_derived, typ))
+          else Some (EdgeExp.T.UnOp (Unop.Neg, exp_derived, typ))
         )
         | None -> None
       )
-      | EdgeExp.UnOp (_, _, _) -> assert(false)
-      | EdgeExp.Max args -> (
+      | EdgeExp.T.UnOp (_, _, _) -> assert(false)
+      | EdgeExp.T.Max args -> (
         (* Derive each argument and collect set of accesses *)
         let accesses, derived_args = List.fold args
         ~f:(fun (accesses_acc, args_acc) arg ->
@@ -263,12 +263,12 @@ module EdgeData = struct
         then None
         else (
           let args = List.map derived_args ~f:(fun arg_opt -> Option.value_exn arg_opt) in
-          Some (EdgeExp.Max args)
+          Some (EdgeExp.T.Max args)
         )
         in
         accesses, rhs
       )
-      | EdgeExp.Min _ -> assert(false)
+      | EdgeExp.T.Min _ -> assert(false)
       | _ -> AccessExpressionSet.empty, Some norm
     in
 
@@ -288,8 +288,8 @@ module EdgeData = struct
           let rhs_norm, rhs_const_opt = if EdgeExp.is_zero rhs_norm then (
             match rhs_const_opt with
             | Some (rhs_op, rhs_const) -> (match rhs_op with
-              | Binop.PlusA _ -> EdgeExp.Const (Const.Cint rhs_const), None
-              | Binop.MinusA _ -> EdgeExp.Const (Const.Cint (IntLit.neg rhs_const)), None
+              | Binop.PlusA _ -> EdgeExp.T.Const (Const.Cint rhs_const), None
+              | Binop.MinusA _ -> EdgeExp.T.Const (Const.Cint (IntLit.neg rhs_const)), None
               | _ -> assert(false)
             )
             | None -> (
@@ -387,7 +387,7 @@ let edge_attributes : E.t -> 'a list = fun (_, edge_data, _) -> (
   let label = if edge_data.backedge then label ^ "[backedge]\n" else label in
   let call_list = List.map (EdgeExp.Set.elements edge_data.calls) ~f:(fun call ->
     match call with
-    | EdgeExp.Call (_, _, _, loc) -> F.asprintf "%s : %a" (EdgeExp.to_string call) Location.pp loc
+    | EdgeExp.T.Call (_, _, _, loc) -> F.asprintf "%s : %a" (EdgeExp.to_string call) Location.pp loc
     | _ -> assert(false)
   ) 
   in

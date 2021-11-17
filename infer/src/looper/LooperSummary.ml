@@ -23,7 +23,7 @@ module Decrements = Caml.Set.Make(struct
 end)
 
 module Resets = Caml.Set.Make(struct
-  type nonrec t = DCP.E.t * EdgeExp.t * IntLit.t
+  type nonrec t = DCP.E.t * EdgeExp.T.t * IntLit.t
   [@@deriving compare]
 end)
 
@@ -41,8 +41,8 @@ let empty_updates = {
 
 type cache = {
   updates: norm_updates EdgeExp.Map.t;
-  variable_bounds: EdgeExp.t EdgeExp.Map.t;
-  lower_bounds: EdgeExp.t EdgeExp.Map.t;
+  variable_bounds: EdgeExp.T.t EdgeExp.Map.t;
+  lower_bounds: EdgeExp.T.t EdgeExp.Map.t;
   reset_chains: ResetGraph.Chain.Set.t EdgeExp.Map.t;
   positivity: bool EdgeExp.Map.t;
 }
@@ -65,7 +65,7 @@ type call = {
 and transition = {
   src_node: LTS.Node.t;
   dst_node: LTS.Node.t;
-  bound: EdgeExp.t;
+  bound: EdgeExp.T.t;
   monotony_map: Monotonicity.t AccessExpressionMap.t;
   calls: call list
 }
@@ -73,8 +73,8 @@ and transition = {
 and t = {
   formal_map: FormalMap.t;
   bounds: transition list;
-  return_bound: EdgeExp.t option;
-  formal_bounds: (EdgeExp.t * EdgeExp.t) LooperUtils.AccessExpressionMap.t
+  return_bound: EdgeExp.T.t option;
+  formal_bounds: (EdgeExp.T.t * EdgeExp.T.t) LooperUtils.AccessExpressionMap.t
 }
 
 
@@ -123,10 +123,10 @@ let instantiate (summary : t) args ~upper_bound ~lower_bound tenv active_prover 
       let var_monotony = AccessExpressionMap.find arg_access arg_monotonicity_map in
       match var_monotony with
       | Monotonicity.NonDecreasing -> (
-        upper_bound (EdgeExp.Access arg_access) cache_acc
+        upper_bound (EdgeExp.T.Access arg_access) cache_acc
       )
       | Monotonicity.NonIncreasing -> (
-        lower_bound (EdgeExp.Access arg_access) cache_acc
+        lower_bound (EdgeExp.T.Access arg_access) cache_acc
       )
       | Monotonicity.NotMonotonic -> assert(false);
     ) cache
@@ -142,10 +142,10 @@ let instantiate (summary : t) args ~upper_bound ~lower_bound tenv active_prover 
       let var_monotony = AccessExpressionMap.find arg_access arg_monotonicity_map in
       match var_monotony with
       | Monotonicity.NonDecreasing -> (
-        lower_bound (EdgeExp.Access arg_access) cache_acc
+        lower_bound (EdgeExp.T.Access arg_access) cache_acc
       )
       | Monotonicity.NonIncreasing -> (
-        upper_bound (EdgeExp.Access arg_access) cache_acc
+        upper_bound (EdgeExp.T.Access arg_access) cache_acc
       )
       | Monotonicity.NotMonotonic -> assert(false);
     ) cache
@@ -299,7 +299,7 @@ module TreeGraph = struct
   module Node = struct
     type t = 
     | CallNode of Procname.t * Location.t
-    | TransitionNode of LTS.Node.t * EdgeExp.t * LTS.Node.t
+    | TransitionNode of LTS.Node.t * EdgeExp.T.t * LTS.Node.t
     [@@deriving compare]
 
     let hash x = Hashtbl.hash_param 100 100 x

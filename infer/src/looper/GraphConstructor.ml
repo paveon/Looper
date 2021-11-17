@@ -29,8 +29,8 @@ type construction_temp_data = {
   last_node: LTS.Node.t;
   loophead_stack: Procdesc.Node.t Stack.t;
   edge_data: LTS.EdgeData.t;
-  ident_map: (EdgeExp.t * Typ.t) Ident.Map.t;
-  ident_map_2: EdgeExp.t Ident.Map.t;
+  ident_map: (EdgeExp.T.t * Typ.t) Ident.Map.t;
+  ident_map_2: EdgeExp.T.t Ident.Map.t;
 
   node_map: LTS.Node.t Procdesc.NodeMap.t;
   potential_norms: EdgeExp.Set.t;
@@ -83,7 +83,7 @@ let exec_instr : construction_temp_data -> Sil.instr -> construction_temp_data =
   | Var.ProgramVar _ -> assert(false)
   in
 
-  (* let ap_id_resolver = EdgeExp.access_path_id_resolver graph_data.ident_map in *)
+  (* let ap_id_resolver = EdgeExp.T.Access_path_id_resolver graph_data.ident_map in *)
 
   (* let rec map_idents hil_exp = match hil_exp with
   | HilExp.AccessExpression ae -> (
@@ -112,7 +112,7 @@ let exec_instr : construction_temp_data -> Sil.instr -> construction_temp_data =
     match Ident.Map.find_opt id graph_data.ident_map_2 with
     | Some exp -> (
       match exp with
-      | EdgeExp.Access path -> Some path
+      | EdgeExp.T.Access path -> Some path
       | _ -> (
         (* Replace idents mapped to more complex expressions later.
          * HilExp.of_sil signature requires this function to return 
@@ -174,12 +174,12 @@ let exec_instr : construction_temp_data -> Sil.instr -> construction_temp_data =
       * [x > y] -> [x - y] > 0
       * [x >= y] -> [x - y + 1] > 0 *)
       match normalized_cond with
-      | EdgeExp.BinOp (op, lexp, rexp) -> (
+      | EdgeExp.T.BinOp (op, lexp, rexp) -> (
         let process_gt lhs rhs = match EdgeExp.is_zero lhs, EdgeExp.is_zero rhs with
         | true, true -> EdgeExp.zero
-        | true, _ -> EdgeExp.UnOp (Unop.Neg, rhs, None)
+        | true, _ -> EdgeExp.T.UnOp (Unop.Neg, rhs, None)
         | false, true -> lhs
-        | _ -> EdgeExp.BinOp (Binop.MinusA None, lhs, rhs)
+        | _ -> EdgeExp.T.BinOp (Binop.MinusA None, lhs, rhs)
         in
 
         let process_op op = match op with
@@ -191,7 +191,7 @@ let exec_instr : construction_temp_data -> Sil.instr -> construction_temp_data =
         match process_op op with
         | Some new_norm -> (
           let is_modified = match new_norm with
-          | EdgeExp.Access access -> AccessExpressionSet.mem access graph_data.loop_modified
+          | EdgeExp.T.Access access -> AccessExpressionSet.mem access graph_data.loop_modified
           | _ -> false
           in
           if not (is_loop_prune kind) && not is_modified then (
@@ -247,7 +247,7 @@ let exec_instr : construction_temp_data -> Sil.instr -> construction_temp_data =
     debug_log "@]@,";
 
     (* let lhs_access = Option.value_exn (access_of_lhs_exp ~include_array_indexes:true lhs typ ~f_resolve_id:ap_id_resolver) in
-    let lhs_access_exp = EdgeExp.Access lhs_access in *)
+    let lhs_access_exp = EdgeExp.T.Access lhs_access in *)
 
     (* let lhs_typ = Option.value_exn (AccessPath.get_typ lhs_access graph_data.tenv) in *)
     (* debug_log "LHS AccessPath: %a : %a\n" AccessPath.pp lhs_access Typ.(pp Pp.text) lhs_typ; *)
@@ -255,7 +255,7 @@ let exec_instr : construction_temp_data -> Sil.instr -> construction_temp_data =
 
     let lhs_edge_exp = EdgeExp.of_hil_exp lhs_hil_exp call_id_resolver in
     let lhs_access = match lhs_edge_exp with
-    | EdgeExp.Access access -> access
+    | EdgeExp.T.Access access -> access
     | _ -> L.die InternalError "Left-hand side expression of Store instruction is not an AccessExpression: %a" 
       EdgeExp.pp lhs_edge_exp
     in
@@ -265,7 +265,7 @@ let exec_instr : construction_temp_data -> Sil.instr -> construction_temp_data =
     debug_log "EdgeExp: %a = %a@," EdgeExp.pp lhs_edge_exp EdgeExp.pp rhs_edge_exp;
 
     let rhs_edge_exp = match rhs_edge_exp with
-    | EdgeExp.Call (_, _, _, loc) as call -> (
+    | EdgeExp.T.Call (_, _, _, loc) as call -> (
       match Location.Map.find_opt loc graph_data.proc_data.call_summaries with
       | Some summary -> (
         match summary.return_bound with
@@ -286,7 +286,7 @@ let exec_instr : construction_temp_data -> Sil.instr -> construction_temp_data =
 
     (* Check if we can add new norm to the norm set *)
     let potential_norms, norms = match rhs_edge_exp with 
-    | EdgeExp.BinOp ((Binop.PlusA _ | Binop.MinusA _), rhs_subexp, EdgeExp.Const (Const.Cint _))
+    | EdgeExp.T.BinOp ((Binop.PlusA _ | Binop.MinusA _), rhs_subexp, EdgeExp.T.Const (Const.Cint _))
       when (EdgeExp.equal lhs_edge_exp rhs_subexp) && EdgeExp.Set.mem rhs_subexp graph_data.potential_norms ->
       EdgeExp.Set.remove rhs_subexp graph_data.potential_norms, 
       EdgeExp.Set.add rhs_subexp graph_data.proc_data.norms
@@ -444,7 +444,7 @@ let exec_instr : construction_temp_data -> Sil.instr -> construction_temp_data =
       let accesses = access_of_exp ~include_array_indexes:true exp typ ~f_resolve_id:ap_id_resolver in
       assert (Int.equal (List.length accesses) 1);
       let access = List.hd_exn accesses in
-      Ident.Map.add id ((EdgeExp.Access access), typ) graph_data.ident_map,
+      Ident.Map.add id ((EdgeExp.T.Access access), typ) graph_data.ident_map,
       graph_data.type_map
     )
     | Exp.Lfield (struct_exp, name, struct_type) -> (
@@ -452,9 +452,9 @@ let exec_instr : construction_temp_data -> Sil.instr -> construction_temp_data =
       match struct_exp with
       | Exp.Var struct_id -> (
         match Ident.Map.find struct_id graph_data.ident_map with
-        | EdgeExp.Access path, path_typ -> (
+        | EdgeExp.T.Access path, path_typ -> (
           let access = AccessPath.FieldAccess name in
-          let ext_path = EdgeExp.Access (AccessPath.append path [access]) in
+          let ext_path = EdgeExp.T.Access (AccessPath.append path [access]) in
           Ident.Map.add id (ext_path, typ) graph_data.ident_map,
           graph_data.type_map
         )
@@ -464,7 +464,7 @@ let exec_instr : construction_temp_data -> Sil.instr -> construction_temp_data =
         let access_base = AccessPath.base_of_pvar struct_pvar struct_type in
         let field_access = AccessPath.FieldAccess name in
         let full_path : AccessPath.t = access_base, [field_access] in
-        Ident.Map.add id ((EdgeExp.Access full_path), typ) graph_data.ident_map,
+        Ident.Map.add id ((EdgeExp.T.Access full_path), typ) graph_data.ident_map,
         PvarMap.add struct_pvar struct_type graph_data.type_map
       )
       | Exp.Cast (result_type, original_exp) -> (
@@ -479,7 +479,7 @@ let exec_instr : construction_temp_data -> Sil.instr -> construction_temp_data =
     )
     | Exp.Lvar pvar -> (
       debug_log "Exp.Lvar@,";
-      let access = EdgeExp.Access (AccessPath.of_pvar pvar typ) in
+      let access = EdgeExp.T.Access (AccessPath.of_pvar pvar typ) in
       Ident.Map.add id (access, typ) graph_data.ident_map,
       PvarMap.add pvar typ graph_data.type_map
     )
@@ -504,15 +504,15 @@ let exec_instr : construction_temp_data -> Sil.instr -> construction_temp_data =
     debug_log "@[<v4>[CALL] %a@,Procedure name: %a@," Location.pp loc Procname.pp callee_pname;
 
     let rec substitute edge_data exp = match exp with
-    | EdgeExp.Access access -> LTS.EdgeData.get_assignment_rhs edge_data access
-    | EdgeExp.BinOp (op, lexp, rexp) -> EdgeExp.BinOp (op, substitute edge_data lexp, substitute edge_data rexp)
-    | EdgeExp.UnOp (op, subexp, typ) -> EdgeExp.UnOp (op, substitute edge_data subexp, typ)
-    | EdgeExp.Call (ret_typ, procname, args, loc) -> (
+    | EdgeExp.T.Access access -> LTS.EdgeData.get_assignment_rhs edge_data access
+    | EdgeExp.T.BinOp (op, lexp, rexp) -> EdgeExp.T.BinOp (op, substitute edge_data lexp, substitute edge_data rexp)
+    | EdgeExp.T.UnOp (op, subexp, typ) -> EdgeExp.T.UnOp (op, substitute edge_data subexp, typ)
+    | EdgeExp.T.Call (ret_typ, procname, args, loc) -> (
       let args = List.map args ~f:(fun (arg, typ) -> (substitute edge_data arg, typ)) in
-      EdgeExp.Call (ret_typ, procname, args, loc)
+      EdgeExp.T.Call (ret_typ, procname, args, loc)
     )
-    | EdgeExp.Max args -> EdgeExp.Max (List.map args ~f:(substitute edge_data))
-    | EdgeExp.Min args -> EdgeExp.Max (List.map args ~f:(substitute edge_data))
+    | EdgeExp.T.Max args -> EdgeExp.T.Max (List.map args ~f:(substitute edge_data))
+    | EdgeExp.T.Min args -> EdgeExp.T.Max (List.map args ~f:(substitute edge_data))
     | _ -> exp
     in
 
@@ -546,7 +546,7 @@ let exec_instr : construction_temp_data -> Sil.instr -> construction_temp_data =
     debug_log "@]@,";
 
     let args = List.rev args in
-    let call = EdgeExp.Call (ret_typ, callee_pname, args, loc) in
+    let call = EdgeExp.T.Call (ret_typ, callee_pname, args, loc) in
 
     debug_log "@[<v4>Loading call summary@,";
     let payload_opt = graph_data.proc_data.analysis_data.analyze_dependency callee_pname in

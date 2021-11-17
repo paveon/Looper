@@ -9,7 +9,7 @@ module DCP = DifferenceConstraintProgram
 
 (* Variable flow graph *)
 module Node : sig
-  type t = EdgeExp.t * LTS.Node.t [@@deriving compare]
+  type t = EdgeExp.T.t * LTS.Node.t [@@deriving compare]
   val hash : 'a -> int
   val equal : t -> t -> bool
 end

@@ -10,7 +10,7 @@ module DCP = DifferenceConstraintProgram
 
 (* Variable flow graph *)
 module Node = struct
-  type t = EdgeExp.t * LTS.Node.t [@@deriving compare]
+  type t = EdgeExp.T.t * LTS.Node.t [@@deriving compare]
   let hash x = Hashtbl.hash_param 100 100 x
   let equal = [%compare.equal: t]
 end

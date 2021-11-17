@@ -25,7 +25,7 @@ module VFG_SCC = Graph.Components.Make(VFG)
 
 
 module UnprocessedNormSet = Caml.Set.Make(struct
-  type nonrec t = EdgeExp.t * AccessExpressionSet.t LTS.EdgeMap.t
+  type nonrec t = EdgeExp.T.t * AccessExpressionSet.t LTS.EdgeMap.t
   [@@deriving compare]
 end)
 
@@ -379,11 +379,11 @@ let analyze_procedure (analysis_data : LooperSummary.t InterproceduralAnalysis.t
         | Some rhs_norm_value -> (
           let const_value = EdgeExp.eval_consts op rhs_norm_value rhs_const in
           let dc_rhs = EdgeExp.zero, Binop.PlusA None, const_value in
-          DC.Map.add (EdgeExp.Max [lhs]) dc_rhs acc
+          DC.Map.add (EdgeExp.T.Max [lhs]) dc_rhs acc
         )
         | None -> (
-          let dc_rhs = EdgeExp.Max [rhs_norm], op, rhs_const in
-          DC.Map.add (EdgeExp.Max [lhs]) dc_rhs acc
+          let dc_rhs = EdgeExp.T.Max [rhs_norm], op, rhs_const in
+          DC.Map.add (EdgeExp.T.Max [lhs]) dc_rhs acc
         )
       ) edge_data.constraints DC.Map.empty
       in
@@ -428,7 +428,7 @@ let analyze_procedure (analysis_data : LooperSummary.t InterproceduralAnalysis.t
      * ensures that we get an acyclic reset graph *)
     debug_log "@.@[<v2>==========[Creating Variable Flow Graph]==========@,";
     let variables = EdgeExp.Set.filter_map (fun norm -> 
-      if EdgeExp.is_variable norm formals tenv then Some (EdgeExp.Max [norm])
+      if EdgeExp.is_variable norm formals tenv then Some (EdgeExp.T.Max [norm])
       else None
     ) final_norm_set
     in
@@ -507,7 +507,7 @@ let analyze_procedure (analysis_data : LooperSummary.t InterproceduralAnalysis.t
     let vfg_map, vfg_norm_set = List.foldi vfg_components ~f:(fun idx (map, norm_set) component ->
       let pvar = Pvar.mk (Mangled.from_string ("var_" ^ string_of_int idx)) proc_name in
       let pvar_access = HilExp.AccessExpression.base (AccessPath.base_of_pvar pvar (Typ.mk (Tint IUInt))) in
-      let aux_norm = EdgeExp.Access pvar_access in
+      let aux_norm = EdgeExp.T.Access pvar_access in
 
       List.fold component ~init:(map, EdgeExp.Set.add aux_norm norm_set) ~f:(fun (map, norm_set) ((exp, _ as node) : VFG.Node.t) ->
         if EdgeExp.is_return exp then VFG.Map.add node exp map, EdgeExp.Set.add exp norm_set
@@ -560,25 +560,25 @@ let analyze_procedure (analysis_data : LooperSummary.t InterproceduralAnalysis.t
 
 
       let calls_renamed_args = EdgeExp.Set.map (fun call -> match call with
-      | EdgeExp.Call (ret_typ, proc_name, args, loc) -> (
+      | EdgeExp.T.Call (ret_typ, proc_name, args, loc) -> (
         let renamed_args = List.map args ~f:(fun (arg, typ) ->
           if Typ.is_int typ then (
             debug_log "RENAMING ARG: %a\n" EdgeExp.pp arg;
             let renamed_arg, _ = EdgeExp.map_accesses arg ~f:(fun access _ ->
-              let access = EdgeExp.Access access in
+              let access = EdgeExp.T.Access access in
               if EdgeExp.is_symbolic_const access formals tenv then access, None
               else (
                 (* A little hack-around, need to figure out how to deal with this later *)
                 let possible_keys = [
-                  (EdgeExp.Max [access], dcp_dst);
-                  (EdgeExp.Max [access], dcp_src);
+                  (EdgeExp.T.Max [access], dcp_dst);
+                  (EdgeExp.T.Max [access], dcp_src);
                   (access, dcp_dst);
                   (access, dcp_src)] 
                 in
                 let rec find_vfg_variable keys = match keys with
                 | [] -> (
                   (* This case should occur only for SSA variables which are constant after initialization *)
-                  let possible_ssa_map_keys = [EdgeExp.Max [access]; access] in
+                  let possible_ssa_map_keys = [EdgeExp.T.Max [access]; access] in
 
                   let ssa_map_key_opt = List.find possible_ssa_map_keys ~f:(fun key ->
                     EdgeExp.Map.mem key ssa_variables_map
@@ -607,7 +607,7 @@ let analyze_procedure (analysis_data : LooperSummary.t InterproceduralAnalysis.t
           else arg, typ
         )
         in
-        EdgeExp.Call (ret_typ, proc_name, renamed_args, loc)
+        EdgeExp.T.Call (ret_typ, proc_name, renamed_args, loc)
       )
       | _ -> assert(false)
       ) edge_data.calls
@@ -713,8 +713,8 @@ let analyze_procedure (analysis_data : LooperSummary.t InterproceduralAnalysis.t
     ) scc_edges
     in
     match norm with
-    | EdgeExp.Max [EdgeExp.Access access]
-    | EdgeExp.Access access -> (
+    | EdgeExp.T.Max [EdgeExp.T.Access access]
+    | EdgeExp.T.Access access -> (
 
       (* let base_pvar = Option.value_exn (Var.get_pvar var) in *)
       let access_base = HilExp.AccessExpression.get_base access in
@@ -725,13 +725,13 @@ let analyze_procedure (analysis_data : LooperSummary.t InterproceduralAnalysis.t
         sets, DCP.EdgeSet.union processed_edges bounded_edges
       )
     )
-    | EdgeExp.BinOp _ -> (
+    | EdgeExp.T.BinOp _ -> (
       (* [TODO] Validate that norm is not purely built over symbolic constants *)
       let bounded_edges = get_edge_set norm in
       let sets = EdgeExp.Map.add norm bounded_edges sets in
       sets, DCP.EdgeSet.union processed_edges bounded_edges
     )
-    | EdgeExp.Const _ -> sets, processed_edges
+    | EdgeExp.T.Const _ -> sets, processed_edges
     | _ -> L.(die InternalError)"[Norm edge sets] Invalid norm expression!"
   ) norm_set (EdgeExp.Map.empty, DCP.EdgeSet.empty)
   in
@@ -815,7 +815,7 @@ let analyze_procedure (analysis_data : LooperSummary.t InterproceduralAnalysis.t
       let norm_updates = EdgeExp.Map.find norm cache.updates in
       let increment_sum, cache = LooperSummary.Increments.fold (fun (edge, const) (increment_sum, cache) ->
         let bound, cache = transition_bound edge cache in
-        let const = EdgeExp.mult bound (EdgeExp.Const (Const.Cint const)) in
+        let const = EdgeExp.mult bound (EdgeExp.T.Const (Const.Cint const)) in
         (EdgeExp.add increment_sum const), cache
       ) norm_updates.increments (EdgeExp.zero, cache)
       in
@@ -834,7 +834,7 @@ let analyze_procedure (analysis_data : LooperSummary.t InterproceduralAnalysis.t
     let norm_updates = EdgeExp.Map.find norm cache.updates in
     let decrement_sum, cache = LooperSummary.Decrements.fold (fun (edge, const) (decrement_sum, cache) ->
       let bound, cache = transition_bound edge cache in
-      let const = EdgeExp.mult bound (EdgeExp.Const (Const.Cint const)) in
+      let const = EdgeExp.mult bound (EdgeExp.T.Const (Const.Cint const)) in
       (EdgeExp.add decrement_sum const), cache
     ) norm_updates.decrements (EdgeExp.zero, cache)
     in
@@ -855,18 +855,18 @@ let analyze_procedure (analysis_data : LooperSummary.t InterproceduralAnalysis.t
       let var_bound, cache = variable_bound (fst chain_origin_node) cache in
       let max_exp, cache = if IntLit.isnegative chain_value then (
         (* result can be negative, wrap bound expression in the max function *)
-        let const_bound = EdgeExp.Const (Const.Cint (IntLit.neg chain_value)) in
+        let const_bound = EdgeExp.T.Const (Const.Cint (IntLit.neg chain_value)) in
         let binop_bound = match var_bound with
         (* max(max(x, 0) - 1, 0) --> max(x - 1, 0) *)
-        | EdgeExp.Max args -> EdgeExp.sub (List.hd_exn args) const_bound
+        | EdgeExp.T.Max args -> EdgeExp.sub (List.hd_exn args) const_bound
         | _ -> EdgeExp.sub var_bound const_bound
         in
-        EdgeExp.Max [binop_bound], cache
+        EdgeExp.T.Max [binop_bound], cache
       ) else if IntLit.iszero chain_value then (
         var_bound, cache
       ) else (
         (* const > 0 => result must be positive, max function is useless *)
-        let const_bound = EdgeExp.Const (Const.Cint chain_value) in
+        let const_bound = EdgeExp.T.Const (Const.Cint chain_value) in
         let binop_bound = EdgeExp.add var_bound const_bound in
         binop_bound, cache
       )
@@ -893,7 +893,7 @@ let analyze_procedure (analysis_data : LooperSummary.t InterproceduralAnalysis.t
           let chain_transitions = DCP.EdgeSet.elements (RG.Chain.transitions chain) in
           let args, cache = List.fold_until chain_transitions ~init:([], cache) ~f:fold_aux ~finish:(fun acc -> acc) in
           let args = List.dedup_and_sort ~compare:EdgeExp.compare args in
-          let edge_bound = if Int.equal (List.length args) 1 then List.hd_exn args else EdgeExp.Min (args) in
+          let edge_bound = if Int.equal (List.length args) 1 then List.hd_exn args else EdgeExp.T.Min (args) in
           if EdgeExp.is_one edge_bound then max_exp, cache
           else EdgeExp.mult edge_bound max_exp, cache
         )
@@ -915,109 +915,85 @@ let analyze_procedure (analysis_data : LooperSummary.t InterproceduralAnalysis.t
       bound, cache
     )
     | None -> (
+      let var_bound, (cache : LooperSummary.cache) =
       if EdgeExp.is_variable norm formals tenv then (
-        let var_bound, (cache : LooperSummary.cache) = match norm with
-        | EdgeExp.Max args when List.length args > 1 -> (
-          (* Variable bound for a max(...) expression. Calculate VB for each variable argument *)
-          let cache, args = List.fold args ~init:(cache, [])  ~f:(fun (cache, args_acc) arg ->
-            match arg with
-            | EdgeExp.Access _ -> (
-              let arg, cache = variable_bound arg cache in
-              cache, arg :: args_acc
-            )
-            | EdgeExp.Max nested_args -> (
-              (* Nested max expression, unpack arguments *)
-              debug_log "Nested max arg: %a\n" EdgeExp.pp arg;
-              let args = List.filter nested_args ~f:(fun x -> not (List.mem args_acc x ~equal:EdgeExp.equal)) in
-              cache, args @ args_acc
-            )
-            | _ -> (cache, arg :: args_acc)
-          ) in
-          EdgeExp.Max args, cache
-        )
-        | _ -> (
-          let cache = get_update_map norm dcp_edge_set cache in
-          let norm_updates = EdgeExp.Map.find norm cache.updates in
-          let increment_sum, cache = calculate_increment_sum (EdgeExp.Set.singleton norm) cache in
+        let cache = get_update_map norm dcp_edge_set cache in
+        let norm_updates = EdgeExp.Map.find norm cache.updates in
+        let increment_sum, cache = calculate_increment_sum (EdgeExp.Set.singleton norm) cache in
 
-          if LooperSummary.Resets.is_empty norm_updates.resets then (
-            match EdgeExp.Map.find_opt norm formal_variables_mapping with
-            | Some (original_norm, _) 
-              when EdgeExp.is_formal_variable original_norm formals tenv -> (
-              (* TODO: Hack around for now. When we reach the end of reset
-               * chain for formal variable we treat it as a symbolic constant.
-               * What should we do in those instances? Formals cannot be variables
-               * and symbolic constants at the same time. *)
-              EdgeExp.add original_norm increment_sum, cache
-            )
-            | _ -> (
-              L.user_error "[%a] Variable norm '%a' has no existing reset. \
-              Returning Infinity variable bound."
-              Procname.pp proc_name EdgeExp.pp norm;
-              EdgeExp.Inf, cache
-            )
-          ) 
-          else (
-            let max_args, (cache : LooperSummary.cache) = 
-            LooperSummary.Resets.fold (fun (_, norm, const) (args, cache) ->
-              let var_bound, cache = variable_bound norm cache in
-              let max_arg = if IntLit.isnegative const then (
-                let const = EdgeExp.Const (Const.Cint (IntLit.neg const)) in
-                [EdgeExp.sub var_bound const]
-              ) else if IntLit.iszero const then (
-                [var_bound]
-              ) else (
-                let const = EdgeExp.Const (Const.Cint const) in
-                [EdgeExp.add var_bound const]
-              )
-              in
-              args @ max_arg, cache
-            ) norm_updates.resets ([], cache)
-            in
-            (* debug_log "   [VB(%a)] Max args: " EdgeExp.pp norm;
-            List.iter max_args ~f:(fun x -> debug_log "%a " EdgeExp.pp x);
-            debug_log "\n"; *)
-
-            (* Deduplicate and unpack nested max expressions
-            * TODO: unpacking should be done only if certain conditions are met, should think about it later *)
-            let rec flatten_nested_max args acc_set = List.fold args ~init:acc_set ~f:(fun acc arg ->
-              match arg with
-              | EdgeExp.Max nested_args -> flatten_nested_max nested_args acc
-              | _ -> EdgeExp.Set.add arg acc
-            )
-            in
-
-            let flattened_args = flatten_nested_max max_args EdgeExp.Set.empty |> EdgeExp.Set.elements in
-            let max_subexp, cache = match List.length flattened_args with
-            | 0 -> L.(die InternalError)"[VB] Missing max() arguments for [%a]!" EdgeExp.pp norm
-            | 1 -> (
-              let arg = List.hd_exn flattened_args in
-              let is_always_positive, cache = match EdgeExp.Map.find_opt arg cache.positivity with
-              | Some value -> value, cache
-              | None -> (
-                let value = EdgeExp.always_positive_why3 arg tenv active_prover in
-                value, { cache with positivity = EdgeExp.Map.add arg value cache.positivity }
-              )
-              in
-              (if is_always_positive then arg else EdgeExp.Max [arg]), cache
-            )
-            | _ -> EdgeExp.Max flattened_args, cache
-            in
-            let max_subexp = Option.value_map (EdgeExp.evaluate_const_exp max_subexp)
-              ~default:max_subexp ~f:(fun const -> EdgeExp.Const (Const.Cint const))
-            in
-            EdgeExp.add max_subexp increment_sum, cache
+        if LooperSummary.Resets.is_empty norm_updates.resets then (
+          match EdgeExp.Map.find_opt norm formal_variables_mapping with
+          | Some (original_norm, _) 
+            when EdgeExp.is_formal_variable original_norm formals tenv -> (
+            (* TODO: Hack around for now. When we reach the end of reset
+              * chain for formal variable we treat it as a symbolic constant.
+              * What should we do in those instances? Formals cannot be variables
+              * and symbolic constants at the same time. *)
+            EdgeExp.add original_norm increment_sum, cache
           )
+          | _ -> (
+            L.user_error "[%a] Variable norm '%a' has no existing reset. \
+            Returning Infinity variable bound."
+            Procname.pp proc_name EdgeExp.pp norm;
+            EdgeExp.T.Inf, cache
+          )
+        ) 
+        else (
+          let max_args, (cache : LooperSummary.cache) = 
+          LooperSummary.Resets.fold (fun (_, norm, const) (args, cache) ->
+            let var_bound, cache = variable_bound norm cache in
+            let max_arg = if IntLit.isnegative const 
+            then EdgeExp.sub var_bound (EdgeExp.T.Const (Const.Cint (IntLit.neg const)))
+            else EdgeExp.add var_bound (EdgeExp.T.Const (Const.Cint const))
+            in
+            max_arg :: args, cache
+          ) norm_updates.resets ([], cache)
+          in
+
+          (* debug_log "   [VB(%a)] Max args: " EdgeExp.pp norm;
+          List.iter max_args ~f:(fun x -> debug_log "%a " EdgeExp.pp x);
+          debug_log "\n"; *)
+
+          (* Deduplicate and unpack nested max expressions
+          * TODO: unpacking should be done only if certain conditions are met, should think about it later *)
+          let rec flatten_nested_max args acc_set = List.fold args ~init:acc_set ~f:(fun acc arg ->
+            match arg with
+            | EdgeExp.T.Max nested_args -> flatten_nested_max nested_args acc
+            | _ -> EdgeExp.Set.add arg acc
+          )
+          in
+
+          let flattened_args = flatten_nested_max max_args EdgeExp.Set.empty |> EdgeExp.Set.elements in
+          let max_subexp, cache = match List.length flattened_args with
+          | 0 -> L.(die InternalError)"[VB] Missing max() arguments for [%a]!" EdgeExp.pp norm
+          | _ -> EdgeExp.T.Max flattened_args, cache
+          in
+          (* let max_subexp, cache = match List.length flattened_args with
+          | 0 -> L.(die InternalError)"[VB] Missing max() arguments for [%a]!" EdgeExp.pp norm
+          | 1 -> (
+            let arg = List.hd_exn flattened_args in
+            let is_always_positive, cache = match EdgeExp.Map.find_opt arg cache.positivity with
+            | Some value -> value, cache
+            | None -> (
+              let value = EdgeExp.always_positive_why3 arg tenv active_prover in
+              value, { cache with positivity = EdgeExp.Map.add arg value cache.positivity }
+            )
+            in
+            (if is_always_positive then arg else EdgeExp.T.Max [arg]), cache
+          )
+          | _ -> EdgeExp.T.Max flattened_args, cache
+          in *)
+
+          let max_subexp = Option.value_map (EdgeExp.evaluate_const_exp max_subexp)
+            ~default:max_subexp ~f:(fun const -> EdgeExp.T.Const (Const.Cint const))
+          in
+          EdgeExp.add max_subexp increment_sum, cache
         )
-        in
-        var_bound, {cache with variable_bounds = EdgeExp.Map.add norm var_bound cache.variable_bounds}
-      ) 
-      else (
-        let cache : LooperSummary.cache = 
-          {cache with variable_bounds = EdgeExp.Map.add norm norm cache.variable_bounds} 
-        in
-        norm, cache
       )
+      else norm, cache
+      in
+      var_bound,
+      {cache with variable_bounds = EdgeExp.Map.add norm var_bound cache.variable_bounds}
     )
     in
     debug_log "Final VB(%a): %a@]@," EdgeExp.pp norm EdgeExp.pp bound;
@@ -1034,15 +1010,15 @@ let analyze_procedure (analysis_data : LooperSummary.t InterproceduralAnalysis.t
     | None -> (
       if EdgeExp.is_variable norm formals tenv then (
         let var_bound, (cache : LooperSummary.cache) = match norm with
-        | EdgeExp.Max args -> (
+        | EdgeExp.T.Max args -> (
           (* Variable bound for a max(...) expression. Calculate VB for each variable argument *)
           let cache, args = List.fold args ~init:(cache, [])  ~f:(fun (cache, args_acc) arg ->
             match arg with
-            | EdgeExp.Access _ -> (
+            | EdgeExp.T.Access _ -> (
               let arg, cache = variable_lower_bound arg cache in
               cache, arg :: args_acc
             )
-            | EdgeExp.Max nested_args -> (
+            | EdgeExp.T.Max nested_args -> (
               (* Nested max expression, unpack arguments *)
               (* debug_log "Nested max arg: %a\n" EdgeExp.pp arg; *)
               let args = List.filter nested_args ~f:(fun x -> not (List.mem args_acc x ~equal:EdgeExp.equal)) in
@@ -1050,7 +1026,7 @@ let analyze_procedure (analysis_data : LooperSummary.t InterproceduralAnalysis.t
             )
             | _ -> (cache, arg :: args_acc)
           ) in
-          EdgeExp.Max args, cache
+          EdgeExp.T.Max args, cache
         )
         | _ -> (
           let cache = get_update_map norm dcp_edge_set cache in
@@ -1061,8 +1037,8 @@ let analyze_procedure (analysis_data : LooperSummary.t InterproceduralAnalysis.t
           let min_args, cache = LooperSummary.Resets.fold (fun (_, norm, const) (args, cache) ->
             let var_bound, cache = variable_lower_bound norm cache in
             let min_arg = if IntLit.isnegative const 
-            then EdgeExp.sub var_bound (EdgeExp.Const (Const.Cint (IntLit.neg const)))
-            else EdgeExp.add var_bound (EdgeExp.Const (Const.Cint const))
+            then EdgeExp.sub var_bound (EdgeExp.T.Const (Const.Cint (IntLit.neg const)))
+            else EdgeExp.add var_bound (EdgeExp.T.Const (Const.Cint const))
             in
             min_arg :: args, cache
           ) norm_updates.resets ([], cache)
@@ -1070,7 +1046,7 @@ let analyze_procedure (analysis_data : LooperSummary.t InterproceduralAnalysis.t
 
           let rec flatten_nested_min args acc_set = List.fold args ~init:acc_set ~f:(fun acc arg ->
             match arg with
-            | EdgeExp.Min nested_args -> flatten_nested_min nested_args acc
+            | EdgeExp.T.Min nested_args -> flatten_nested_min nested_args acc
             | _ -> EdgeExp.Set.add arg acc
           )
           in
@@ -1079,7 +1055,7 @@ let analyze_procedure (analysis_data : LooperSummary.t InterproceduralAnalysis.t
           let min_subexp, cache = match List.length flattened_args with
           | 0 -> L.(die InternalError)"[LB] Missing min() arguments for [%a]!" EdgeExp.pp norm
           | 1 -> List.hd_exn flattened_args, cache
-          | _ -> EdgeExp.Min flattened_args, cache
+          | _ -> EdgeExp.T.Min flattened_args, cache
           in
           EdgeExp.add min_subexp decrement_sum, cache
         )
@@ -1162,7 +1138,7 @@ let analyze_procedure (analysis_data : LooperSummary.t InterproceduralAnalysis.t
   (* Sum together the cost of all functions called on this transition *)
   let instantiate_function_calls (edge_data : DCP.EdgeData.t) cache =
     EdgeExp.Set.fold (fun call_exp (calls, cache_acc) -> match call_exp with
-      | EdgeExp.Call (_, proc_name, args, loc) -> (
+      | EdgeExp.T.Call (_, proc_name, args, loc) -> (
         let payload_opt = Location.Map.find_opt loc graph_data.call_summaries in
         match payload_opt with
         | Some payload -> (
@@ -1280,7 +1256,7 @@ let analyze_procedure (analysis_data : LooperSummary.t InterproceduralAnalysis.t
     let return_access = AccessPath.base_of_pvar (Procdesc.get_ret_var proc_desc) ret_type 
       |> HilExp.AccessExpression.base
     in
-    let return_norm = EdgeExp.Max [EdgeExp.Access return_access] in
+    let return_norm = EdgeExp.T.Max [EdgeExp.T.Access return_access] in
     let return_bound, _ = variable_bound return_norm cache in
     debug_log "[Return bound] %a@," EdgeExp.pp return_bound;
     Some return_bound

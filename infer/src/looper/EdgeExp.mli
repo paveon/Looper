@@ -4,7 +4,27 @@ open! IStd
 module F = Format
 
 
-type t =
+module rec T : sig
+  type t =
+  | BinOp of Binop.t * t * t
+  | UnOp of Unop.t * t * Typ.t option
+  | Access of HilExp.access_expression
+  | Const of Const.t
+  | Cast of Typ.t * t
+  | Call of Typ.t * Procname.t * (t * Typ.t) list * Location.t
+  | Max of Set.t
+  | Min of Set.t
+  | Inf
+  [@@deriving compare]
+end
+
+and Set : Caml.Set.S with type elt = T.t
+
+include T
+
+val compare : t -> t -> int
+
+(* type t =
 | BinOp of Binop.t * t * t
 | UnOp of Unop.t * t * Typ.t option
 | Access of HilExp.access_expression
@@ -14,98 +34,98 @@ type t =
 | Max of t list
 | Min of t list
 | Inf
-[@@deriving compare]
+[@@deriving compare] *)
 
-module Set : Caml.Set.S with type elt = t
+(* module Set : Caml.Set.S with type elt = t *)
 
-module Map : Caml.Map.S with type key = t
+module Map : Caml.Map.S with type key = T.t
 
-val to_string : t -> string
+val to_string : T.t -> string
 
-val pp : F.formatter -> t -> unit
+val pp : F.formatter -> T.t -> unit
 
-val equal : t -> t -> bool
+val equal : T.t -> T.t -> bool
 
-val one : t
+val one : T.t
 
-val zero : t
+val zero : T.t
 
-val of_int : int -> t
+val of_int : int -> T.t
 
-val of_int32 : int32 -> t
+val of_int32 : int32 -> T.t
 
-val of_int64 : int64 -> t
+val of_int64 : int64 -> T.t
 
-val is_zero : t -> bool
+val is_zero : T.t -> bool
 
-val is_one : t -> bool
+val is_one : T.t -> bool
 
-val is_const : t -> bool
+val is_const : T.t -> bool
 
-val is_formal_variable : t -> AccessPath.BaseSet.t -> Tenv.t -> bool
+val is_formal_variable : T.t -> AccessPath.BaseSet.t -> Tenv.t -> bool
 
-val is_variable : t -> AccessPath.BaseSet.t -> Tenv.t -> bool
+val is_variable : T.t -> AccessPath.BaseSet.t -> Tenv.t -> bool
 
-val is_symbolic_const : t -> AccessPath.BaseSet.t -> Tenv.t -> bool
+val is_symbolic_const : T.t -> AccessPath.BaseSet.t -> Tenv.t -> bool
 
-val is_int : t -> Typ.t LooperUtils.PvarMap.t -> Tenv.t -> bool
+val is_int : T.t -> Typ.t LooperUtils.PvarMap.t -> Tenv.t -> bool
 
-val get_typ : Tenv.t -> t -> Typ.t option
+val get_typ : Tenv.t -> T.t -> Typ.t option
 
-val is_integer_condition : Tenv.t -> t -> bool
+val is_integer_condition : Tenv.t -> T.t -> bool
 
-val is_return : t -> bool
+val is_return : T.t -> bool
 
 val eval_consts : Binop.t -> IntLit.t -> IntLit.t -> IntLit.t
 
-val try_eval : Binop.t -> t -> t -> t
+val try_eval : Binop.t -> T.t -> T.t -> T.t
 
-val evaluate : t -> float LooperUtils.AccessExpressionMap.t -> float -> float
+val evaluate : T.t -> float LooperUtils.AccessExpressionMap.t -> float -> float
 
-val merge : t -> (Binop.t * IntLit.t) option -> t
+val merge : T.t -> (Binop.t * IntLit.t) option -> T.t
 
 (* Splits expression on +/- into terms *)
-val split_exp : t -> t list
+val split_exp : T.t -> T.t list
 
 (* Merges terms into single expression *)
-val merge_exp_parts : t list -> t
+val merge_exp_parts : T.t list -> T.t
 
-val separate : t -> t * (Binop.t * IntLit.t) option
+val separate : T.t -> T.t * (Binop.t * IntLit.t) option
 
 (* Tries to expand the expression on multiplications  *)
-val expand_multiplication : t -> IntLit.t option -> t
+val expand_multiplication : T.t -> IntLit.t option -> T.t
 
-val simplify : t -> t
+val simplify : T.t -> T.t
 
-val remove_casts_of_consts : t -> Typ.IntegerWidths.t -> t
+val remove_casts_of_consts : T.t -> Typ.IntegerWidths.t -> T.t
 
-val evaluate_const_exp : t -> IntLit.t option
+val evaluate_const_exp : T.t -> IntLit.t option
 
 (* val access_path_id_resolver : (t * Typ.t) Ident.Map.t -> Var.t -> AccessPath.t option *)
 
 (* val of_exp : Exp.t -> (t * Typ.t) Ident.Map.t -> Typ.t -> Typ.t LooperUtils.PvarMap.t -> t *)
 
-val of_hil_exp : HilExp.t -> (Ident.t -> t) -> t
+val of_hil_exp : HilExp.t -> (Ident.t -> t) -> T.t
 
-val to_why3_expr : t -> Tenv.t -> LooperUtils.prover_data -> (Why3.Term.term * Why3.Term.Sterm.t)
+val to_why3_expr : T.t -> Tenv.t -> LooperUtils.prover_data -> (Why3.Term.term * Why3.Term.Sterm.t)
 
-val always_positive_why3 : t -> Tenv.t -> LooperUtils.prover_data -> bool
+val always_positive_why3 : T.t -> Tenv.t -> LooperUtils.prover_data -> bool
 
-val get_accesses: t -> LooperUtils.AccessExpressionSet.t
+val get_accesses: T.t -> LooperUtils.AccessExpressionSet.t
 
-val get_access_exp_set : t -> Set.t
+val get_access_exp_set : T.t -> Set.t
 
-val map_accesses: t -> f:(HilExp.access_expression -> 'a -> t * 'a) -> 'a -> t * 'a
+val map_accesses: T.t -> f:(HilExp.access_expression -> 'a -> T.t * 'a) -> 'a -> T.t * 'a
 
-val subst : t -> (t * Typ.t) list -> FormalMap.t -> t
+val subst : T.t -> (T.t * Typ.t) list -> FormalMap.t -> T.t
 
-val normalize_condition : t -> Tenv.t -> t
+val normalize_condition : T.t -> Tenv.t -> T.t
 
-val determine_monotonicity : t -> Tenv.t -> LooperUtils.prover_data 
+val determine_monotonicity : T.t -> Tenv.t -> LooperUtils.prover_data 
     -> LooperUtils.Monotonicity.t LooperUtils.AccessExpressionMap.t
 
-val add : t -> t -> t
+val add : T.t -> T.t -> T.t
 
-val sub : t -> t -> t
+val sub : T.t -> T.t -> T.t
 
-val mult : t -> t -> t
+val mult : T.t -> T.t -> T.t

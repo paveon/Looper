@@ -23,8 +23,8 @@ module EdgeData = struct
     mutable calls: EdgeExp.Set.t;
     mutable constraints: DC.rhs DC.Map.t;
     mutable guards: EdgeExp.Set.t;
-    mutable bound: EdgeExp.t option;
-    mutable bound_norm: EdgeExp.t option;
+    mutable bound: EdgeExp.T.t option;
+    mutable bound_norm: EdgeExp.T.t option;
     mutable computing_bound: bool;
 
     mutable edge_type: edge_output_type;
@@ -117,7 +117,7 @@ let edge_attributes : E.t -> 'a list = fun (_, edge_data, _) -> (
   let label = if edge_data.backedge then label ^ "[backedge]\n" else label in
   let call_list = List.map (EdgeExp.Set.elements edge_data.calls) ~f:(fun call ->
     match call with
-    | EdgeExp.Call (_, _, _, loc) -> F.asprintf "%s : %a" (EdgeExp.to_string call) Location.pp loc
+    | EdgeExp.T.Call (_, _, _, loc) -> F.asprintf "%s : %a" (EdgeExp.to_string call) Location.pp loc
     | _ -> assert(false)
   ) 
   in

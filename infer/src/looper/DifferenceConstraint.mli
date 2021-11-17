@@ -7,7 +7,7 @@ module F = Format
 
 (* Difference Constraint of form "x <= y + c"
  * Example: "(len - i) <= (len - i) + 1" *)
-type norm = EdgeExp.t [@@deriving compare]
+type norm = EdgeExp.T.t [@@deriving compare]
 type rhs_const = Binop.t * IntLit.t [@@deriving compare]
 type rhs = norm * Binop.t * IntLit.t [@@deriving compare]
 

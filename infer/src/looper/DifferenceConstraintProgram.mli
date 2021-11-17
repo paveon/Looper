@@ -18,8 +18,8 @@ module EdgeData : sig
     mutable calls: EdgeExp.Set.t;
     mutable constraints: DC.rhs DC.Map.t;
     mutable guards: EdgeExp.Set.t;
-    mutable bound: EdgeExp.t option;
-    mutable bound_norm: EdgeExp.t option;
+    mutable bound: EdgeExp.T.t option;
+    mutable bound_norm: EdgeExp.T.t option;
     mutable computing_bound: bool;
 
     mutable edge_type: edge_output_type;
@@ -30,9 +30,9 @@ module EdgeData : sig
 
   val from_lts_edge : LTS.EdgeData.t -> t
 
-  val is_reset : t -> EdgeExp.t -> bool
+  val is_reset : t -> EdgeExp.T.t -> bool
 
-  val get_reset : t -> EdgeExp.t -> EdgeExp.t option
+  val get_reset : t -> EdgeExp.T.t -> EdgeExp.T.t option
 
   val is_backedge : t -> bool
 

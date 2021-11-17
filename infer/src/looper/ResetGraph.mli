@@ -8,7 +8,7 @@ module DCP = DifferenceConstraintProgram
 
 (* Reset graph *)
 module Node : sig
-  type t = EdgeExp.t * bool [@@deriving compare]
+  type t = EdgeExp.T.t * bool [@@deriving compare]
   val hash : 'a -> int
   val equal : t -> t -> bool
 end
