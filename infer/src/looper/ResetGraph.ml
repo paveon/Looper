@@ -9,7 +9,7 @@ module DCP = DifferenceConstraintProgram
 
 (* Reset graph *)
 module Node = struct
-  type t = EdgeExp.t * bool [@@deriving equal, compare]
+  type t = EdgeExp.T.t * bool [@@deriving equal, compare]
   let hash x = Hashtbl.hash_param 100 100 x
   let equal = equal
 end

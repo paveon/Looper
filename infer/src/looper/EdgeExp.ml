@@ -11,7 +11,39 @@ let debug_log : ('a, Format.formatter, unit) format -> 'a = fun fmt -> F.fprintf
 let console_log : ('a, Format.formatter, unit) format -> 'a = fun fmt -> F.printf fmt
 
 
-type t =
+module rec T : sig
+  type t =
+  | BinOp of Binop.t * t * t
+  | UnOp of Unop.t * t * Typ.t option
+  | Access of HilExp.access_expression
+  | Const of Const.t
+  | Cast of Typ.t * t
+  | Call of Typ.t * Procname.t * (t * Typ.t) list * Location.t
+  | Max of Set.t
+  | Min of Set.t
+  | Inf
+  [@@deriving compare]
+end = struct
+  type t = 
+  | BinOp of Binop.t * t * t
+  | UnOp of Unop.t * t * Typ.t option
+  | Access of HilExp.access_expression
+  | Const of Const.t
+  | Cast of Typ.t * t
+  | Call of Typ.t * Procname.t * (t * Typ.t) list * Location.t
+  | Max of Set.t
+  | Min of Set.t
+  | Inf
+  [@@deriving compare]
+end
+
+and Set : Caml.Set.S with type elt = T.t = Caml.Set.Make(T)
+
+include T
+
+let compare = T.compare
+
+(* type t =
   | BinOp of Binop.t * t * t
   | UnOp of Unop.t * t * Typ.t option
   | Access of HilExp.access_expression
@@ -23,20 +55,34 @@ type t =
   | Inf
   [@@deriving compare]
 
-
 module Set = Caml.Set.Make(struct
   type nonrec t = t
   let compare = compare
-end)
+end) *)
 
+(* module Set = Caml.Set.Make(struct
+  type nonrec t = t
+  let compare = compare
+end) *)
 
 module Map = Caml.Map.Make(struct
-  type nonrec t = t
+  type nonrec t = T.t
   let compare = compare
 end)
 
 
-let rec to_string = function
+let rec to_string exp =
+  let process_min_max min_max prefix ~f =
+    match Set.cardinal min_max with
+    | 0 -> assert(false)
+    | 1 -> f (to_string (Set.min_elt min_max))
+    | _ -> (
+      let str_list = List.map (Set.elements min_max) ~f:(fun arg -> to_string arg) in
+      F.asprintf "%s(%s)" prefix (String.concat ~sep:", " str_list)
+    )
+  in
+
+  match exp with
   | BinOp (op, lhs, rhs) -> (
     F.sprintf "(%s %s %s)" (to_string lhs) (Binop.str Pp.text op) (to_string rhs)
   )
@@ -49,26 +95,14 @@ let rec to_string = function
     let args_string = String.concat ~sep:", " (List.map args ~f:(fun (x, _) -> to_string x)) in
     F.asprintf "%s(%s)" proc_name args_string
   )
-  | Max args -> (
-    if Int.equal (List.length args) 1 then (
-      let arg = List.hd_exn args in
-      let str = to_string arg in
-      F.sprintf "[%s]" str
-    ) 
-    else (
-      if List.is_empty args then assert(false)
-      else F.asprintf "max(%s)" (String.concat ~sep:", " (List.map args ~f:(fun arg -> to_string arg)))
-    )
-  )
-  | Min args -> 
-    if Int.equal (List.length args) 1 then to_string (List.hd_exn args)
-    else F.asprintf "min(%s)" (String.concat ~sep:", " (List.map args ~f:(fun arg -> to_string arg)))
+  | Max args -> process_min_max args "max" ~f:(fun str -> F.sprintf "[%s]" str)
+  | Min args -> process_min_max args "min" ~f:(fun s -> s)
   | Inf -> "Infinity"
 
 
 let pp fmt exp = F.fprintf fmt "%s" (to_string exp)
 
-let equal = [%compare.equal: t]
+let equal = [%compare.equal: T.t]
 
 let one = Const (Const.Cint IntLit.one)
 
@@ -89,8 +123,10 @@ let is_zero = function
 let is_one = function Const (Const.Cint const) -> IntLit.isone const | _ -> false
 
 
-let is_formal_variable norm formals tenv = match norm with
-  | Max [Access ae]
+let rec is_formal_variable norm formals tenv = match norm with
+  | Max args when Int.equal (Set.cardinal args) 1 -> (
+    is_formal_variable (Set.min_elt args) formals tenv
+  )
   | Access ae -> (
     let access_base = HilExp.AccessExpression.get_base ae in
     if AccessPath.BaseSet.mem access_base formals then (
@@ -141,7 +177,7 @@ let is_variable norm formals tenv =
   )
   | UnOp (_, exp, _) | Cast (_, exp) -> (traverse_exp exp)
   | BinOp (_, lexp, rexp) -> (traverse_exp lexp) || (traverse_exp rexp)
-  | Max args | Min args -> List.exists args ~f:traverse_exp
+  | Max args | Min args -> Set.exists traverse_exp args
   | _ -> false
   in
   traverse_exp norm
@@ -215,7 +251,8 @@ let rec is_return exp = match exp with
     | HilExp.Base (base_var, _) -> Var.is_return base_var
     | _ -> false
   )
-  | Max [arg] -> is_return arg
+  | Max args when Int.equal (Set.cardinal args) 1 -> 
+    is_return (Set.min_elt args)
   | _ -> false
 
 
@@ -253,7 +290,9 @@ let try_eval op e1 e2 = match e1, e2 with
 
 let rec evaluate exp value_map default_value = 
   let eval_min_max args f =
-    let values = List.map args ~f:(fun arg -> evaluate arg value_map default_value) in
+    let values = List.map (Set.elements args)
+      ~f:(fun arg -> evaluate arg value_map default_value) 
+    in
     Option.value_exn (f values ~compare:Float.compare)
   in
 
@@ -584,13 +623,17 @@ let rec expand_multiplication exp const_opt =
     | None -> exp
   )
   | Cast (typ, exp) -> Cast (typ, expand_multiplication exp const_opt)
-  | Max [arg] -> Max [expand_multiplication arg const_opt]
   | Max args -> (
-    (* TODO: probably leave as is, in general we cannot simply multiply each
-     * argument, i.e., C * max(arg_2,arg_2, ...) != max(C * arg_1, C * arg_2, ...) *)
-    let args = List.map args ~f:(fun arg -> expand_multiplication arg None) in
-    Option.value_map const_opt ~default:(Max args) ~f:(fun c -> 
-      try_eval (Binop.Mult None) (Const (Const.Cint c)) (Max args)
+    match Set.cardinal args with
+    | 1 ->
+      Max ((expand_multiplication (Set.min_elt args) const_opt) |> Set.singleton)
+    | _ -> (
+      (* TODO: probably leave as is, in general we cannot simply multiply each
+       * argument, i.e., C * max(arg_2,arg_2, ...) != max(C * arg_1, C * arg_2, ...) *)
+      let args = Set.map (fun arg -> expand_multiplication arg None) args in
+      Option.value_map const_opt ~default:(Max args) ~f:(fun c -> 
+        try_eval (Binop.Mult None) (Const (Const.Cint c)) (Max args)
+      )
     )
   )
   | BinOp (Binop.Mult _, Const (Const.Cint c), subexp)
@@ -727,7 +770,7 @@ let rec remove_casts_of_consts exp integer_widths = match exp with
     Call (typ, procname, args, loc)
   )
   | Max args | Min args ->
-    Max (List.map args ~f:(fun arg -> remove_casts_of_consts arg integer_widths))
+    Max (Set.map (fun arg -> remove_casts_of_consts arg integer_widths) args)
   | _ -> exp
 
 
@@ -756,8 +799,8 @@ let rec evaluate_const_exp exp =
     | Some value -> Some (IntLit.neg value)
     | None -> None
   )
-  | Max args -> get_min_max IntLit.max args
-  | Min args -> get_min_max IntLit.max args
+  | Max args -> get_min_max IntLit.max (Set.elements args)
+  | Min args -> get_min_max IntLit.max (Set.elements args)
   | _ -> None
 
 
@@ -765,8 +808,8 @@ let is_const exp = Option.is_some (evaluate_const_exp exp)
 
 
 let rec transform_shifts exp = match exp with
-  | Max [arg] -> (
-    let arg, conditions = transform_shifts arg in
+  | Max args when Int.equal (Set.cardinal args) 1 -> (
+    let arg, conditions = transform_shifts (Set.min_elt args) in
     arg, Set.add (BinOp (Binop.Ge, arg, zero)) conditions
   )
   | Cast (typ, exp) -> (
@@ -1006,7 +1049,7 @@ let rec to_why3_expr exp tenv (prover_data : prover_data) =
       let expr_why3 = Why3.Term.t_app_infer mul_symbol [why3_lexp; rexp] in
       expr_why3, Why3.Term.Sterm.singleton condition
     )
-    | _ -> L.(die InternalError)"[EdgeExp.to_why3_expr] Expression '%a' contains invalid binary operator!" pp exp
+    | _ -> L.(die InternalError)"[EdgeExp.T.to_why3_expr] Expression '%a' contains invalid binary operator!" pp exp
     in
     expr_z3, Why3.Term.Sterm.union constraints (Why3.Term.Sterm.union why3_lexp_constraints why3_rexp_constraints)
   )
@@ -1015,14 +1058,14 @@ let rec to_why3_expr exp tenv (prover_data : prover_data) =
     Why3.Term.t_app_infer unary_minus_symbol [subexp], conditions
   )
   | Max max_args -> (
-    let why3_args, type_constraints = List.fold max_args ~f:(fun (args, constraints) arg ->
+    let why3_args, type_constraints = Set.fold (fun arg (args, constraints) ->
       let why3_arg, arg_type_constraints = to_why3_expr arg tenv prover_data in
       why3_arg :: args, Why3.Term.Sterm.union arg_type_constraints constraints
-    ) ~init:([], Why3.Term.Sterm.empty)
+    ) max_args ([], Why3.Term.Sterm.empty)
     in
     
-    if List.length max_args < 2 then (
-      assert(List.length max_args > 0);
+    if Set.cardinal max_args < 2 then (
+      assert(Set.cardinal max_args > 0);
       let arg = List.hd_exn why3_args in
       let ite_condition = Why3.Term.ps_app ge_symbol [arg; zero_const] in
 
@@ -1041,7 +1084,7 @@ let rec to_why3_expr exp tenv (prover_data : prover_data) =
       max_expr, type_constraints
     )
   )
-  | _ -> L.(die InternalError)"[EdgeExp.to_why3_expr] Expression '%a' contains invalid element!" pp exp
+  | _ -> L.(die InternalError)"[EdgeExp.T.to_why3_expr] Expression '%a' contains invalid element!" pp exp
 
 
 (* TODO: rewrite to be more general, include preconditions and reference value as parameters *)
@@ -1064,7 +1107,7 @@ let rec always_positive_why3 exp tenv (prover_data : prover_data) =
 
   match exp with
   | Max args -> (
-    let sorted_args = List.sort args ~compare:(fun x y -> match x, y with
+    (* let sorted_args = List.sort args ~compare:(fun x y -> match x, y with
     | Const _, Const _ | Access _, Access _ -> 0
     | Const _, _ -> -1
     | _, Const _ -> 1
@@ -1072,10 +1115,10 @@ let rec always_positive_why3 exp tenv (prover_data : prover_data) =
     | _, Access _ -> 1
     | _ -> 0
     ) 
-    in
-    List.exists sorted_args ~f:aux
+    in *)
+    Set.exists aux args
   )
-  | Min args -> List.for_all args ~f:aux
+  | Min args -> Set.for_all aux args
   | _ -> (
     match evaluate_const_exp exp with
     | Some const_value -> IntLit.geq const_value IntLit.zero
@@ -1118,8 +1161,8 @@ let get_accesses_poly exp set ~f ~g =
   | BinOp (_, lexp, rexp) -> aux rexp (aux lexp set)
   | UnOp (_, exp, _) -> aux exp set
   | Cast (_, exp) -> aux exp set
-  | Max args -> List.fold args ~init:set ~f:(fun acc arg -> aux arg acc)
-  | Min args -> List.fold args ~init:set ~f:(fun acc arg -> aux arg acc)
+  | Max args -> Set.fold (fun arg acc -> aux arg acc) args set
+  | Min args -> Set.fold (fun arg acc -> aux arg acc) args set
   | _ -> set
   in
   aux exp set
@@ -1133,60 +1176,56 @@ let get_access_exp_set exp = get_accesses_poly exp Set.empty ~f:Set.add ~g:(fun 
 
 (* TODO: rewrite/get rid of *)
 let map_accesses bound ~f:f acc =
-  let rec aux bound acc = match bound with
-  | Access access -> f access acc
-  | BinOp (op, lexp, rexp) -> (
-    let lexp, acc = aux lexp acc in
-    let rexp, acc = aux rexp acc in
-    try_eval op lexp rexp, acc
-  )
-  | UnOp (Unop.Neg, exp, typ) -> (
-    let exp, acc = aux exp acc in
-    match exp with
-    | UnOp (Unop.Neg, _, _) -> exp, acc
-    | Const (Const.Cint const) -> Const (Const.Cint (IntLit.neg const)), acc
-    | _ ->  UnOp (Unop.Neg, exp, typ), acc
-  )
-  | UnOp (_, _, _) -> assert(false)
-  | Max args -> (
-    let args, acc = List.fold args ~init:([], acc) ~f:(fun (args, acc) arg ->
-      let arg, acc = aux arg acc in
-      args @ [arg], acc
-    )
+  let rec aux bound acc = 
+    let process_min_max args ~f ~g =
+      let args, acc = Set.fold (fun arg (args, acc) ->
+        let arg, acc = aux arg acc in
+        Set.add arg args, acc
+      ) args (Set.empty, acc)
+      in
+
+      if Set.for_all is_const args then (
+        let args = match Set.cardinal args with
+        | 1 -> Set.add zero args
+        | _ -> args
+        in
+        f args, acc
+      )
+      else g args, acc
     in
 
-    if List.for_all args ~f:is_const then (
-      let args = match args with
-      | [_] -> zero :: args
-      | _ -> args
-      in
-      Option.value_exn (List.max_elt args ~compare), acc
+    match bound with
+    | Access access -> f access acc
+    | BinOp (op, lexp, rexp) -> (
+      let lexp, acc = aux lexp acc in
+      let rexp, acc = aux rexp acc in
+      try_eval op lexp rexp, acc
     )
-    else Max args, acc
-  )
-  | Min args -> (
-    let args, acc = List.fold args ~init:([], acc) ~f:(fun (args, acc) arg ->
-      let arg, acc = aux arg acc in
-      args @ [arg], acc
+    | UnOp (Unop.Neg, exp, typ) -> (
+      let exp, acc = aux exp acc in
+      match exp with
+      | UnOp (Unop.Neg, _, _) -> exp, acc
+      | Const (Const.Cint const) -> Const (Const.Cint (IntLit.neg const)), acc
+      | _ ->  UnOp (Unop.Neg, exp, typ), acc
     )
-    in
-
-    if List.for_all args ~f:is_const then (
-      let args = match args with
-      | [_] -> zero :: args
-      | _ -> args
-      in
-      Option.value_exn (List.min_elt args ~compare), acc
-    )
-    else Min args, acc
-  )
-  | _ -> bound, acc
+    | UnOp (_, _, _) -> assert(false)
+    | Max args -> process_min_max args ~f:Set.max_elt ~g:(fun args -> Max args)
+    | Min args -> process_min_max args ~f:Set.min_elt ~g:(fun args -> Min args)
+    | _ -> bound, acc
   in
   aux bound acc
 
 
 let subst bound args formal_map =
-  let rec aux bound = match bound with
+  let rec aux bound = 
+  let process_min_max args ~f ~g =
+    let args_subst = Set.map aux args in
+    if Set.for_all is_const args_subst 
+    then f args_subst
+    else g args_subst
+  in
+
+  match bound with
   | Access access -> (
     let base = HilExp.AccessExpression.get_base access in
     match FormalMap.get_formal_index base formal_map with
@@ -1202,18 +1241,8 @@ let subst bound args formal_map =
     let subst_subexp = aux exp in
     if is_zero subst_subexp then subst_subexp else UnOp (op, subst_subexp, typ)
   )
-  | Max max_args -> (
-    let max_args_subst = List.map max_args ~f:aux in
-    if List.for_all max_args_subst ~f:is_const 
-    then Option.value_exn (List.max_elt max_args_subst ~compare:compare)
-    else Max max_args_subst
-  )
-  | Min min_args -> (
-    let min_args_subst = List.map min_args ~f:aux in
-    if List.for_all min_args_subst ~f:is_const 
-    then Option.value_exn (List.min_elt min_args_subst ~compare:compare)
-    else Min min_args_subst
-  )
+  | Max max_args -> process_min_max max_args ~f:Set.max_elt ~g:(fun args -> Max args)
+  | Min min_args -> process_min_max min_args ~f:Set.max_elt ~g:(fun args -> Min args)
   | _ -> bound
   in
   aux bound

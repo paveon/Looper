@@ -11,7 +11,7 @@ module Increments : Caml.Set.S with type elt = DCP.E.t * IntLit.t
 
 module Decrements : Caml.Set.S with type elt = DCP.E.t * IntLit.t
 
-module Resets : Caml.Set.S with type elt = DCP.E.t * EdgeExp.t * IntLit.t
+module Resets : Caml.Set.S with type elt = DCP.E.t * EdgeExp.T.t * IntLit.t
 
 
 type norm_updates = {
@@ -25,8 +25,8 @@ val empty_updates : norm_updates
 
 type cache = {
   updates: norm_updates EdgeExp.Map.t;
-  variable_bounds: EdgeExp.t EdgeExp.Map.t;
-  lower_bounds: EdgeExp.t EdgeExp.Map.t;
+  variable_bounds: EdgeExp.T.t EdgeExp.Map.t;
+  lower_bounds: EdgeExp.T.t EdgeExp.Map.t;
   reset_chains: ResetGraph.Chain.Set.t EdgeExp.Map.t;
   positivity: bool EdgeExp.Map.t;
 }
@@ -43,7 +43,7 @@ type call = {
 and transition = {
   src_node: LTS.Node.t;
   dst_node: LTS.Node.t;
-  bound: EdgeExp.t;
+  bound: EdgeExp.T.t;
   monotony_map: LooperUtils.Monotonicity.t LooperUtils.AccessExpressionMap.t;
   calls: call list
 }
@@ -51,15 +51,15 @@ and transition = {
 and t = {
   formal_map: FormalMap.t;
   bounds: transition list;
-  return_bound: EdgeExp.t option;
-  formal_bounds: (EdgeExp.t * EdgeExp.t) LooperUtils.AccessExpressionMap.t
+  return_bound: EdgeExp.T.t option;
+  formal_bounds: (EdgeExp.T.t * EdgeExp.T.t) LooperUtils.AccessExpressionMap.t
 }
 
-val total_bound : transition list -> EdgeExp.t
+val total_bound : transition list -> EdgeExp.T.t
 
-val instantiate : t -> (EdgeExp.t * Typ.t) list 
-    -> upper_bound:(EdgeExp.t -> cache -> EdgeExp.t * cache)
-    -> lower_bound:(EdgeExp.t -> cache -> EdgeExp.t * cache)
+val instantiate : t -> (EdgeExp.T.t * Typ.t) list 
+    -> upper_bound:(EdgeExp.T.t -> cache -> EdgeExp.T.t * cache)
+    -> lower_bound:(EdgeExp.T.t -> cache -> EdgeExp.T.t * cache)
     -> Tenv.t -> LooperUtils.prover_data -> cache -> transition list * cache
 
 val pp : F.formatter -> t -> unit
@@ -69,7 +69,7 @@ module TreeGraph : sig
   module Node : sig
     type t = 
     | CallNode of Procname.t * Location.t
-    | TransitionNode of LTS.Node.t * EdgeExp.t * LTS.Node.t
+    | TransitionNode of LTS.Node.t * EdgeExp.T.t * LTS.Node.t
     [@@deriving compare]
     val hash : 'a -> int
     val equal : t -> t -> bool
