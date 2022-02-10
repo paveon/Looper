@@ -75,9 +75,9 @@ module TransferFunctions (CFG : ProcCfg.S) = struct
         analyze_dependency callee_pname
         |> Option.value_map ~default:(astate) ~f:(fun (_, summary) ->
             let callee_formals = 
-              match AnalysisCallbacks.proc_resolve_attributes callee_pname with
-              | Some callee_attr ->
-                callee_attr.ProcAttributes.formals
+              match AnalysisCallbacks.get_model_proc_desc callee_pname with
+              | Some proc_desc ->
+                Procdesc.get_formals proc_desc
               | None ->
                 []
             in
@@ -258,7 +258,7 @@ let reporting {InterproceduralAnalysis.procedures; file_exe_env; analyze_file_de
   let locks_dependencies = 
     List.fold procedures ~f:(fun acc procname ->
       match analyze_file_dependency procname with
-      | Some (pdesc, (summary : Domain.t)) -> Domain.Edges.union summary.dependencies acc
+      | Some (summary : Domain.t) -> Domain.Edges.union summary.dependencies acc
       | None -> acc
     ) ~init:Domain.Edges.empty 
   in  

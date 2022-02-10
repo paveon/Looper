@@ -15,8 +15,8 @@ module EdgeData : sig
     backedge: bool;
     branch_info: (Sil.if_kind * bool * Location.t) option;
 
-    mutable calls: EdgeExp.Set.t;
-    mutable constraints: DC.rhs DC.Map.t;
+    mutable calls: EdgeExp.CallPairSet.t;
+    mutable constraints: DC.t list;
     mutable guards: EdgeExp.Set.t;
     mutable bound: EdgeExp.T.t option;
     mutable bound_norm: EdgeExp.T.t option;
@@ -32,7 +32,7 @@ module EdgeData : sig
 
   val is_reset : t -> EdgeExp.T.t -> bool
 
-  val get_reset : t -> EdgeExp.T.t -> EdgeExp.T.t option
+  val get_reset : t -> EdgeExp.T.t -> EdgeExp.value_pair option
 
   val is_backedge : t -> bool
 

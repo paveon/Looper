@@ -9,13 +9,17 @@ module F = Format
  * Example: "(len - i) <= (len - i) + 1" *)
 type norm = EdgeExp.T.t [@@deriving compare]
 type rhs_const = Binop.t * IntLit.t [@@deriving compare]
-type rhs = norm * Binop.t * IntLit.t [@@deriving compare]
+type value_rhs = norm * Binop.t * IntLit.t [@@deriving compare]
+type rhs =
+  | Value of value_rhs
+  | Pair of (value_rhs * value_rhs)
+  [@@deriving compare]
 
 type t = (norm * rhs) [@@deriving compare]
 
 val make : ?const_part:rhs_const -> norm -> norm -> t
 
-val make_rhs : ?const_part:rhs_const -> norm -> rhs
+val make_value_rhs : ?const_part:rhs_const -> norm -> value_rhs
 
 val is_constant : t -> bool
 
@@ -35,7 +39,9 @@ val pp_const_part : F.formatter -> rhs_const -> unit
     
 val pp : F.formatter -> t -> unit
 
-module Map : sig
+val get_dc : norm -> t list -> t option
+
+(* module Map : sig
   type dc = t
 
   include module type of EdgeExp.Map
@@ -45,4 +51,4 @@ module Map : sig
   val add_dc : norm -> rhs -> rhs t -> rhs t
 
   val to_string : rhs EdgeExp.Map.t -> string
-end
+end *)

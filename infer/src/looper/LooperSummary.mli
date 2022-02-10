@@ -51,8 +51,8 @@ and transition = {
 and t = {
   formal_map: FormalMap.t;
   bounds: transition list;
-  return_bound: EdgeExp.T.t option;
-  formal_bounds: (EdgeExp.T.t * EdgeExp.T.t) LooperUtils.AccessExpressionMap.t
+  return_bound: (EdgeExp.T.t * EdgeExp.T.t) option;
+  formal_bounds: (EdgeExp.T.t * EdgeExp.T.t) EdgeExp.Map.t
 }
 
 val total_bound : transition list -> EdgeExp.T.t

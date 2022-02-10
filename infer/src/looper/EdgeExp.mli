@@ -5,22 +5,60 @@ module F = Format
 
 
 module rec T : sig
-  type t =
+  type call = Typ.t * Procname.t * (t * Typ.t) list * Location.t
+
+  and t =
   | BinOp of Binop.t * t * t
   | UnOp of Unop.t * t * Typ.t option
   | Access of HilExp.access_expression
   | Const of Const.t
   | Cast of Typ.t * t
-  | Call of Typ.t * Procname.t * (t * Typ.t) list * Location.t
+  | Call of call
   | Max of Set.t
   | Min of Set.t
   | Inf
   [@@deriving compare]
+
+  val equal : t -> t -> bool
 end
 
 and Set : Caml.Set.S with type elt = T.t
 
 include T
+
+module Map : Caml.Map.S with type key = T.t
+
+val call_to_string : T.call -> string
+
+val to_string : T.t -> string
+
+val pp : F.formatter -> T.t -> unit
+
+val pp_call : F.formatter -> T.call -> unit
+
+type value_pair =
+  | Value of T.t
+  | Pair of (T.t * T.t)
+  [@@deriving compare]
+
+val value_pair_to_string : value_pair -> string
+
+val pp_value_pair : F.formatter -> value_pair -> unit
+
+module ValuePairSet : Caml.Set.S with type elt = value_pair
+
+
+type call_pair =
+  | CallValue of T.call
+  | CallPair of (T.call * T.call)
+  [@@deriving compare]
+
+val call_pair_to_string : call_pair -> string
+
+val pp_call_pair : F.formatter -> call_pair -> unit
+
+module CallPairSet : Caml.Set.S with type elt = call_pair
+
 
 val compare : t -> t -> int
 
@@ -37,12 +75,6 @@ val compare : t -> t -> int
 [@@deriving compare] *)
 
 (* module Set : Caml.Set.S with type elt = t *)
-
-module Map : Caml.Map.S with type key = T.t
-
-val to_string : T.t -> string
-
-val pp : F.formatter -> T.t -> unit
 
 val equal : T.t -> T.t -> bool
 
@@ -105,7 +137,7 @@ val evaluate_const_exp : T.t -> IntLit.t option
 
 (* val of_exp : Exp.t -> (t * Typ.t) Ident.Map.t -> Typ.t -> Typ.t LooperUtils.PvarMap.t -> t *)
 
-val of_hil_exp : HilExp.t -> (Ident.t -> t) -> T.t
+val of_hil_exp : HilExp.t -> (Ident.t -> T.t) -> T.t
 
 val to_why3_expr : T.t -> Tenv.t -> LooperUtils.prover_data -> (Why3.Term.term * Why3.Term.Sterm.t)
 
@@ -116,6 +148,8 @@ val get_accesses: T.t -> LooperUtils.AccessExpressionSet.t
 val get_access_exp_set : T.t -> Set.t
 
 val map_accesses: T.t -> f:(HilExp.access_expression -> 'a -> T.t * 'a) -> 'a -> T.t * 'a
+
+val pair_map_accesses : T.t -> f:(HilExp.access_expression -> value_pair) -> value_pair
 
 val subst : T.t -> (T.t * Typ.t) list -> FormalMap.t -> T.t
 

@@ -360,7 +360,7 @@ module JsonLooperPrinter = MakeJsonListPrinter (struct
   let to_string {loc; proc_name; looper_opt} = match looper_opt with
     | Some looper_summary -> (
       let return_bound_opt = match looper_summary.return_bound with 
-      | Some return_bound -> Some (EdgeExp.to_string return_bound)
+      | Some (lb, ub) -> Some (F.asprintf "[%a, %a]" EdgeExp.pp lb EdgeExp.pp ub)
       | None -> None
       in
       let total_bound = LooperSummary.total_bound looper_summary.bounds in

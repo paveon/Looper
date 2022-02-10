@@ -29,8 +29,8 @@ type construction_temp_data = {
   last_node: LTS.Node.t;
   loophead_stack: Procdesc.Node.t Stack.t;
   edge_data: LTS.EdgeData.t;
-  ident_map: (EdgeExp.T.t * Typ.t) Ident.Map.t;
-  ident_map_2: EdgeExp.T.t Ident.Map.t;
+  ident_map: (EdgeExp.value_pair * Typ.t) Ident.Map.t;
+  ident_map_2: EdgeExp.value_pair Ident.Map.t;
 
   node_map: LTS.Node.t Procdesc.NodeMap.t;
   potential_norms: EdgeExp.Set.t;
@@ -58,7 +58,7 @@ let pp_nodekind kind = match kind with
   | Procdesc.Node.Exit_node -> "Exit_node"
   | Procdesc.Node.Stmt_node stmt -> F.asprintf "Stmt_node(%a)" Procdesc.Node.pp_stmt stmt
   | Procdesc.Node.Join_node -> "Join_node"
-  | Procdesc.Node.Prune_node (branch, ifkind, _) -> F.asprintf "Prune_node(%B, %S)" branch (Sil.if_kind_to_string ifkind)
+  | Procdesc.Node.Prune_node (branch, ifkind, _) -> F.asprintf "Prune_node(%B, %a)" branch Sil.pp_if_kind ifkind
   | Procdesc.Node.Skip_node string -> F.asprintf "Skip_node (%s)" string
 
 
@@ -74,14 +74,14 @@ let is_exit_node node = match Procdesc.Node.get_kind node with
 
 
 let exec_instr : construction_temp_data -> Sil.instr -> construction_temp_data = fun graph_data instr ->
-  let ap_id_resolver var = match var with
+  (* let ap_id_resolver var = match var with
   | Var.LogicalVar id -> (
     match Ident.Map.find id graph_data.ident_map with
     | Access path, _ -> Some path
     | _ -> assert(false)
   )
   | Var.ProgramVar _ -> assert(false)
-  in
+  in *)
 
   (* let ap_id_resolver = EdgeExp.T.Access_path_id_resolver graph_data.ident_map in *)
 
@@ -103,23 +103,33 @@ let exec_instr : construction_temp_data -> Sil.instr -> construction_temp_data =
 
   let call_id_resolver ident =
     match Ident.Map.find_opt ident graph_data.ident_map_2 with
-    | Some exp -> exp
+    | Some (EdgeExp.Value exp) -> exp
+    | Some (EdgeExp.Pair _) -> (
+      (* same problem as with ae_id_resolver *)
+      assert(false)
+    )
     | None -> assert(false)
   in
 
   let ae_id_resolver var = match var with
   | Var.LogicalVar id -> (
     match Ident.Map.find_opt id graph_data.ident_map_2 with
-    | Some exp -> (
+    | Some (EdgeExp.Value exp) -> (
       match exp with
       | EdgeExp.T.Access path -> Some path
       | _ -> (
         (* Replace idents mapped to more complex expressions later.
-         * HilExp.of_sil signature requires this function to return 
-         * access expression type. More complex expressions occur due
-         * to return values of function calls *)
+        * HilExp.of_sil signature requires this function to return 
+        * access expression type. More complex expressions occur due
+        * to return values of function calls *)
         None
       )
+    )
+    | Some (EdgeExp.Pair _) -> (
+      (* Figure this out later, too complicated for now. Will probably
+       * have to write my own conversion functions for SIL -> HIL
+       * because of this... *)
+      assert(false)
     )
     | None -> L.die InternalError "Missing mapped expression for '%a' identifier" Ident.pp id
   )
@@ -153,6 +163,80 @@ let exec_instr : construction_temp_data -> Sil.instr -> construction_temp_data =
 
   let in_loop = not (List.is_empty graph_data.loop_heads) in
 
+
+  (* let lb = EdgeExp.map_accesses exp ~f:(fun access _ -> 
+    match LTS.EdgeData.get_assignment_rhs graph_data.edge_data access with
+    | Value value_rhs -> value_rhs, None
+    | EdgeExp.Pair (lb, _) -> lb, None
+  ) None |> fst |> process_rhs_value
+  in *)
+
+
+  (* Can't make it the EdgeExp module function due to cyclical dependency *)
+  let rec substitute_call_args edge_data args = List.fold args ~init:([], [], [])
+  ~f:(fun (lb_acc, ub_acc, typ_acc) (arg, arg_typ) ->
+    match substitute_assignments edge_data arg with
+    | EdgeExp.Value value -> value :: lb_acc, value :: ub_acc, arg_typ :: typ_acc
+    | EdgeExp.Pair (lb, ub) -> lb :: lb_acc, ub :: ub_acc, arg_typ :: typ_acc
+  )
+
+  and substitute_assignments edge_data exp = 
+    let process_min_max_args args ~f = 
+      let subst_args args = EdgeExp.Set.fold (fun arg (lb_set, ub_set) -> 
+        match substitute_assignments edge_data arg with
+        | EdgeExp.Value value -> EdgeExp.Set.add value lb_set, EdgeExp.Set.add value ub_set
+        | EdgeExp.Pair (lb, ub) ->
+          EdgeExp.Set.add lb lb_set, EdgeExp.Set.add ub ub_set
+      ) args (EdgeExp.Set.empty, EdgeExp.Set.empty)
+      in
+
+      let lb_set, ub_set = subst_args args in
+      if EdgeExp.Set.equal lb_set ub_set then EdgeExp.Value (f lb_set)
+      else EdgeExp.Pair (f lb_set, f ub_set)
+    in
+
+    match exp with
+    | EdgeExp.T.Access access -> LTS.EdgeData.get_assignment_rhs edge_data access
+    | EdgeExp.T.BinOp (op, lexp, rexp) -> (
+      let lexp_subst = substitute_assignments edge_data lexp in
+      let rexp_subst = substitute_assignments edge_data rexp in
+      match lexp_subst, rexp_subst with
+      | EdgeExp.Value lexp_value, EdgeExp.Value rexp_value ->
+        EdgeExp.Value (EdgeExp.T.BinOp (op, lexp_value, rexp_value))
+      | EdgeExp.Value lexp_value, EdgeExp.Pair (rexp_lb, rexp_ub) -> (
+        EdgeExp.Pair (EdgeExp.T.BinOp (op, lexp_value, rexp_lb),
+                      EdgeExp.T.BinOp (op, lexp_value, rexp_ub))
+      )
+      | EdgeExp.Pair (lexp_lb, lexp_ub), EdgeExp.Value rexp_value -> (
+        EdgeExp.Pair (EdgeExp.T.BinOp (op, lexp_lb, rexp_value),
+                      EdgeExp.T.BinOp (op, lexp_ub, rexp_value))
+      )
+      | EdgeExp.Pair (lexp_lb, lexp_ub), EdgeExp.Pair (rexp_lb, rexp_up) -> (
+        EdgeExp.Pair (EdgeExp.T.BinOp (op, lexp_lb, rexp_lb),
+                      EdgeExp.T.BinOp (op, lexp_ub, rexp_up))
+      )
+    )
+    | EdgeExp.T.UnOp (op, subexp, typ) -> (
+      match substitute_assignments edge_data subexp with
+      | EdgeExp.Value value -> EdgeExp.Value (EdgeExp.T.UnOp (op, value, typ))
+      | EdgeExp.Pair (lb, ub) -> EdgeExp.Pair (
+        EdgeExp.T.UnOp (op, lb, typ), EdgeExp.T.UnOp (op, ub, typ)
+      )
+    )
+    | EdgeExp.T.Call (ret_typ, procname, args, loc) -> (      
+      let lb_args, ub_args, arg_types = substitute_call_args edge_data args in
+      if List.equal EdgeExp.equal lb_args ub_args
+      then EdgeExp.Value (EdgeExp.T.Call (ret_typ, procname, List.zip_exn lb_args arg_types, loc))
+      else EdgeExp.Pair (
+        (EdgeExp.T.Call (ret_typ, procname, List.zip_exn lb_args arg_types, loc)),
+        (EdgeExp.T.Call (ret_typ, procname, List.zip_exn ub_args arg_types, loc))
+      )
+    )
+    | EdgeExp.T.Max args -> process_min_max_args args ~f:(fun args -> EdgeExp.T.Max args)
+    | EdgeExp.T.Min args -> process_min_max_args args ~f:(fun args -> EdgeExp.T.Min args)
+    | _ -> EdgeExp.Value exp
+  in
+
   match instr with
   | Prune (cond, loc, branch, kind) -> (
     (* debug_log "[PRUNE (%s)] (%a) | %a\n" (Sil.if_kind_to_string kind) Location.pp loc Exp.pp cond; *)
@@ -162,8 +246,8 @@ let exec_instr : construction_temp_data -> Sil.instr -> construction_temp_data =
     let edge_exp_cond = EdgeExp.of_hil_exp hil_exp_cond call_id_resolver in
 
     (* let edge_exp_cond = EdgeExp.of_exp cond graph_data.ident_map (Typ.mk (Tint IBool)) graph_data.type_map in *)
-    debug_log "@[<v4>[PRUNE] %a@,Prune type: %s@,Branch: %B@,Exp condition: %a@,EdgeExp condition: %a@,"
-      Location.pp loc (Sil.if_kind_to_string kind) branch Exp.pp cond EdgeExp.pp edge_exp_cond;
+    debug_log "@[<v4>[PRUNE] %a@,Prune type: %a@,Branch: %B@,Exp condition: %a@,EdgeExp condition: %a@,"
+      Location.pp loc Sil.pp_if_kind kind branch Exp.pp cond EdgeExp.pp edge_exp_cond;
     
     let normalized_cond = EdgeExp.normalize_condition edge_exp_cond graph_data.tenv in
     let is_int_cond = EdgeExp.is_integer_condition graph_data.tenv normalized_cond in
@@ -227,6 +311,12 @@ let exec_instr : construction_temp_data -> Sil.instr -> construction_temp_data =
     debug_log "SSA frontend temporary variable store@]@,";
     assert(false);
   )
+  | Store {e1= Lindex (Lvar base, _)} when Pvar.is_global base -> (
+    (* Ignore these assignments for now. Initialization of huge global arrays
+     * cause incredible slowdown currently because Infer invokes Store instruction
+     * for each initialization value *)
+    graph_data
+  )
   | Store {e1=lhs; typ; e2=rhs; loc} -> (
     debug_log "@[<v4>[STORE] %a@,Type: %a@,Exp: %a = %a@," 
       Location.pp loc Typ.(pp Pp.text) typ Exp.pp lhs Exp.pp rhs;
@@ -264,28 +354,67 @@ let exec_instr : construction_temp_data -> Sil.instr -> construction_temp_data =
     let rhs_edge_exp = EdgeExp.of_hil_exp rhs_hil_exp call_id_resolver in
     debug_log "EdgeExp: %a = %a@," EdgeExp.pp lhs_edge_exp EdgeExp.pp rhs_edge_exp;
 
-    let rhs_edge_exp = match rhs_edge_exp with
+    let process_rhs_value value = (value 
+      |> EdgeExp.simplify 
+      |> EdgeExp.remove_casts_of_consts) integer_widths
+    in
+
+    let assignment_rhs = match rhs_edge_exp with
     | EdgeExp.T.Call (_, _, _, loc) as call -> (
       match Location.Map.find_opt loc graph_data.proc_data.call_summaries with
       | Some summary -> (
         match summary.return_bound with
-        | Some ret_bound -> ret_bound
+        | Some ret_bound -> EdgeExp.Pair ret_bound
         | None -> assert(false)
       )
-      | None -> call
+      | None -> EdgeExp.Value (call |> process_rhs_value)
     )
     | exp -> (
-      EdgeExp.map_accesses exp 
-        ~f:(fun access _ -> LTS.EdgeData.get_assignment_rhs graph_data.edge_data access, None) None |> fst
-    ) 
-    |> EdgeExp.simplify
+      (* TODO: this sucks and isn't correct (correctness problem in other places too!)
+       * think of a better way how to solve this *)
+      let lb = EdgeExp.map_accesses exp ~f:(fun access _ -> 
+        match LTS.EdgeData.get_assignment_rhs graph_data.edge_data access with
+        | EdgeExp.Value value_rhs -> value_rhs, None
+        | EdgeExp.Pair (lb, _) -> lb, None
+      ) None |> fst |> process_rhs_value
+      in
+
+      let ub = EdgeExp.map_accesses exp ~f:(fun access _ -> 
+        match LTS.EdgeData.get_assignment_rhs graph_data.edge_data access with
+        | Value value_rhs -> value_rhs, None
+        | EdgeExp.Pair (_, ub) -> ub, None
+      ) None |> fst |> process_rhs_value
+      in
+      if EdgeExp.equal lb ub then EdgeExp.Value lb else EdgeExp.Pair (lb, ub)
+    )
     in
-    let rhs_edge_exp = EdgeExp.remove_casts_of_consts rhs_edge_exp integer_widths in
 
-    debug_log "EdgeExp: %a = %a@," EdgeExp.pp lhs_edge_exp EdgeExp.pp rhs_edge_exp;
+    debug_log "EdgeExp: %a = %s@," EdgeExp.pp lhs_edge_exp 
+      (EdgeExp.value_pair_to_string assignment_rhs);
 
-    (* Check if we can add new norm to the norm set *)
-    let potential_norms, norms = match rhs_edge_exp with 
+    (* Checks if its possible to confirm some potential norm due to it's
+     * decrement on this edge *)
+    let rec check_norms lexp rexp potential_norms = match rexp with
+      | EdgeExp.Value value -> (
+        match value with 
+        | EdgeExp.T.BinOp ((Binop.PlusA _ | Binop.MinusA _), rhs_subexp, EdgeExp.T.Const (Const.Cint _))
+          when (EdgeExp.equal lexp rhs_subexp) && EdgeExp.Set.mem rhs_subexp potential_norms -> (
+            EdgeExp.Set.remove rhs_subexp potential_norms,
+            EdgeExp.Set.singleton rhs_subexp
+          )
+        | _ -> potential_norms, EdgeExp.Set.empty
+      )
+      | EdgeExp.Pair (lb, ub) -> (
+        let potential_norms, lb_norms = check_norms lexp (EdgeExp.Value lb) potential_norms in
+        let potential_norms, ub_norms = check_norms lexp (EdgeExp.Value ub) potential_norms in
+        potential_norms, EdgeExp.Set.union lb_norms ub_norms
+      )
+    in
+
+    let potential_norms, new_norms = check_norms lhs_edge_exp assignment_rhs graph_data.potential_norms in
+
+    
+    (* let potential_norms, norms = match rhs_edge_exp with 
     | EdgeExp.T.BinOp ((Binop.PlusA _ | Binop.MinusA _), rhs_subexp, EdgeExp.T.Const (Const.Cint _))
       when (EdgeExp.equal lhs_edge_exp rhs_subexp) && EdgeExp.Set.mem rhs_subexp graph_data.potential_norms ->
       EdgeExp.Set.remove rhs_subexp graph_data.potential_norms, 
@@ -299,10 +428,10 @@ let exec_instr : construction_temp_data -> Sil.instr -> construction_temp_data =
         }
       } *)
     | _ -> graph_data.potential_norms, graph_data.proc_data.norms
-    in
+    in *)
 
 
-    let locals, norms = if HilExp.AccessExpression.is_return_var lhs_access then (
+    let locals, new_norms = if HilExp.AccessExpression.is_return_var lhs_access then (
       debug_log "LHS is a return variable, adding to norms@,";
 
       (* let new_norms = if EdgeExp.is_variable rhs_edge_exp graph_data.proc_data.formals 
@@ -313,7 +442,7 @@ let exec_instr : construction_temp_data -> Sil.instr -> construction_temp_data =
       (* debug_log "New norms: ";
       EdgeExp.Set.iter (fun norm -> debug_log "%a " EdgeExp.pp norm) new_norms;
       debug_log "@,"; *)
-      add_local lhs_access graph_data.locals, EdgeExp.Set.add lhs_edge_exp norms
+      add_local lhs_access graph_data.locals, EdgeExp.Set.add lhs_edge_exp new_norms
 
       (* { graph_data with
         locals = add_local lhs_access graph_data.locals;
@@ -325,7 +454,7 @@ let exec_instr : construction_temp_data -> Sil.instr -> construction_temp_data =
         }
       } *)
     ) 
-    else graph_data.locals, norms
+    else graph_data.locals, new_norms
     in
 
     let is_lhs_top_scope_local = List.for_all graph_data.scope_locals ~f:(fun scope ->
@@ -386,7 +515,7 @@ let exec_instr : construction_temp_data -> Sil.instr -> construction_temp_data =
     (* Check if the access base of LHS expression is a formal pointer and add the access
      * expression to norms if it is. We need to track pointer formals due to possible side-effects *)
     let lhs_access_base_typ = snd lhs_access_base in
-    let norms = if AccessPath.BaseSet.mem lhs_access_base graph_data.proc_data.formals 
+    let new_norms = if AccessPath.BaseSet.mem lhs_access_base graph_data.proc_data.formals 
     && Typ.is_pointer lhs_access_base_typ
     && (Typ.is_int typ || Typ.is_pointer typ) then (
       match lhs_access with
@@ -396,12 +525,13 @@ let exec_instr : construction_temp_data -> Sil.instr -> construction_temp_data =
           AccessPath.pp_base lhs_access_base 
           Typ.(pp Pp.text) lhs_access_base_typ
           HilExp.AccessExpression.pp lhs_access;
-
-        EdgeExp.Set.add lhs_edge_exp norms
+        EdgeExp.Set.add lhs_edge_exp new_norms
       )
-      | _ -> norms
-    ) else norms
+      | _ -> new_norms
+    ) else new_norms
     in
+
+    let norms = EdgeExp.Set.union graph_data.proc_data.norms new_norms in
 
     debug_log "Norms: ";
     EdgeExp.Set.iter (fun norm -> debug_log "%a | " EdgeExp.pp norm) norms;
@@ -413,7 +543,7 @@ let exec_instr : construction_temp_data -> Sil.instr -> construction_temp_data =
       locals;
       scope_locals;
       potential_norms;
-      edge_data = LTS.EdgeData.add_assignment graph_data.edge_data lhs_access rhs_edge_exp;
+      edge_data = LTS.EdgeData.add_assignment graph_data.edge_data lhs_access assignment_rhs;
       
       loop_modified = if in_loop  then AccessExpressionSet.add lhs_access graph_data.loop_modified 
         else graph_data.loop_modified;
@@ -435,7 +565,10 @@ let exec_instr : construction_temp_data -> Sil.instr -> construction_temp_data =
     let rhs_edge_exp = EdgeExp.of_hil_exp rhs_hil_expr call_id_resolver in
     debug_log "RHS EdgeExp: %a = %a@," Ident.pp id EdgeExp.pp rhs_edge_exp;
 
-    let ident_map_2 = Ident.Map.add id rhs_edge_exp graph_data.ident_map_2 in
+    (* TODO: of_sil, of_hil_exp should work with assignment_rhs
+     * and return it so we can add it to the ident_map instead
+     * of just wrapping artifically *)
+    let ident_map_2 = Ident.Map.add id (EdgeExp.Value rhs_edge_exp) graph_data.ident_map_2 in
 
     (* TODO: this is quite legacy, map_ident should probably be recursive... *)
     (* let map_ident exp = match exp with
@@ -503,78 +636,160 @@ let exec_instr : construction_temp_data -> Sil.instr -> construction_temp_data =
   | Call ((ret_id, ret_typ), Exp.Const (Const.Cfun callee_pname), args, loc, _) -> (
     debug_log "@[<v4>[CALL] %a@,Procedure name: %a@," Location.pp loc Procname.pp callee_pname;
 
-    let rec substitute edge_data exp = match exp with
-    | EdgeExp.T.Access access -> LTS.EdgeData.get_assignment_rhs edge_data access
-    | EdgeExp.T.BinOp (op, lexp, rexp) -> EdgeExp.T.BinOp (op, substitute edge_data lexp, substitute edge_data rexp)
-    | EdgeExp.T.UnOp (op, subexp, typ) -> EdgeExp.T.UnOp (op, substitute edge_data subexp, typ)
-    | EdgeExp.T.Call (ret_typ, procname, args, loc) -> (
-      let args = List.map args ~f:(fun (arg, typ) -> (substitute edge_data arg, typ)) in
-      EdgeExp.T.Call (ret_typ, procname, args, loc)
-    )
-    | EdgeExp.T.Max args -> EdgeExp.T.Max (List.map args ~f:(substitute edge_data))
-    | EdgeExp.T.Min args -> EdgeExp.T.Max (List.map args ~f:(substitute edge_data))
-    | _ -> exp
-    in
-
     debug_log "@[<v4>Processing call arguments:@,";
-    let args, arg_norms = List.foldi args ~f:(fun idx (args, norms) (arg, arg_typ) ->
+    let args = List.mapi args ~f:(fun idx (arg, arg_typ) ->
       debug_log "@[<v2>(%d) Exp: %a : %a@," idx Exp.pp arg Typ.(pp Pp.text) arg_typ;
-      let arg_hil_exp = HilExp.of_sil ~include_array_indexes:true 
+      let arg_hil_exp = HilExp.of_sil ~include_array_indexes:true
         ~f_resolve_id:ae_id_resolver ~add_deref:false arg arg_typ
       in
       debug_log "HilExp: %a : %a@," HilExp.pp arg_hil_exp Typ.(pp Pp.text) arg_typ;
-      let arg_edge_exp = EdgeExp.of_hil_exp arg_hil_exp call_id_resolver
-        |> substitute graph_data.edge_data
-      in
-      debug_log "Transformed EdgeExp: %a@," EdgeExp.pp arg_edge_exp;
 
-      if Typ.is_int arg_typ then (
-        let simplified_arg_edge_exp = EdgeExp.simplify arg_edge_exp in
-        debug_log "Integer argument type, simplified: %a@]@," EdgeExp.pp simplified_arg_edge_exp;
-        let arg_norms = EdgeExp.get_access_exp_set simplified_arg_edge_exp in
-        debug_log "New norms: ";
-        EdgeExp.Set.iter (fun norm -> debug_log "%a, " EdgeExp.pp norm) arg_norms;
-        debug_log "@,";
+      let arg_edge_exp = EdgeExp.of_hil_exp arg_hil_exp call_id_resolver in
+      debug_log "Transformed EdgeExp: %a@]@," EdgeExp.pp arg_edge_exp;
 
-        (simplified_arg_edge_exp, arg_typ) :: args, EdgeExp.Set.union arg_norms norms
-      ) else (
-        debug_log "Non-integer argument type, ignoring@]@,";
-        (arg_edge_exp, arg_typ) :: args, norms
-      )
-    ) ~init:([], EdgeExp.Set.empty)
+      arg_edge_exp, arg_typ
+    )
     in
     debug_log "@]@,";
 
-    let args = List.rev args in
-    let call = EdgeExp.T.Call (ret_typ, callee_pname, args, loc) in
+
+    let extract_norms arg_list = 
+      debug_log "@[<v4>Extracting norms from call arguments@,";
+      let norms = List.fold arg_list ~init:EdgeExp.Set.empty
+      ~f:(fun norms (arg, arg_typ) -> 
+        if Typ.is_int arg_typ || Typ.is_pointer arg_typ then (
+          let simplified_arg = EdgeExp.simplify arg in
+          debug_log "Integer argument type, simplified: %a@,"
+            EdgeExp.pp simplified_arg;
+
+          let arg_norms = EdgeExp.get_access_exp_set simplified_arg in
+          debug_log "New norms: ";
+          EdgeExp.Set.iter (fun norm -> debug_log "%a, " EdgeExp.pp norm) arg_norms;
+          debug_log "@,";
+          EdgeExp.Set.union arg_norms norms
+        ) else (
+          debug_log "Non-integer argument type, ignoring@,";
+          norms
+        )
+      )
+      in
+      debug_log "@]@,";
+      norms
+    in
+
+    let lb_args, ub_args, arg_types = substitute_call_args 
+      graph_data.edge_data (List.rev args)
+    in
+
+    let create_value_call args =
+      let subst_args = List.zip_exn args arg_types in
+      (ret_typ, callee_pname, subst_args, loc),
+      extract_norms subst_args
+    in
+
+    let call_pair, call_pair_exp, arg_norms = if List.equal EdgeExp.equal lb_args ub_args
+    then (
+      let call_tuple, norms = create_value_call lb_args in
+      EdgeExp.CallValue call_tuple,
+      EdgeExp.Value (EdgeExp.T.Call call_tuple),
+      norms
+    )
+    else (
+      let lb_value_call, lb_norms = create_value_call lb_args in
+      let ub_value_call, ub_norms = create_value_call ub_args in
+      EdgeExp.CallPair (lb_value_call, ub_value_call),
+      EdgeExp.Pair (EdgeExp.T.Call lb_value_call, EdgeExp.T.Call ub_value_call),
+      EdgeExp.Set.union lb_norms ub_norms
+    )
+    in
+
+    (* let call = EdgeExp.T.Call (ret_typ, callee_pname, args, loc) in *)
 
     debug_log "@[<v4>Loading call summary@,";
     let payload_opt = graph_data.proc_data.analysis_data.analyze_dependency callee_pname in
-    let call_summaries, return_bound = match payload_opt with
+    let call_summaries, return_bound, edge_data = match payload_opt with
     | Some (_, payload) -> (
-      debug_log "Payload exists, substituting return bound@]@,";
-      let subst_ret_bound = match payload.return_bound with
-      | Some ret_bound -> Some (EdgeExp.subst ret_bound args payload.formal_map)
+      debug_log "Payload exists, substituting return bound@,";
+      let subst_ret_bound_opt = match payload.return_bound with
+      | Some (lb_ret_bound, ub_ret_bound) -> (
+        Some (EdgeExp.subst lb_ret_bound args payload.formal_map,
+              EdgeExp.subst ub_ret_bound args payload.formal_map)
+      )
       | None -> None
       in
-      let summary = { payload with return_bound = subst_ret_bound } in
+      
+      debug_log "@[<v2>Substituting formals bounds:@,";
+      debug_log "FormalMap: %a@," FormalMap.pp payload.formal_map;
+      let edge_data = EdgeExp.Map.fold (fun formal (lb, ub) acc ->
+        debug_log "Formal: %a  --->  [%a, %a]@," EdgeExp.pp formal EdgeExp.pp lb EdgeExp.pp ub;
+        (* let lhs_subst = match EdgeExp.subst formal args payload.formal_map with
+        | EdgeExp.T.Access access -> access
+        | _ -> L.die InternalError "Unsupported formal expression: %a. 
+          Only Access expressions are allowed." EdgeExp.pp formal
+        in *)
+        let rec extract_lhs_access exp = match exp with
+        | EdgeExp.T.Access lhs_access -> lhs_access
+        | EdgeExp.T.Max args when Int.equal (EdgeExp.Set.cardinal args) 1 -> (
+          extract_lhs_access (EdgeExp.Set.min_elt args)
+        )
+        | exp -> (
+          L.die InternalError "Unsupported formal expression '%a',
+            access expression expected" EdgeExp.pp exp 
+        ) 
+        in
+        
+        let lhs_subst = (EdgeExp.subst formal args payload.formal_map) in
+        let lhs_subst_access = extract_lhs_access lhs_subst in
+
+        let lb_subst = EdgeExp.subst lb args payload.formal_map in
+        let ub_subst = EdgeExp.subst ub args payload.formal_map in
+        let bound = if EdgeExp.equal lb_subst ub_subst 
+          then EdgeExp.Value lb_subst
+          else EdgeExp.Pair (lb_subst, ub_subst)
+        in
+
+        debug_log "[Substituted] Formal: %a  --->  [%a, %a]@," 
+        HilExp.AccessExpression.pp lhs_subst_access
+          EdgeExp.pp lb_subst EdgeExp.pp ub_subst;
+
+        (* let formal_access = match formal with
+        | EdgeExp.T.Access access -> access
+        | exp -> (
+          L.die InternalError "Unknown expression: %a" EdgeExp.pp exp
+        )
+        in *)
+        LTS.EdgeData.add_assignment acc lhs_subst_access bound
+      ) payload.formal_bounds graph_data.edge_data
+      in
+      (* edge_data = LTS.EdgeData.add_assignment graph_data.edge_data lhs_access assignment_rhs; *)
+      debug_log "@]@,";
+
+      let summary = { payload with return_bound = subst_ret_bound_opt } in
+
       Location.Map.add loc summary graph_data.proc_data.call_summaries,
-      Option.value subst_ret_bound ~default:call
+      Option.value_map subst_ret_bound_opt ~default:call_pair_exp 
+        ~f:(fun subst_ret_bound -> EdgeExp.Pair subst_ret_bound),
+      edge_data
     )
     | None -> (
-      debug_log "Payload missing, ignoring@]@,";
-      graph_data.proc_data.call_summaries, call
+      debug_log "Payload missing, ignoring";
+      graph_data.proc_data.call_summaries,
+      call_pair_exp,
+      graph_data.edge_data
     )
     in
-    debug_log "@]Adding return id mapping: %a = %a@,@," Ident.pp ret_id EdgeExp.pp return_bound;
+
+    debug_log "@]@,Adding return identifier mapping: %a = %s@]@,@," 
+      Ident.pp ret_id
+      (EdgeExp.value_pair_to_string return_bound);
 
     { graph_data with
-      ident_map = Ident.Map.add ret_id (call, ret_typ) graph_data.ident_map;
+      ident_map = Ident.Map.add ret_id (call_pair_exp, ret_typ) graph_data.ident_map;
       ident_map_2 = Ident.Map.add ret_id return_bound graph_data.ident_map_2;
       (* type_map = PvarMap.add (Pvar.mk_abduced_ret callee_pname loc) ret_typ graph_data.type_map; *)
 
-      edge_data = { graph_data.edge_data with 
-        calls = EdgeExp.Set.add call graph_data.edge_data.calls
+      edge_data = { edge_data with 
+        calls = EdgeExp.CallPairSet.add call_pair edge_data.calls
       };
 
       proc_data = {graph_data.proc_data with
