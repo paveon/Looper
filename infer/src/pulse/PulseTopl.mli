@@ -6,8 +6,10 @@
  *)
 
 open! IStd
+open PulseBasicInterface
+module BaseDomain = PulseBaseDomain
 
-type value = PulseAbstractValue.t
+type value = AbstractValue.t
 
 type event =
   | ArrayWrite of {aw_array: value; aw_index: value}
@@ -15,33 +17,52 @@ type event =
 
 type state [@@deriving compare, equal]
 
+(** This is a subset of [AbductiveDomain.t], which is needed to evolve the topl state. The purpose
+    of this type is to avoid a cyclic dependency between [PulseTopl] and [PulseAbductiveDomain], so
+    that we can keep them separate. The problem is as follows. A [PulseAbductiveDomain.t] has a
+    [PulseTopl.state] as a component. Evolving a [PulseAbductiveDomain.t] must (a) evolve the
+    non-topl parts without looking at the topl parts, which is why [PulseTopl.state] is abstract,
+    and (b) trigger the evolution of the topl parts, which *should* look at the non-topl parts of
+    the abductive domain. Those necessary non-topl parts are what [PulseTopl.pulse_state] contains.*)
+type pulse_state = {pulse_post: BaseDomain.t; pulse_pre: BaseDomain.t; path_condition: Formula.t}
+
 val start : unit -> state
 (** Return the initial state of [Topl.automaton ()]. *)
 
-val small_step : Location.t -> PulsePathCondition.t -> event -> state -> state
+val small_step : Location.t -> pulse_state -> event -> state -> state
 
 val large_step :
      call_location:Location.t
   -> callee_proc_name:Procname.t
-  -> substitution:(value * PulseValueHistory.t) PulseAbstractValue.Map.t
-  -> condition:PulsePathCondition.t
-  -> callee_prepost:state
+  -> substitution:(value * ValueHistory.t) AbstractValue.Map.t
+  -> pulse_state
+  -> callee_summary:state
+  -> callee_is_manifest:bool
   -> state
   -> state
-(** [large_step ~substitution ~condition state ~callee_prepost] updates [state] according to
-    [callee_prepost]. The abstract values in [condition] and [state] are in one scope, and those in
-    [callee_prepost] in another scope: the [substitution] maps from the callee scope to the
-    condition&state scope. *)
+(** [large_step ~call_location ~callee_proc_name ~substitution pulse_state ~callee_summary 
+    ~callee_is_manifest state]
+    updates [state] according to [callee_summary]. The abstract values in [pulse_state] and [state]
+    are in one scope, and those in [callee_summary] in another scope: the [substitution] maps from
+    the callee scope to the caller scope. *)
 
-val filter_for_summary : PulsePathCondition.t -> state -> state
+val filter_for_summary : pulse_state -> state -> state
 (** Remove from state those parts that are inconsistent with the path condition. (We do a cheap
-    check to not introduce inconsistent Topl states, but they mey become inconsistent because the
+    check to not introduce inconsistent Topl states, but they may become inconsistent because the
     program path condition is updated later.) *)
 
-val simplify : keep:PulseAbstractValue.Set.t -> state -> state
+val simplify : pulse_state -> state -> state
 (** Keep only a subset of abstract values. This is used for extracting summaries. *)
 
-val report_errors : Procdesc.t -> Errlog.t -> state -> unit
+val report_errors : Procdesc.t -> Errlog.t -> pulse_is_manifest:bool -> state -> unit
 (** Calls [Reporting.log_issue] with error traces, if any. *)
 
 val pp_state : Format.formatter -> state -> unit
+
+module Debug : sig
+  val get_dropped_disjuncts_count : unit -> int
+end
+
+(* TODO: Whenever Pulse drops variables (e.g., when extracting summaries) we need to also update
+   the Topl state, by renaming variables if an equivalent one remains or, perhaps, by
+   under-approximating.*)

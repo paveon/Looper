@@ -15,4 +15,5 @@ module Summary : sig
   val report : t -> Procdesc.t -> unit
 end
 
-val checker : Summary.t InterproceduralAnalysis.t -> Summary.t option
+val checker :
+  Summary.t InterproceduralAnalysis.t -> SimpleShape.Summary.t option -> Summary.t option

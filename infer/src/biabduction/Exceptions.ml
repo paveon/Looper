@@ -39,8 +39,6 @@ exception Divide_by_zero of Localise.error_desc * L.ocaml_pos
 
 exception Empty_vector_access of Localise.error_desc * L.ocaml_pos
 
-exception Field_not_null_checked of Localise.error_desc * L.ocaml_pos
-
 exception Inherently_dangerous_function of Localise.error_desc
 
 exception Internal_error of Localise.error_desc
@@ -58,8 +56,6 @@ exception Missing_fld of Fieldname.t * L.ocaml_pos
 exception Premature_nil_termination of Localise.error_desc * L.ocaml_pos
 
 exception Null_dereference of Localise.error_desc * L.ocaml_pos
-
-exception Parameter_not_null_checked of Localise.error_desc * L.ocaml_pos
 
 exception Precondition_not_found of Localise.error_desc * L.ocaml_pos
 
@@ -105,8 +101,7 @@ let recognize_exception exn : IssueToReport.t =
   | Class_cast_exception (desc, ocaml_pos) ->
       {issue_type= IssueType.class_cast_exception; description= desc; ocaml_pos= Some ocaml_pos}
   | Custom_error (error_msg, severity, desc) ->
-      { issue_type=
-          IssueType.register_dynamic ~linters_def_file:None ~id:error_msg severity Biabduction
+      { issue_type= IssueType.register_dynamic ~id:error_msg severity Biabduction
       ; description= desc
       ; ocaml_pos= None }
   | Dangling_pointer_dereference (user_visible, desc, ocaml_pos) ->
@@ -119,8 +114,6 @@ let recognize_exception exn : IssueToReport.t =
       {issue_type= IssueType.divide_by_zero; description= desc; ocaml_pos= Some ocaml_pos}
   | Empty_vector_access (desc, ocaml_pos) ->
       {issue_type= IssueType.empty_vector_access; description= desc; ocaml_pos= Some ocaml_pos}
-  | Field_not_null_checked (desc, ocaml_pos) ->
-      {issue_type= IssueType.field_not_null_checked; description= desc; ocaml_pos= Some ocaml_pos}
   | Null_dereference (desc, ocaml_pos) ->
       {issue_type= IssueType.null_dereference; description= desc; ocaml_pos= Some ocaml_pos}
   | Inherently_dangerous_function desc ->
@@ -149,16 +142,12 @@ let recognize_exception exn : IssueToReport.t =
       {issue_type= IssueType.missing_fld; description= desc; ocaml_pos= Some ocaml_pos}
   | Premature_nil_termination (desc, ocaml_pos) ->
       {issue_type= IssueType.premature_nil_termination; description= desc; ocaml_pos= Some ocaml_pos}
-  | Parameter_not_null_checked (desc, ocaml_pos) ->
-      { issue_type= IssueType.parameter_not_null_checked
-      ; description= desc
-      ; ocaml_pos= Some ocaml_pos }
   | Precondition_not_found (desc, ocaml_pos) ->
       {issue_type= IssueType.precondition_not_found; description= desc; ocaml_pos= Some ocaml_pos}
   | Precondition_not_met (desc, ocaml_pos) ->
       {issue_type= IssueType.precondition_not_met; description= desc; ocaml_pos= Some ocaml_pos}
   | Retain_cycle (desc, ocaml_pos) ->
-      {issue_type= IssueType.retain_cycle; description= desc; ocaml_pos= Some ocaml_pos}
+      {issue_type= IssueType.biabduction_retain_cycle; description= desc; ocaml_pos= Some ocaml_pos}
   | Exception.Analysis_failure_exe _ ->
       {issue_type= IssueType.failure_exe; description= Localise.no_desc; ocaml_pos= None}
   | Skip_function desc ->

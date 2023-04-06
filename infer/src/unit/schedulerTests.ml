@@ -12,7 +12,7 @@ module F = Format
 module MockNode = struct
   type t = int
 
-  type id = int
+  type id = int [@@deriving equal]
 
   let hash = Hashtbl.hash
 
@@ -24,7 +24,7 @@ module MockNode = struct
 
   let of_underlying_node _ = assert false
 
-  let kind _ = Procdesc.Node.Stmt_node (Skip "")
+  let kind _ = Procdesc.Node.Stmt_node Skip
 
   let compare_id = Int.compare
 
@@ -85,6 +85,8 @@ module MockProcCfg = struct
   let start_node _ = 1
 
   let exit_node _ = assert false
+
+  let exn_sink_node _ = assert false
 
   let proc_desc _ = assert false
 

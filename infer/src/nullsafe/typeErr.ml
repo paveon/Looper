@@ -36,9 +36,7 @@ end
 
 (** Per-node instruction reference. *)
 module InstrRef : InstrRefT = struct
-  type t = Procdesc.Node.t * int [@@deriving compare]
-
-  let equal = [%compare.equal: t]
+  type t = Procdesc.Node.t * int [@@deriving compare, equal]
 
   type generator = Procdesc.Node.t * int ref
 
@@ -85,7 +83,7 @@ type err_instance =
       { assignment_violation: AssignmentRule.violation
       ; assignment_location: Location.t
       ; assignment_type: AssignmentRule.ReportableViolation.assignment_type }
-[@@deriving compare]
+[@@deriving compare, equal]
 
 (** Returns whether we can be certain that an [err_instance] is related to synthetic code,
     autogen/codegen).
@@ -110,7 +108,7 @@ let is_synthetic_err = function
         | AssigningToField fieldname ->
             Fieldname.is_java_synthetic fieldname
         | _ ->
-            false) )
+            false ) )
   | _ ->
       false
 
@@ -132,9 +130,7 @@ let pp_err_instance fmt err_instance =
 
 
 module H = Hashtbl.Make (struct
-  type t = err_instance * InstrRef.t option [@@deriving compare]
-
-  let equal = [%compare.equal: t]
+  type t = err_instance * InstrRef.t option [@@deriving compare, equal]
 
   let hash = Hashtbl.hash
 end
@@ -331,7 +327,7 @@ let make_nullsafe_issue_if_reportable ~nullsafe_mode err_instance =
 
 
 let is_reportable ~nullsafe_mode err_instance =
-  (* Note: we don't fetch the whole info because the the class-level analysis breaks some
+  (* Note: we don't fetch the whole info because the class-level analysis breaks some
      assumptions of this function, and also for optimization purposes (saving some string
      manipulations). *)
   make_nullsafe_issue_if_reportable_lazy ~nullsafe_mode err_instance |> Option.is_some

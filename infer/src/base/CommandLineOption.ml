@@ -548,6 +548,14 @@ let mk_int_opt ?default ?(default_to_string = Option.value_map ~default:"" ~f:st
     ~decode_json:(int_json_decoder ~flag) ~f ?parse_mode ?in_help ~meta doc
 
 
+let mk_int64_opt ?default ?(default_to_string = Option.value_map ~default:"" ~f:Int64.to_string)
+    ?f:(f0 = Fn.id) ?(deprecated = []) ~long ?short ?parse_mode ?in_help ?(meta = "int64") doc =
+  let f s = Some (f0 (Int64.of_string s)) in
+  let flag = mk_flag ~deprecated ~short ~long in
+  mk_option ~deprecated ~long ?short ~default ~default_to_string
+    ~decode_json:(null_json_decoder ~flag) ~f ?parse_mode ?in_help ~meta doc
+
+
 let mk_float_opt ?default ?(default_to_string = Option.value_map ~default:"" ~f:string_of_float)
     ?(deprecated = []) ~long ?short ?parse_mode ?in_help ?(meta = "float") doc =
   let f s = Some (float_of_string s) in
@@ -841,6 +849,8 @@ let select_parse_mode ~usage parse_mode =
   print_usage
 
 
+let ignore_usage (_usage : int -> _) = ()
+
 let string_of_command command =
   let _, s, _ = List.Assoc.find_exn !subcommands ~equal:InferCommand.equal command in
   s
@@ -852,7 +862,7 @@ let mk_rest_actions ?(parse_mode = InferCommand) ?(in_help = []) doc ~usage deco
     String
       (fun arg ->
         rest := Array.to_list (Array.slice !args_to_parse (!arg_being_parsed + 1) 0) ;
-        select_parse_mode ~usage (decode_action arg) |> ignore )
+        select_parse_mode ~usage (decode_action arg) |> ignore_usage )
   in
   add parse_mode in_help
     { long= "--"
@@ -1046,6 +1056,8 @@ let parse_args ~usage initial_action ?initial_command args =
 
 let keep_args_file = ref false
 
+let inferconfig_path_arg = "inferconfig-path"
+
 let parse ?config_file ~usage action initial_command =
   let env_args = decode_env_to_argv (Option.value (Sys.getenv args_env_var) ~default:"") in
   let inferconfig_args =
@@ -1069,10 +1081,10 @@ let parse ?config_file ~usage action initial_command =
       args_to_export := arg_string
   in
   (* read .inferconfig first, then env vars, then command-line options *)
-  parse_args ~usage InferCommand inferconfig_args |> ignore ;
+  parse_args ~usage InferCommand inferconfig_args |> ignore_usage ;
   (* NOTE: do not add the contents of .inferconfig to INFER_ARGS. This helps avoid hitting the
      command line size limit. *)
-  parse_args ~usage InferCommand env_args |> ignore ;
+  parse_args ~usage InferCommand env_args |> ignore_usage ;
   add_parsed_args_to_args_to_export () ;
   let curr_usage =
     let cl_args = match Array.to_list (Sys.get_argv ()) with _ :: tl -> tl | [] -> [] in

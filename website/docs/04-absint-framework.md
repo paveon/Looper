@@ -16,7 +16,7 @@ languages Infer supports (C, Objective-C, C++, and Java)!
 
 This guide covers how to use the framework. For background on why we built the
 framework and how it works, check out these
-[slides](http://fbinfer.com/downloads/pldi17-infer-ai-tutorial.pdf) from a PLDI
+[slides](/downloads/pldi17-infer-ai-tutorial.pdf) from a PLDI
 2017 tutorial and this
 [talk](https://atscaleconference.com/videos/getting-the-most-out-of-static-analyzers)
 from @Scale2016.
@@ -40,7 +40,7 @@ it's trying to do, it's a fairly good place to look in order to understand both
 how to use the abstract interpretation framework and what SIL is.
 
 There are basically three important bits here: defining the domain, defining the
-transfer functions, and then passing the pieces to the framework to create an an
+transfer functions, and then passing the pieces to the framework to create an
 analysis. Let's break down the third bit:
 
 ```OCaml
@@ -51,8 +51,8 @@ module CheckerAnalyzer =
 
 The `ProcCfg.Backward (ProcCfg.Exceptional)` part says: "I want the direction of
 iteration to be backward" (since liveness is a backward analysis), and "I want
-to the analysis to follow exceptional edges". For a forward analysis that
-ignores exceptional edges, you would do `ProcCfg.Normal` instead (and many other
+the analysis to follow exceptional edges". For a forward analysis that ignores
+exceptional edges, you would do `ProcCfg.Normal` instead (and many other
 combinations are possible; take a look at
 [ProcCfg.mli](https://github.com/facebook/infer/blob/main/infer/src/absint/ProcCfg.mli)
 for more). And finally, the `TransferFunctions` part says "Use the transfer

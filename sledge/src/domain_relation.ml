@@ -34,7 +34,7 @@ module Make (State_domain : State_domain_sig) = struct
   let embed b = (b, b)
 
   let pp_entry fs entry =
-    [%Trace.fprintf fs "entry: %a@ current: " State_domain.pp entry]
+    [%Dbg.fprintf fs "entry: %a@ current: " State_domain.pp entry]
 
   let pp fs (entry, curr) =
     Format.fprintf fs "@[%a%a@]" pp_entry entry State_domain.pp curr
@@ -54,6 +54,7 @@ module Make (State_domain : State_domain_sig) = struct
     in
     (State_domain.joinN entrys, State_domain.joinN currents)
 
+  let is_unsat (_, current) = State_domain.is_unsat current
   let resolve_int tid (_, current) = State_domain.resolve_int tid current
 
   let exec_assume tid (entry, current) cnd =
@@ -71,18 +72,15 @@ module Make (State_domain : State_domain_sig) = struct
     let+ next = State_domain.exec_inst tid inst current in
     (entry, next)
 
-  let enter_scope tid regs (entry, current) =
-    (entry, State_domain.enter_scope tid regs current)
-
   type from_call =
     {state_from_call: State_domain.from_call; caller_entry: State_domain.t}
   [@@deriving sexp_of]
 
   let recursion_beyond_bound = State_domain.recursion_beyond_bound
 
-  let call ~summaries tid ~globals ~actuals ~areturn ~formals ~freturn
-      ~locals (entry, current) =
-    [%Trace.call fun {pf} ->
+  let call ~summaries tid ?child ~globals ~actuals ~areturn ~formals
+      ~freturn ~locals (entry, current) =
+    [%Dbg.call fun {pf} ->
       pf
         "@ @[<v>@[actuals: (@[%a@])@ formals: (@[%a@])@]@ locals: \
          {@[%a@]}@ globals: {@[%a@]}@ current: %a@]"
@@ -93,33 +91,40 @@ module Make (State_domain : State_domain_sig) = struct
         State_domain.pp current]
     ;
     let caller_current, state_from_call =
-      State_domain.call tid ~summaries ~globals ~actuals ~areturn ~formals
-        ~freturn ~locals current
+      State_domain.call tid ?child ~summaries ~globals ~actuals ~areturn
+        ~formals ~freturn ~locals current
     in
     ( (caller_current, caller_current)
     , {state_from_call; caller_entry= entry} )
     |>
-    [%Trace.retn fun {pf} (reln, _) -> pf "@,%a" pp reln]
+    [%Dbg.retn fun {pf} (reln, _) -> pf "@,%a" pp reln]
 
   let post tid locals {state_from_call; caller_entry} (_, current) =
-    [%Trace.call fun {pf} -> pf "@ locals: %a" Llair.Reg.Set.pp locals]
+    [%Dbg.call fun {pf} -> pf "@ locals: %a" Llair.Reg.Set.pp locals]
     ;
     (caller_entry, State_domain.post tid locals state_from_call current)
     |>
-    [%Trace.retn fun {pf} -> pf "%a" pp]
+    [%Dbg.retn fun {pf} -> pf "%a" pp]
 
   let retn tid formals freturn {caller_entry; state_from_call} (_, current)
       =
-    [%Trace.call fun {pf} -> pf "@ %a" State_domain.pp current]
+    [%Dbg.call fun {pf} -> pf "@ %a" State_domain.pp current]
     ;
     ( caller_entry
     , State_domain.retn tid formals freturn state_from_call current )
     |>
-    [%Trace.retn fun {pf} -> pf "%a" pp]
+    [%Dbg.retn fun {pf} -> pf "%a" pp]
+
+  type term_code = State_domain.term_code [@@deriving compare, sexp_of]
+
+  let term tid formals freturn (_, current) =
+    State_domain.term tid formals freturn current
+
+  let move_term_code tid reg code (entry, current) =
+    (entry, State_domain.move_term_code tid reg code current)
 
   let dnf (entry, current) =
-    State_domain.Set.fold (State_domain.dnf current) Set.empty
-      ~f:(fun c rs -> Set.add (entry, c) rs)
+    Iter.map ~f:(fun c -> (entry, c)) (State_domain.dnf current)
 
   let resolve_callee f tid e (_, current) =
     State_domain.resolve_callee f tid e current

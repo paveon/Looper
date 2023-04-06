@@ -11,16 +11,15 @@ module L = Logging
 let get_path entry = ResultsDirEntryName.get_path ~results_dir:Config.results_dir entry
 
 module RunState = struct
-  let run_time_string = Time.now () |> Time.to_string
+  let run_time_string = Time.now () |> Time.to_string_utc
 
   let state0 =
     let open Runstate_t in
     { run_sequence= []
     ; results_dir_format=
         Printf.sprintf "db_filename: %s\ndb_schema: %s"
-          (ResultsDirEntryName.get_path ~results_dir:"infer-out" CaptureDB)
-          ResultsDatabase.schema_hum
-    ; should_merge_capture= false }
+          (ResultsDirEntryName.get_path ~results_dir:"infer-out" AnalysisDB)
+          Database.schema_hum }
 
 
   let state : Runstate_t.t ref = ref state0
@@ -61,14 +60,6 @@ module RunState = struct
 
   let reset () = state := state0
 
-  let set_merge_capture onoff =
-    state := {!state with Runstate_t.should_merge_capture= onoff} ;
-    (* store change to the runstate *)
-    store ()
-
-
-  let get_merge_capture () = !state.Runstate_t.should_merge_capture
-
   let add_run_to_sequence () =
     let run =
       { Runstate_t.infer_version= Version.{Runstate_t.major; minor; patch; commit}
@@ -81,9 +72,9 @@ module RunState = struct
 end
 
 let is_results_dir () =
-  let capture_db_path = get_path CaptureDB in
-  let has_all_markers = Sys.is_file capture_db_path = `Yes in
-  Result.ok_if_true has_all_markers ~error:(Printf.sprintf "'%s' not found" capture_db_path)
+  let results_db_path = get_path CaptureDB in
+  let has_all_markers = Sys.is_file results_db_path = `Yes in
+  Result.ok_if_true has_all_markers ~error:(Printf.sprintf "'%s' not found" results_db_path)
 
 
 let non_empty_directory_exists results_dir =
@@ -107,8 +98,9 @@ let remove_results_dir () =
 let prepare_logging_and_db () =
   L.setup_log_file () ;
   PerfEvent.init () ;
-  if Sys.is_file (get_path CaptureDB) <> `Yes then ResultsDatabase.create_db () ;
-  ResultsDatabase.new_database_connection ()
+  if Sys.is_file (get_path AnalysisDB) <> `Yes then Database.create_db AnalysisDatabase ;
+  if Sys.is_file (get_path CaptureDB) <> `Yes then Database.create_db CaptureDatabase ;
+  Database.new_database_connection ()
 
 
 let create_results_dir () =
@@ -139,19 +131,15 @@ let assert_results_dir advice =
 
 
 let scrub_for_incremental () =
-  DBWriter.reset_capture_tables () ;
   List.iter ~f:Utils.rmtree
     (ResultsDirEntryName.to_delete_before_incremental_capture_and_analysis
-       ~results_dir:Config.results_dir ) ;
-  ()
+       ~results_dir:Config.results_dir )
 
 
 let scrub_for_caching () =
-  let cache_capture =
-    Config.genrule_mode || Option.exists Config.buck_mode ~f:BuckMode.is_clang_flavors
-  in
+  let cache_capture = Config.genrule_mode || Option.exists Config.buck_mode ~f:BuckMode.is_clang in
   if cache_capture then DBWriter.canonicalize () ;
   (* make sure we are done with the database *)
-  ResultsDatabase.db_close () ;
+  Database.db_close () ;
   List.iter ~f:Utils.rmtree
     (ResultsDirEntryName.to_delete_before_caching_capture ~results_dir:Config.results_dir)

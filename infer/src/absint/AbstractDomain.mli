@@ -32,6 +32,19 @@ module type Disjunct = sig
   val equal_fast : t -> t -> bool
   (** [equal_fast x y] must imply [x <=> y]; it's a good idea for this function to be "fast", e.g.
       not depend on the size of its input *)
+
+  val is_normal : t -> bool
+  (** test if the abstract state represents exactly concrete states *)
+
+  val is_exceptional : t -> bool
+  (** test if the abstract state represents exactly exceptional concrete states *)
+
+  val is_executable : t -> bool
+  (** test if the abstract state represents executable states, e.g. [ContinueProgram] or
+      [ExceptionRaised]. *)
+
+  val exceptional_to_normal : t -> t
+  (** convert all exceptional states into normal states (used when reaching a handler) *)
 end
 
 module type S = sig
@@ -44,10 +57,14 @@ end
 
 include (* ocaml ignores the warning suppression at toplevel, hence the [include struct ... end] trick *)
   sig
-  [@@@warning "-60"]
+  [@@@warning "-unused-module"]
+
+  type empty = |
+
+  module Empty : S with type t = empty
 
   (** a trivial domain *)
-  module Empty : S with type t = unit
+  module Unit : S with type t = unit
 end
 
 (** A domain with an explicit bottom value *)
@@ -64,6 +81,19 @@ end
 (** A domain with an explicit top value *)
 module type WithTop = sig
   include S
+
+  val top : t
+
+  val is_top : t -> bool
+end
+
+(** A domain with an explicit bottom and top values *)
+module type WithBottomTop = sig
+  include S
+
+  val bottom : t
+
+  val is_bottom : t -> bool
 
   val top : t
 
@@ -88,8 +118,17 @@ module TopLiftedUtils : sig
   val pp_top : Format.formatter -> unit
 end
 
+(** Create a domain with Bottom and Top elements from a pre-domain *)
+module BottomTopLifted (Domain : S) : WithBottomTop
+
 (** Cartesian product of two domains. *)
 module Pair (Domain1 : S) (Domain2 : S) : S with type t = Domain1.t * Domain2.t
+
+module PairWithBottom (Domain1 : WithBottom) (Domain2 : WithBottom) :
+  WithBottom with type t = Domain1.t * Domain2.t
+
+module PairWithTop (Domain1 : WithTop) (Domain2 : WithTop) :
+  WithTop with type t = Domain1.t * Domain2.t
 
 module PairDisjunct (Domain1 : Disjunct) (Domain2 : Disjunct) :
   Disjunct with type t = Domain1.t * Domain2.t
@@ -106,7 +145,7 @@ module Flat (V : PrettyPrintable.PrintableEquatableType) : sig
 end
 
 include sig
-  [@@@warning "-60"]
+  [@@@warning "-unused-module"]
 
   (** Stacked abstract domain: tagged union of [Below], [Val], and [Above] domains where all
       elements of [Below] are strictly smaller than all elements of [Val] which are strictly smaller
@@ -186,7 +225,7 @@ module type FiniteSetS = sig
 end
 
 include sig
-  [@@@warning "-60"]
+  [@@@warning "-unused-module"]
 
   (** Lift a PPSet to a powerset domain ordered by subset. The elements of the set should be drawn
       from a *finite* collection of possible values, since the widening operator here is just union. *)
@@ -215,7 +254,7 @@ module type MapS = sig
 end
 
 include sig
-  [@@@warning "-60"]
+  [@@@warning "-unused-module"]
 
   (** Map domain ordered by union over the set of bindings, so the bottom element is the empty map.
       Every element implicitly maps to bottom unless it is explicitly bound to something else. Uses
@@ -249,22 +288,26 @@ module SafeInvertedMap (Key : PrettyPrintable.PrintableOrderedType) (ValueDomain
 (* ocaml ignores the warning suppression at toplevel, hence the [include struct ... end] trick *)
 
 include sig
-  [@@@warning "-60"]
+  [@@@warning "-unused-module"]
 
   module FiniteMultiMap
       (Key : PrettyPrintable.PrintableOrderedType)
       (Value : PrettyPrintable.PrintableOrderedType) : sig
     include WithBottom
 
-    val add : Key.t -> Value.t -> t -> t [@@warning "-32"]
+    val add : Key.t -> Value.t -> t -> t [@@warning "-unused-value-declaration"]
 
-    val mem : Key.t -> t -> bool [@@warning "-32"]
+    val mem : Key.t -> t -> bool [@@warning "-unused-value-declaration"]
 
-    val remove : Key.t -> Value.t -> t -> t [@@warning "-32"]
+    val remove : Key.t -> Value.t -> t -> t [@@warning "-unused-value-declaration"]
 
     val remove_all : Key.t -> t -> t
 
     val get_all : Key.t -> t -> Value.t list
+
+    val get_all_keys : t -> Key.t list
+
+    val exists : (Key.t -> Value.t -> bool) -> t -> bool
 
     val fold : (Key.t -> Value.t -> 'a -> 'a) -> t -> 'a -> 'a
 

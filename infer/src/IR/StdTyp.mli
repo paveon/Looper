@@ -11,7 +11,7 @@ type t = Typ.t
 
 val boolean : t
 
-val char : t [@@warning "-32"]
+val char : t [@@warning "-unused-value-declaration"]
 
 val double : t
 
@@ -41,6 +41,8 @@ module Name : sig
     val java_lang_object : t
 
     val java_lang_string : t
+
+    val kotlin_coroutines_jvm_internal_restrictedsuspendlambda : t
   end
 
   module CSharp : sig
@@ -51,6 +53,8 @@ module Name : sig
 
   module Objc : sig
     val ns_enumerator : t
+
+    val ns_object : t
   end
 end
 

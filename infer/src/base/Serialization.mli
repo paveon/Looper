@@ -14,9 +14,6 @@ module Key : sig
   (** Serialization key, used to distinguish versions of serializers and avoid assert faults *)
   type t
 
-  val issues : t
-  (** current key for lint issues *)
-
   val tenv : t
   (** current key for tenv *)
 end
@@ -34,5 +31,5 @@ val write_to_file : 'a serializer -> data:'a -> DB.filename -> unit
 (** Serialize into a file writing value *)
 
 val generate_keys : unit -> int * int * int
-  [@@warning "-32"]
+  [@@warning "-unused-value-declaration"]
 (** Generate new (random) serialization keys, to be used in an ocaml toplevel *)

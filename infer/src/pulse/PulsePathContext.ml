@@ -17,7 +17,15 @@ let leq ~lhs:_ ~rhs:_ = true
 (** see [leq] *)
 let equal_fast _ _ = true
 
-let pp fmt ({conditions; timestamp} [@warning "+9"]) =
+let is_normal _ = true
+
+let is_exceptional _ = true
+
+let is_executable _ = true
+
+let exceptional_to_normal x = x
+
+let pp fmt ({conditions; timestamp} [@warning "+missing-record-field-pattern"]) =
   let pp_condition fmt hist =
     if Config.debug_level_analysis >= 3 then F.fprintf fmt "[%a]" ValueHistory.pp hist
   in
@@ -26,9 +34,5 @@ let pp fmt ({conditions; timestamp} [@warning "+9"]) =
 
 
 let initial = {conditions= []; timestamp= Timestamp.t0}
-
-let with_context path hist =
-  if List.is_empty path.conditions then hist else ValueHistory.Branching (hist :: path.conditions)
-
 
 let post_exec_instr {conditions; timestamp} = {conditions; timestamp= Timestamp.incr timestamp}

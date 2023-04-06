@@ -16,14 +16,15 @@ type javac_data = {files: string list; opts: string list}
 type fold_state = {files: string list; opts: string list; opt_st: string list; file_st: string list}
 
 (* see GradleTest.ml *)
-let parse_gradle_line ~line =
+let parse_gradle_line ~kotlin ~line =
   let concat_st lst st = if List.is_empty st then lst else String.concat ~sep:" " st :: lst in
   let file_exist file = ISys.file_exists file in
   let rev_args = line |> String.strip |> String.split ~on:' ' |> List.rev in
   let res =
     List.fold rev_args ~init:{files= []; opts= []; opt_st= []; file_st= []}
       ~f:(fun ({files; opts; opt_st; file_st} as state) arg ->
-        if String.is_suffix arg ~suffix:".java" then
+        if String.is_suffix arg ~suffix:".java" || (kotlin && String.is_suffix arg ~suffix:".kt")
+        then
           if file_exist arg then {state with files= concat_st files (arg :: file_st); file_st= []}
           else {state with file_st= arg :: file_st}
         else if String.is_prefix arg ~prefix:"-" then
@@ -46,7 +47,7 @@ let process_gradle_output_line =
            L.debug Capture Verbose "Processing: %s@." content ;
            if String.Set.mem seen content then acc
            else
-             let javac_data = parse_gradle_line ~line:content in
+             let javac_data = parse_gradle_line ~kotlin:Config.kotlin_capture ~line:content in
              let out_dir = Unix.mkdtemp capture_output_template in
              (String.Set.add seen content, (out_dir, javac_data) :: target_dirs) )
 
@@ -71,21 +72,27 @@ let run_gradle ~prog ~args =
       L.die ExternalError "*** failed to read gradle output: %s@\n" gradle_output_file
 
 
-let capture_gradle_target (out_dir, (javac_data : javac_data)) =
-  let tmpfile, oc =
-    Core.Filename.open_temp_file ~in_dir:(ResultsDir.get_path Temporary) "gradle_files" ""
-  in
-  List.iter javac_data.files ~f:(fun file ->
-      Out_channel.output_string oc (Escape.escape_shell file) ;
+let write_args_file prefix args =
+  let argfile, oc = Filename.open_temp_file ~in_dir:(ResultsDir.get_path Temporary) prefix "" in
+  List.iter args ~f:(fun arg ->
+      Out_channel.output_string oc (Escape.escape_shell arg) ;
       Out_channel.newline oc ) ;
   Out_channel.close oc ;
+  argfile
+
+
+let capture_gradle_target (out_dir, (javac_data : javac_data)) =
+  let gradle_files = write_args_file "gradle_files" javac_data.files in
+  let java_opts =
+    List.filter_map javac_data.opts ~f:(fun arg ->
+        if String.equal "-Werror" arg then None
+        else if String.is_substring arg ~substring:"-g:" then Some "-g"
+        else Some arg )
+    |> write_args_file "java_opts"
+  in
   let prog = Config.bin_dir ^/ "infer" in
   let args =
-    "capture" :: "-j" :: "1" :: "-o" :: out_dir :: "--" :: "javac" :: ("@" ^ tmpfile)
-    :: List.filter_map javac_data.opts ~f:(fun arg ->
-           if String.equal "-Werror" arg then None
-           else if String.is_substring arg ~substring:"-g:" then Some "-g"
-           else Some arg )
+    ["capture"; "-j"; "1"; "-o"; out_dir; "--"; "javac"; "@" ^ gradle_files; "@" ^ java_opts]
   in
   L.debug Capture Verbose "%s %s@." prog (String.concat ~sep:" " args) ;
   Process.create_process_and_wait ~prog ~args ;
@@ -93,11 +100,8 @@ let capture_gradle_target (out_dir, (javac_data : javac_data)) =
 
 
 let run_infer_capture target_data =
-  Tasks.Runner.create ~jobs:Config.jobs
-    ~child_prologue:(fun () -> ())
-    ~f:capture_gradle_target
-    ~child_epilogue:(fun () -> ())
-    ~tasks:(fun () -> ProcessPool.TaskGenerator.of_list target_data)
+  Tasks.Runner.create ~jobs:Config.jobs ~child_prologue:ignore ~f:capture_gradle_target
+    ~child_epilogue:ignore ~tasks:(fun () -> ProcessPool.TaskGenerator.of_list target_data)
   |> Tasks.Runner.run |> ignore
 
 
@@ -127,6 +131,5 @@ let capture ~prog ~args =
   let time = Mtime_clock.counter () in
   run_infer_capture rev_target_data ;
   write_rev_infer_deps rev_target_data ;
-  ResultsDir.RunState.set_merge_capture true ;
   L.debug Capture Quiet "[GRADLE] infer processed %d lines in %a@\n" (String.Set.length processed)
     Mtime.Span.pp (Mtime_clock.count time)

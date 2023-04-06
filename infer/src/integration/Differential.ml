@@ -66,15 +66,13 @@ let create_json_bug ~qualifier ~line ~file ~source_file ~trace ~(item : Jsoncost
   ; procedure= item.procedure_id
   ; procedure_start_line= line
   ; file
-  ; bug_trace= JsonReports.loc_trace_to_jsonbug_record trace Advice
+  ; bug_trace= JsonReports.loc_trace_to_jsonbug_record trace
   ; key= ""
   ; node_key= None
   ; hash= item.hash
   ; dotty= None
   ; infer_source_loc= None
   ; bug_type_hum= issue_type.hum
-  ; linters_def_file= None
-  ; doc_url= None
   ; traceview_id= None
   ; censored_reason= JsonReports.censored_reason issue_type source_file
   ; access= None
@@ -256,7 +254,7 @@ module Cost = struct
     let file = cost_info.Jsoncost_t.loc.file in
     let method_name = cost_info.Jsoncost_t.procedure_name in
     let is_on_ui_thread = cost_info.Jsoncost_t.is_on_ui_thread in
-    let source_file = SourceFile.create ~warn_on_error:false file in
+    let source_file = SourceFile.create ~check_abs_path:false file in
     let issue_type =
       if CostItem.is_top curr_item then infinite_issue
       else if CostItem.is_unreachable curr_item then unreachable_issue
@@ -307,7 +305,7 @@ module Cost = struct
       let trace =
         let marker_cost_trace msg cost_item =
           [ Errlog.make_trace_element 0
-              {Location.line; col= column; file= source_file}
+              {Location.line; col= column; file= source_file; macro_file_opt= None; macro_line= -1}
               (Format.asprintf "%s %a" msg CostItem.pp_cost_msg cost_item)
               [] ]
         in
@@ -421,11 +419,13 @@ module ConfigImpactItem = struct
                (UncheckedCallee.is_known_expensive x) )
     in
     let qualifier =
-      Format.asprintf "Function call%s to %a %s %a **without GK/QE**."
+      Format.asprintf
+        "Function call%s to %a %s %a **without GK/QE**, which might cause new unexpected behavior. \
+         %s"
         (if is_singleton then "" else "s")
         UncheckedCallee.pp_without_location_list unchecked_callees
         (if is_singleton then "is" else "are")
-        pp_change_type change_type
+        pp_change_type change_type FbGKInteraction.action_message
     in
     (* Note: It takes only one trace among the callees. *)
     let trace = List.hd_exn unchecked_callees |> UncheckedCallee.make_err_trace in
@@ -440,15 +440,20 @@ module ConfigImpactItem = struct
     if should_report then
       let qualifier, trace = get_qualifier_trace ~change_type callees in
       let file = config_impact_item.loc.file in
-      let source_file = SourceFile.create ~warn_on_error:false file in
+      let source_file = SourceFile.create ~check_abs_path:false file in
       let line = config_impact_item.loc.lnum in
       let convert Jsonconfigimpact_t.{hash; loc; procedure_name; procedure_id} : Jsoncost_t.sub_item
           =
         {hash; loc; procedure_name; procedure_id}
       in
       let issue_type =
-        if config_impact_item.is_strict then IssueType.config_impact_analysis_strict
-        else IssueType.config_impact_analysis
+        match config_impact_item.mode with
+        | `Normal ->
+            IssueType.config_impact_analysis
+        | `StrictBeta ->
+            IssueType.config_impact_analysis_strict_beta
+        | `Strict ->
+            IssueType.config_impact_analysis_strict
       in
       Some
         (create_json_bug ~qualifier ~line ~file ~source_file ~trace
@@ -477,7 +482,9 @@ module ConfigImpactItem = struct
           (* current/previous reports cannot be empty. *)
           let current = join_unchecked_callees current_reports in
           let previous = join_unchecked_callees previous_reports in
-          if Bool.equal current.config_impact_item.is_strict previous.config_impact_item.is_strict
+          if
+            ConfigImpactAnalysis.equal_mode current.config_impact_item.mode
+              previous.config_impact_item.mode
           then
             let introduced =
               UncheckedCallees.diff current.unchecked_callees previous.unchecked_callees
@@ -490,8 +497,9 @@ module ConfigImpactItem = struct
             (Option.to_list introduced @ acc_introduced, Option.to_list removed @ acc_fixed)
           else (
             L.internal_error
-              "Config Impact issues' strict modes are different in current(%b) and previous(%b).@\n"
-              current.config_impact_item.is_strict previous.config_impact_item.is_strict ;
+              "Config Impact issues' strict modes are different in current(%a) and previous(%a).@\n"
+              ConfigImpactAnalysis.pp_mode current.config_impact_item.mode
+              ConfigImpactAnalysis.pp_mode previous.config_impact_item.mode ;
             acc )
       | `Left _ | `Right _ ->
           (* Note: The reports available on one side are ignored since we don't want to report on

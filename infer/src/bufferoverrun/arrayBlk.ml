@@ -21,6 +21,8 @@ module ArrInfo = struct
 
   let top : t = Top
 
+  let is_top = function Top -> true | _ -> false
+
   let make_c : offset:Itv.t -> size:Itv.t -> stride:Itv.t -> t =
    fun ~offset ~size ~stride -> C {offset; size; stride}
 
@@ -299,6 +301,13 @@ let unknown : t = add Allocsite.unknown ArrInfo.top bot
 
 let is_bot : t -> bool = is_empty
 
+let is_unknown arrblk =
+  if Int.equal (cardinal arrblk) 1 then
+    let a, b = choose arrblk in
+    Allocsite.is_unknown a && ArrInfo.is_top b
+  else false
+
+
 let make_c : Allocsite.t -> offset:Itv.t -> size:Itv.t -> stride:Itv.t -> t =
  fun a ~offset ~size ~stride -> singleton a (ArrInfo.make_c ~offset ~size ~stride)
 
@@ -408,7 +417,7 @@ let lift_cmp_itv cmp_itv cmp_loc arr1 arr2 =
       Boolean.EqualOrder.(
         of_equal
           {on_equal= ArrInfo.lift_cmp_itv cmp_itv ai1 ai2; on_not_equal= cmp_loc.on_not_equal}
-          (Allocsite.eq as1 as2))
+          (Allocsite.eq as1 as2) )
   | _ ->
       Boolean.Top
 

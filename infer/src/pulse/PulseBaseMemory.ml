@@ -27,6 +27,50 @@ module Access = struct
         if AbstractValue.equal addr addr' then access else HilExp.Access.ArrayAccess (typ, addr')
     | FieldAccess _ | TakeAddress | Dereference ->
         access
+
+
+  let is_strong_access tenv (access : t) =
+    let has_weak_or_unretained_or_assign annotations =
+      List.exists annotations ~f:(fun (ann : Annot.t) ->
+          ( String.equal ann.class_name Config.property_attributes
+          || String.equal ann.class_name Config.ivar_attributes )
+          && List.exists
+               ~f:(fun Annot.{value} ->
+                 Annot.has_matching_str_value value ~pred:(fun att ->
+                     String.equal Config.unsafe_unret att
+                     || String.equal Config.weak att || String.equal Config.assign att ) )
+               ann.parameters )
+    in
+    match access with
+    | FieldAccess fieldname -> (
+        let classname = Fieldname.get_class_name fieldname in
+        let is_fake_capture_field_strong fieldname =
+          (* a strongly referencing capture field is a capture field that is not weak *)
+          Fieldname.is_fake_capture_field fieldname
+          && not (Fieldname.is_fake_capture_field_weak fieldname)
+        in
+        match Tenv.lookup tenv classname with
+        | None when is_fake_capture_field_strong fieldname ->
+            (* Strongly referencing captures *)
+            true
+        | None ->
+            (* Can't tell if we have a strong reference. To avoid FP on retain cycles,
+               assume weak reference by default *)
+            false
+        | Some {fields} -> (
+          match List.find fields ~f:(fun (name, _, _) -> Fieldname.equal name fieldname) with
+          | None ->
+              (* Can't tell if we have a strong reference. To avoid FP on retain cycles,
+                 assume weak reference by default *)
+              false
+          | Some (_, typ, anns) -> (
+            match typ.Typ.desc with
+            | Tptr (_, (Pk_objc_weak | Pk_objc_unsafe_unretained)) ->
+                false
+            | _ ->
+                not (has_weak_or_unretained_or_assign anns) ) ) )
+    | _ ->
+        true
 end
 
 module AccessSet = Caml.Set.Make (Access)
@@ -82,9 +126,22 @@ let add_edge addr_src access value memory =
   if phys_equal old_edges new_edges then memory else Graph.add addr_src new_edges memory
 
 
-let find_edge_opt addr access memory =
+let find_edge_opt ?get_var_repr addr access memory =
   let open Option.Monad_infix in
-  Graph.find_opt addr memory >>= Edges.find_opt access
+  Graph.find_opt addr memory
+  >>= fun edges ->
+  let res = Edges.find_opt access edges in
+  match res with
+  | Some _ ->
+      res
+  | None -> (
+    match (access, get_var_repr) with
+    | HilExp.Access.ArrayAccess _, Some get_var_repr ->
+        let access = Access.canonicalize ~get_var_repr access in
+        let edges = Edges.canonicalize ~get_var_repr edges in
+        Edges.find_opt access edges
+    | _, _ ->
+        res )
 
 
 let has_edge addr access memory = find_edge_opt addr access memory |> Option.is_some

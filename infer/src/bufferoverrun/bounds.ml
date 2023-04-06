@@ -14,10 +14,10 @@ exception Not_One_Symbol
 
 open Ints
 
-type sign = Plus | Minus [@@deriving compare]
+type sign = Plus | Minus [@@deriving compare, equal]
 
 module Sign = struct
-  type t = sign [@@deriving compare]
+  type t = sign [@@deriving compare, equal]
 
   let neg = function Plus -> Minus | Minus -> Plus
 
@@ -38,7 +38,7 @@ module SymLinear = struct
 
   (** Map from symbols to integer coefficients. [{ x -> 2, y -> 5 }] represents the value
       [2 * x + 5 * y] *)
-  type t = NonZeroInt.t M.t [@@deriving compare]
+  type t = NonZeroInt.t M.t [@@deriving compare, equal]
 
   let empty : t = M.empty
 
@@ -225,10 +225,10 @@ module SymLinear = struct
 end
 
 module Bound = struct
-  type min_max = Min | Max [@@deriving compare]
+  type min_max = Min | Max [@@deriving compare, equal]
 
   module MinMax = struct
-    type t = min_max [@@deriving compare]
+    type t = min_max [@@deriving compare, equal]
 
     let neg = function Min -> Max | Max -> Min
 
@@ -249,11 +249,9 @@ module Bound = struct
         (** [MultB] represents a multiplication of two bounds. For example, [MultB (1, x, y)]
             represents [1 + x × y]. *)
     | PInf  (** +oo *)
-  [@@deriving compare]
+  [@@deriving compare, equal]
 
   type eval_sym = t Symb.Symbol.eval
-
-  let equal = [%compare.equal: t]
 
   let mask_min_max_constant b =
     match b with
@@ -330,8 +328,6 @@ module Bound = struct
 
   let of_sym : SymLinear.t -> t = fun s -> Linear (Z.zero, s)
 
-  let of_foreign_id id = of_sym (SymLinear.singleton_one (Symb.Symbol.of_foreign_id id))
-
   let of_path path_of_partial make_symbol ~unsigned ?non_int partial =
     let s = make_symbol ~unsigned ?non_int (path_of_partial partial) in
     of_sym (SymLinear.singleton_one s)
@@ -351,8 +347,7 @@ module Bound = struct
 
   let is_path_of ~f = function
     | Linear (n, se) when Z.(equal n zero) ->
-        Option.value_map (SymLinear.get_one_symbol_opt se) ~default:false ~f:(fun s ->
-            f (Symb.Symbol.path s) )
+        Option.exists (SymLinear.get_one_symbol_opt se) ~f:(fun s -> f (Symb.Symbol.path s))
     | _ ->
         false
 
@@ -501,9 +496,9 @@ module Bound = struct
         false
 
 
-  let le_opt1 le opt_n m = Option.value_map opt_n ~default:false ~f:(fun n -> le n m)
+  let le_opt1 le opt_n m = Option.exists opt_n ~f:(fun n -> le n m)
 
-  let le_opt2 le n opt_m = Option.value_map opt_m ~default:false ~f:(fun m -> le n m)
+  let le_opt2 le n opt_m = Option.exists opt_m ~f:(fun m -> le n m)
 
   let rec le : t -> t -> bool =
    fun x y ->
@@ -1106,6 +1101,18 @@ module Bound = struct
           | x ->
               x
       in
+      let overapproximate_bound bound_position is_unsigned =
+        (* Used when a symbol contained in a bound is imported as bot. This happens if something
+           which is not initialized in the caller is weakly updated or constrained in the callee.*)
+        match (is_unsigned, bound_position) with
+        | true, Symb.BoundEnd.LowerBound ->
+            (* For unsigned symbols, we can over-approximate lower bound with zero. *)
+            NonBottom zero
+        | false, Symb.BoundEnd.LowerBound ->
+            NonBottom MInf
+        | _, Symb.BoundEnd.UpperBound ->
+            NonBottom PInf
+      in
       let get_mult_const s coeff =
         let bound_position =
           if NonZeroInt.is_positive coeff then subst_pos else Symb.BoundEnd.neg subst_pos
@@ -1114,13 +1121,8 @@ module Bound = struct
         else if NonZeroInt.is_minus_one coeff then get s bound_position |> lift1 neg
         else
           match eval_sym s bound_position with
-          | Bottom -> (
-            (* For unsigned symbols, we can over/under-approximate with zero depending on [bound_position]. *)
-            match (Symb.Symbol.is_unsigned s, bound_position) with
-            | true, Symb.BoundEnd.LowerBound ->
-                NonBottom zero
-            | _ ->
-                Bottom )
+          | Bottom ->
+              overapproximate_bound bound_position (Symb.Symbol.is_unsigned s)
           | NonBottom x ->
               let x = mult_const subst_pos coeff x in
               if Symb.Symbol.is_unsigned s then NonBottom (approx_max subst_pos x zero)
@@ -1141,7 +1143,11 @@ module Bound = struct
           in
           match get s bound_position with
           | Bottom ->
-              Option.value_map (big_int_of_minmax subst_pos x) ~default:Bottom ~f:(fun i ->
+              (* Pass false as unsigned to overapproximate_bound because the bound doesn't
+                 consist only of the symbol s so it cannot be overapproximated with 0 even
+                 if s is signed and subst_pos is LowerBound. *)
+              Option.value_map (big_int_of_minmax subst_pos x)
+                ~default:(overapproximate_bound subst_pos false) ~f:(fun i ->
                   NonBottom (of_big_int i) )
           | NonBottom x' ->
               let res =

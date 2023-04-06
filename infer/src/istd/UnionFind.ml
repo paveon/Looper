@@ -30,6 +30,8 @@ struct
 
     val empty : t
 
+    val is_empty : t -> bool
+
     val find : t -> X.t -> repr
 
     val merge : t -> repr -> into:repr -> t
@@ -46,6 +48,8 @@ struct
     type t = X.t XMap.t [@@deriving compare, equal]
 
     let empty = XMap.empty
+
+    let is_empty = XMap.is_empty
 
     let find_opt reprs x =
       let rec find_opt_aux candidate_repr =
@@ -86,6 +90,8 @@ struct
 
   let empty = {reprs= UF.empty; classes= UF.Map.empty}
 
+  let is_empty uf = UF.is_empty uf.reprs && UF.Map.is_empty uf.classes
+
   let find uf x = UF.find uf.reprs x
 
   let union uf x1 x2 =
@@ -107,7 +113,7 @@ struct
     UF.Map.fold (fun repr xs acc -> f acc (repr, xs)) classes init
 
 
-  let pp ~pp_empty pp_item fmt uf =
+  let pp pp_item fmt uf =
     let pp_ts_or_repr repr fmt ts =
       if XSet.is_empty ts then pp_item fmt repr
       else
@@ -116,12 +122,9 @@ struct
           ~pp_item fmt ts
     in
     let pp_aux fmt uf =
-      let is_empty = ref true in
       Pp.collection ~sep:" ∧ " ~fold:fold_congruences fmt uf
         ~pp_item:(fun fmt ((repr : repr), ts) ->
-          is_empty := false ;
-          F.fprintf fmt "%a=%a" pp_item (repr :> X.t) (pp_ts_or_repr (repr :> X.t)) ts ) ;
-      if !is_empty then pp_empty fmt
+          F.fprintf fmt "%a=%a" pp_item (repr :> X.t) (pp_ts_or_repr (repr :> X.t)) ts )
     in
     F.fprintf fmt "@[<hv>%a@]" pp_aux uf
 
@@ -182,20 +185,20 @@ struct
                  can get rid of non-representative variables *)
               XSet.fold (fun x subst -> XMap.add x (repr :> X.t) subst) clazz subst
           | Some repr' ->
+              (* map all that should not be kept (including old repr) to [repr'], which
+                 should be kept *)
               let subst = XMap.add (repr :> X.t) repr' subst in
               XSet.fold
-                (fun x subst ->
-                  if X.equal x repr' || should_keep x then subst else XMap.add x repr' subst )
+                (fun x subst -> if should_keep x then subst else XMap.add x repr' subst)
                 clazz subst )
 
 
-  let filter_morphism ~f uf =
+  let filter ~f uf =
     let classes =
-      UF.Map.filter
-        (fun x _ ->
-          (* here we take advantage of the fact [f] is transitively closed already to drop
-             entire classes at once iff their representative does not satisfy [f] *)
-          f (x :> X.t) )
+      UF.Map.filter_map
+        (fun repr clazz ->
+          let clazz = XSet.filter f clazz in
+          if XSet.is_empty clazz && not (f (repr :> X.t)) then None else Some clazz )
         uf.classes
     in
     (* rebuild [reprs] directly from [classes]: does path compression and garbage collection on the

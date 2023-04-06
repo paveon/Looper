@@ -23,7 +23,7 @@ let is_synchronized_library_call =
 let should_skip_analysis =
   let matcher = MethodMatcher.of_json Config.starvation_skip_analysis in
   fun tenv pname actuals ->
-    match pname with
+    match Procname.base_of pname with
     | Procname.Java java_pname
       when Procname.Java.is_static java_pname
            && String.equal "getInstance" (Procname.get_method pname) ->
@@ -109,12 +109,12 @@ let is_future_get =
       { default with
         classname= "java.util.concurrent.Future"
       ; methods= ["get"]
-      ; actuals_pred= no_args_or_excessive_timeout_and_timeunit })
+      ; actuals_pred= no_args_or_excessive_timeout_and_timeunit } )
 
 
 let is_future_is_done =
   MethodMatcher.(
-    of_record {default with classname= "java.util.concurrent.Future"; methods= ["isDone"]})
+    of_record {default with classname= "java.util.concurrent.Future"; methods= ["isDone"]} )
 
 
 let may_block =
@@ -132,7 +132,7 @@ let may_block =
       ; { default with
           classname= "android.os.AsyncTask"
         ; methods= ["get"]
-        ; actuals_pred= no_args_or_excessive_timeout_and_timeunit } ])
+        ; actuals_pred= no_args_or_excessive_timeout_and_timeunit } ] )
 
 
 let may_do_ipc =
@@ -157,14 +157,14 @@ let may_do_ipc =
           classname= "android.content.Context"
         ; methods= ["checkPermission"; "checkSelfPermission"] }
       ; {default with classname= "android.net.wifi.WifiManager"; methods= ["getConnectionInfo"]}
-      ; {default with classname= "android.view.Display"; methods= ["getRealSize"]} ])
+      ; {default with classname= "android.view.Display"; methods= ["getRealSize"]} ] )
 
 
 let is_regex_op =
   MethodMatcher.(
     of_records
       [ (* Potentially costly regex operations, after https://docs.oracle.com/javase/7/docs/api/java/util/regex/Pattern.html *)
-        {default with classname= "java.util.regex.Pattern"; methods= ["compile"; "matches"]} ])
+        {default with classname= "java.util.regex.Pattern"; methods= ["compile"; "matches"]} ] )
 
 
 let is_monitor_wait =
@@ -173,7 +173,7 @@ let is_monitor_wait =
       { default with
         classname= "java.lang.Object"
       ; methods= ["wait"]
-      ; actuals_pred= no_args_or_excessive_millis_and_nanos })
+      ; actuals_pred= no_args_or_excessive_millis_and_nanos } )
 
 
 (* selection is a bit arbitrary as some would be generated anyway if not here; no harm though *)
@@ -327,7 +327,7 @@ let get_run_method_from_runnable tenv runnable =
           List.is_empty (get_parameters pname)
           &&
           let methodname = get_method pname in
-          List.exists run_like_methods ~f:(String.equal methodname))
+          List.exists run_like_methods ~f:(String.equal methodname) )
     | _ ->
         false
   in
@@ -351,7 +351,7 @@ let get_returned_executor tenv callee actuals =
              | _ ->
                  false ) )
   in
-  match (callee, actuals) with
+  match (Procname.base_of callee, actuals) with
   | Procname.Java java_pname, [] -> (
     match Procname.Java.get_method java_pname with
     | ("getForegroundExecutor" | "getBackgroundExecutor") when Lazy.force type_check ->
@@ -412,15 +412,26 @@ let is_java_main_method (pname : Procname.t) =
   let check_main_args args =
     match args with [arg] -> Typ.equal pointer_to_array_of_java_lang_string arg | _ -> false
   in
-  match pname with
-  | C _ | Erlang _ | Linters_dummy_method | Block _ | ObjC_Cpp _ | CSharp _ | WithBlockParameters _
-    ->
-      false
-  | Java java_pname ->
-      Procname.Java.is_static java_pname
-      && String.equal "main" (Procname.get_method pname)
-      && Typ.equal StdTyp.void (Procname.Java.get_return_typ java_pname)
-      && check_main_args (Procname.Java.get_parameters java_pname)
+  let rec test_pname pname =
+    match (pname : Procname.t) with
+    | C _
+    | Erlang _
+    | Hack _
+    | Linters_dummy_method
+    | Block _
+    | ObjC_Cpp _
+    | CSharp _
+    | WithFunctionParameters _ ->
+        false
+    | WithAliasingParameters (base, _) ->
+        test_pname base
+    | Java java_pname ->
+        Procname.Java.is_static java_pname
+        && String.equal "main" (Procname.get_method pname)
+        && Typ.equal StdTyp.void (Procname.Java.get_return_typ java_pname)
+        && check_main_args (Procname.Java.get_parameters java_pname)
+  in
+  test_pname pname
 
 
 let may_execute_arbitrary_code =

@@ -20,26 +20,24 @@ type t =
             (** path relative to the workspace of the project root with respect to which the source
                 file was captured *)
       ; rel_path: string  (** path of the source file relative to the project root *) }
-[@@deriving compare, equal, sexp_of]
+[@@deriving compare, equal, sexp, hash]
 
-module OrderedSourceFile = struct
-  type nonrec t = t [@@deriving compare]
-end
-
-module Map = Caml.Map.Make (OrderedSourceFile)
-module Set = Caml.Set.Make (OrderedSourceFile)
-
-module Hash = Caml.Hashtbl.Make (struct
-  type nonrec t = t
-
-  let equal = equal
+module T = struct
+  type nonrec t = t [@@deriving compare, equal, sexp]
 
   let hash = Caml.Hashtbl.hash
-end)
+end
 
-let project_root_real = Utils.realpath Config.project_root
+module Map = Caml.Map.Make (T)
+module Set = Caml.Set.Make (T)
+module Hash = Caml.Hashtbl.Make (T)
+module HashSet = HashSet.Make (T)
 
-let workspace_real = Option.map ~f:Utils.realpath Config.workspace
+let realpath_if_exists path = try Utils.realpath path with Unix.Unix_error _ -> path
+
+let project_root_real = realpath_if_exists Config.project_root
+
+let workspace_real = Option.map ~f:realpath_if_exists Config.workspace
 
 let workspace_rel_root_opt =
   Option.bind workspace_real ~f:(fun workspace_real ->
@@ -259,20 +257,30 @@ let of_header ?(warn_on_error = true) header_file =
       None
 
 
-let create ?(warn_on_error = true) path =
-  if Filename.is_relative path then
-    match (sanitise_buck_out_gen_hashed_path path, workspace_rel_root_opt) with
+let from_rel_path ?(warn_on_error = true) fname =
+  if not (Filename.is_relative fname) then
+    L.(die InternalError) "Path '%s' is absolute, when relative path was expected." fname ;
+  let file =
+    match (sanitise_buck_out_gen_hashed_path fname, workspace_rel_root_opt) with
     | Some sanitised_path, _ ->
         HashedBuckOut sanitised_path
     | None, None ->
-        RelativeProjectRoot path
+        RelativeProjectRoot fname
     | None, Some workspace_rel_root ->
-        let rel_path, new_root = Utils.normalize_path_from ~root:workspace_rel_root path in
+        let rel_path, new_root = Utils.normalize_path_from ~root:workspace_rel_root fname in
         RelativeProjectRootAndWorkspace {workspace_rel_root= new_root; rel_path}
-  else from_abs_path ~warn_on_error path
+  in
+  ( if warn_on_error then
+      try Utils.realpath ~warn_on_error (to_abs_path file) |> ignore with Unix.Unix_error _ -> () ) ;
+  file
 
 
-let changed_sources_from_changed_files changed_files =
+let create ?(check_abs_path = true) ?(check_rel_path = false) path =
+  if Filename.is_relative path then from_rel_path ~warn_on_error:check_rel_path path
+  else from_abs_path ~warn_on_error:check_abs_path path
+
+
+let sources_from_files changed_files =
   List.fold changed_files ~init:Set.empty ~f:(fun changed_files_set line ->
       try
         let source_file = create line in
@@ -286,19 +294,40 @@ let changed_sources_from_changed_files changed_files =
       with _exn -> changed_files_set )
 
 
+let read_index = function
+  | None ->
+      None
+  | Some index -> (
+    match Utils.read_file index with
+    | Ok lines ->
+        Some (sources_from_files lines)
+    | Error error ->
+        L.external_error "Error reading the changed files index '%s': %s@." index error ;
+        None )
+
+
 let read_config_changed_files =
+  let result = lazy (read_index Config.changed_files_index) in
+  fun () -> Lazy.force result
+
+
+let read_config_files_to_analyze =
   let result =
     lazy
-      ( match Config.changed_files_index with
-      | None ->
-          None
-      | Some index -> (
-        match Utils.read_file index with
-        | Ok lines ->
-            Some (changed_sources_from_changed_files lines)
-        | Error error ->
-            L.external_error "Error reading the changed files index '%s': %s@." index error ;
-            None ) )
+      (let changed_files_opt = read_config_changed_files () in
+       match (read_index Config.files_to_analyze_index, changed_files_opt) with
+       | None, _ ->
+           changed_files_opt
+       | Some _, None ->
+           L.die UserError
+             "When --files-to-analyze-index is used, --changed-files-index must also be specified."
+       | Some files_to_analyze, Some changed_files
+         when not (Set.subset files_to_analyze changed_files) ->
+           L.die UserError
+             "The files in --files-to-analyze-index must be a subset of that given to \
+              --changed-files-index"
+       | files_to_analyze_opt, _ ->
+           files_to_analyze_opt )
   in
   fun () -> Lazy.force result
 
@@ -344,7 +373,7 @@ module SQLite = struct
 
 
   let deserialize serialized_sourcefile =
-    let[@warning "-8"] (Sqlite3.Data.TEXT text) = serialized_sourcefile in
+    let[@warning "-partial-match"] (Sqlite3.Data.TEXT text) = serialized_sourcefile in
     if String.is_empty text then
       L.die InternalError "Could not deserialize sourcefile with empty representation@." ;
     let tag = text.[0] in

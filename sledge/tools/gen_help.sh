@@ -7,6 +7,8 @@
 
 sledge=$PWD/cli/sledge_cli.exe
 
+export SLEDGE_CONFIG=$PWD/../../test/config
+
 line=$(\
   $sledge help -recursive -expand \
     | grep -n "== subcommands ===" \
@@ -18,7 +20,7 @@ $sledge help -recursive | sed -e "s/sledge_cli.exe/sledge/g"
 
 $sledge h -r -e \
   | tail -n +$line \
-  | sed -e "/^$/d;s/  \(.*\)  .*/\1/g" \
+  | sed -e "s/  \(.*\)  .*/\1/g;/^ *$/d" \
   | while read cmd; do \
       printf "\n====== sledge $cmd ======\n\n"; \
       $sledge $cmd -help | sed -e "s/sledge_cli.exe/sledge/g"; \

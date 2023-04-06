@@ -16,10 +16,4 @@ val capture : ClangCommand.t -> unit
     + Our clang plugin emits the AST (Abstract Syntax Tree) as Biniou data that we deserialize. The
       AST format is described in {!module-ATDGenerated.Clang_ast_t} (and its Biniou API is in
       {!module-ATDGenerated.Clang_ast_b}).
-    + If enabled, invoke translation to {!module-IR.Sil} via {!module-CFrontend}.
-    + If enabled, invoke linters callbacks from [ASTLanguage] (see below). More on linters here:
-      {:http://fbinfer.com/docs/linters.html}. *)
-
-val al_callback_ref : (CFrontend_config.translation_unit_context -> Clang_ast_t.decl -> unit) ref
-(** callback set by AL to avoid circular dependencies between clang/ and al/ without having to
-    expose the clang-only types involved all the way to integration/ *)
+    + If enabled, invoke translation to {!module-IR.Sil} via {!module-CFrontend}. *)

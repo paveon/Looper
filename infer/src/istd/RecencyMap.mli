@@ -34,9 +34,13 @@ module type S = sig
 
   val exists : t -> f:(key * value -> bool) -> bool
 
+  val for_all : t -> f:(key * value -> bool) -> bool
+
   val filter : t -> f:(key * value -> bool) -> t
 
   val find_opt : key -> t -> value option
+
+  val iter : t -> f:(key * value -> unit) -> unit
 
   val fold : t -> init:'acc -> f:('acc -> key * value -> 'acc) -> 'acc
 

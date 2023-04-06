@@ -47,7 +47,9 @@ let mk_command_doc ~see_also:see_also_commands ?environment:environment_opt ?fil
                 Cmdliner.Manpage.s_files section ) ]
   in
   CLOpt.mk_command_doc ~section ~version:Version.versionString
-    ~date:Version.man_pages_last_modify_date ~synopsis:[`Pre synopsis] ~environment ~files ?see_also
+    ~date:Version.man_pages_last_modify_date
+    ~synopsis:[`Pre synopsis]
+    ~environment ~files ?see_also
 
 
 let analyze =
@@ -55,28 +57,6 @@ let analyze =
     ~synopsis:{|$(b,infer) $(b,analyze) $(i,[options])
 $(b,infer) $(i,[options])|}
     ~description:[`P "Analyze the files captured in the project results directory and report."]
-    ~see_also:InferCommand.[Report; Run]
-
-
-let analyze_json =
-  mk_command_doc ~title:"Infer JSON Analysis"
-    ~short_description:"analyze the cfg and tenv json files captured by infersharp"
-    ~synopsis:
-      {|$(b,infer) $(b,analyzejson) $(b,--debug) $(b,--cfg-json) $(i,[options])
-    $(b,--tenv-json) $(i,[options]))|}
-    ~description:
-      [ `P
-          "Analyze the cfg and tenv json files captured in the project results directory and \
-           report." ]
-    ~examples:
-      [ `P
-          "To analyze cfg json and tenv json, one should start with configuring infer environment \
-           and then run analyzejson command, for instance:"
-      ; `Pre
-          {|  infer capture
-  mkdir infer-out/captured
-  infer analyzejson --debug --cfg-json [path_to_cfg.json] --tenv-json [path_to_tenv.json]|}
-      ]
     ~see_also:InferCommand.[Report; Run]
 
 
@@ -90,17 +70,19 @@ $(b,infer) $(b,capture) $(b,--buck-compilation-database) $(i,[no-]deps) $(i,[opt
 $(b,infer) $(b,capture) $(i,[options]) $(b,--compilation-database) $(i,file)
 $(b,infer) $(b,capture) $(i,[options]) $(b,--compilation-database-escaped) $(i,file)
 $(b,infer) $(b,capture) $(i,[options]) $(b,--) $(b,gradle)/$(b,gradlew) $(i,...)
+$(b,infer) $(b,capture) $(i,[options]) $(b,--) $(b,hackc) $(i,...)
 $(b,infer) $(b,capture) $(i,[options]) $(b,--) $(b,javac) $(i,...)
 $(b,infer) $(b,capture) $(i,[options]) $(b,--) $(b,make)/$(b,clang)/$(b,gcc) $(i,...)
 $(b,infer) $(b,capture) $(i,[options]) $(b,--) $(b,mvn)/$(b,mvnw) $(i,...)
 $(b,infer) $(b,capture) $(i,[options]) $(b,--) $(b,ndk-build) $(i,...)
-$(b,infer) $(b,capture) $(i,[--no-xcpretty]) $(i,[options]) $(b,--) $(b,xcodebuild) $(i,...)|}
+$(b,infer) $(b,capture) $(i,[--no-xcpretty]) $(i,[options]) $(b,--) $(b,xcodebuild) $(i,...)
+$(b,infer) $(b,capture) $(b,--cfg-json) $(i,file.json) $(b,--tenv-json) $(i,file.json) $(i,[options])|}
     ~description:
       [ `P
-          "Capture the build command or compilation database specified on the command line: infer \
-           intercepts calls to the compiler to read source files, translate them into infer's \
-           intermediate representation, and store the result of the translation in the results \
-           directory." ]
+          "Capture the build command, compilation database, or cfg/tenv json files specified on \
+           the command line: infer intercepts calls to the compiler to read source files, \
+           translate them into infer's intermediate representation, and store the result of the \
+           translation in the results directory." ]
     ~see_also:InferCommand.[Analyze; Compile; Run]
 
 
@@ -233,10 +215,11 @@ $(b,infer) $(i,[options])|}
              as argument. The format is one option per line, and enclosing single ' and double \" \
              quotes are ignored."
         ; `P
-            "Options without a default value (e.g., $(b,--linter)) and options with list-like \
-             values (e.g., $(b,--Xbuck)) all have a corresponding $(b,--option-reset) flag that \
-             resets their values to nothing or the empty list, respectively. For instance, \
-             $(b,--Xbuck-reset) will cancel any previous $(b,--Xbuck) option passed to infer."
+            "Options without a default value (e.g., $(b,--changed-files-index)) and options with \
+             list-like values (e.g., $(b,--Xbuck)) all have a corresponding $(b,--option-reset) \
+             flag that resets their values to nothing or the empty list, respectively. For \
+             instance, $(b,--Xbuck-reset) will cancel any previous $(b,--Xbuck) option passed to \
+             infer."
         ; `P
             "See the manuals of individual infer commands for details about their supported \
              options. The following is a list of all the supported options (see also \
@@ -270,7 +253,7 @@ $(b,infer) $(i,[options])|}
       ; `P "- for switches options, the value is a JSON boolean (true or false, without quotes)"
       ; `Noblank
       ; `P
-          "- for non-switches options with no arguments (for instance the $(,...-reset) option \
+          "- for non-switches options with no arguments (for instance the $(b,...-reset) option \
            associated with a list option), the value is null"
       ; `Noblank
       ; `P "- for integers, the value is a JSON integer (without quotes)"
@@ -286,8 +269,11 @@ $(b,infer) $(i,[options])|}
       ; `P "- cumulative options are JSON arrays of the appropriate type"
       ; `P
           (Printf.sprintf
-             "Infer will look for an $(b,%s) file in the current directory, then its parent, etc., \
-              stopping at the first $(b,%s) file found."
+             "If an $(b,%s) file is specified on the command line with $(b,--%s) then Infer will \
+              use that. Otherwise, Infer will look for an $(b,%s) file in the environment variable \
+              $(b,%s). Finally, Infer will first look for an $(b,%s) file in the current \
+              directory, then its parent, etc., stopping at the first $(b,%s) file found."
+             inferconfig_file CLOpt.inferconfig_path_arg inferconfig_file inferconfig_env_var
              inferconfig_file inferconfig_file )
       ; `P "Example:"
       ; `Pre
@@ -302,14 +288,17 @@ $(b,infer) $(i,[options])|}
 let report =
   mk_command_doc ~title:"Infer Reporting" ~short_description:"compute and manipulate infer reports"
     ~synopsis:
-      {|$(b,infer) $(b,report) $(b,--issues-tests)
+      {|$(b,infer) $(b,report)
+$(b,infer) $(b,report) $(b,--issues-tests)
 $(b,infer) $(b,report) $(b,--cost-issues-tests)
 $(b,infer) $(b,report) $(b,--config-impact-issues-tests)
 $(b,infer) $(b,report) $(b,--merge-report) $(i,dir1) $(i,...) $(b,--merge-report) $(i,dirN)|}
     ~description:
       [ `P
-          "Write out issues in a format suitable for tests, or merge multiple JSON reports in one \
-           with $(b,--merge-report)." ]
+          "When used without parameters, generate report output in Json. With a $(b, --tests) \
+           parameter,\n\
+          \          write out issues in a format suitable for tests. With $(b,--merge-report), \
+           merge multiple JSON reports in one." ]
     ~see_also:InferCommand.[ReportDiff; Run]
 
 
@@ -359,7 +348,6 @@ let command_to_data =
   in
   let open InferCommand in
   [ mk Analyze analyze
-  ; mk AnalyzeJson analyze_json
   ; mk Capture capture
   ; mk Compile compile
   ; mk Debug debug

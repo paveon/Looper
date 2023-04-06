@@ -30,7 +30,7 @@ val store_global : t -> unit
 (** save a global type environment (Java) *)
 
 val lookup : t -> Typ.Name.t -> Struct.t option
-(** Look up a name in the global type environment. *)
+(** Look up a name in the given type environment. *)
 
 val mk_struct :
      t
@@ -44,6 +44,7 @@ val mk_struct :
   -> ?annots:Annot.Item.t
   -> ?java_class_info:Struct.java_class_info
   -> ?dummy:bool
+  -> ?source_file:SourceFile.t
   -> Typ.Name.t
   -> Struct.t
 (** Construct a struct_typ, normalizing field types *)
@@ -54,6 +55,12 @@ val add_field : t -> Typ.Name.t -> Struct.field -> unit
 val pp : Format.formatter -> t -> unit
 (** print a type environment *)
 
+val fold_supers : t -> Typ.Name.t -> init:'a -> f:(Typ.Name.t -> Struct.t option -> 'a -> 'a) -> 'a
+
+val mem_supers : t -> Typ.Name.t -> f:(Typ.Name.t -> Struct.t option -> bool) -> bool
+
+val find_map_supers : t -> Typ.Name.t -> f:(Typ.Name.t -> Struct.t option -> 'a option) -> 'a option
+
 val implements_remodel_class : t -> Typ.Name.t -> bool
 (** Check if a class implements the Remodel class *)
 
@@ -63,7 +70,7 @@ val pp_per_file : Format.formatter -> per_file -> unit
 (** print per file type environment *)
 
 val merge : src:t -> dst:t -> unit
-(** Merge [src] into [dst] possibly overwriting pre existing procs in [dst]. *)
+(** Merge [src] into [dst] *)
 
 val merge_per_file : src:per_file -> dst:per_file -> per_file
 (** Best-effort merge of [src] into [dst]. If a procedure is both in [dst] and [src], the one in
@@ -82,4 +89,9 @@ val resolve_method :
 
 val find_cpp_destructor : t -> Typ.Name.t -> Procname.t option
 
+val find_cpp_constructor : t -> Typ.Name.t -> Procname.t list
+
 module SQLite : SqliteUtils.Data with type t = per_file
+
+val normalize : per_file -> per_file
+(** Produce an equivalent type environment that has maximal sharing between its structures. *)

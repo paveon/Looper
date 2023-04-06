@@ -11,8 +11,9 @@ Activate with `--fragment-retains-view`.
 
 Supported languages:
 - C/C++/ObjC: No
-- C#/.Net: Yes
+- C#/.Net: No
 - Erlang: No
+- Hack: No
 - Java: Yes
 
 

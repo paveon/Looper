@@ -9,6 +9,7 @@ open! IStd
 module F = Format
 module CallEvent = PulseCallEvent
 module Invalidation = PulseInvalidation
+module Taint = PulseTaint
 module Timestamp = PulseTimestamp
 
 type event =
@@ -28,10 +29,36 @@ type event =
   | NilMessaging of Location.t * Timestamp.t
   | Returned of Location.t * Timestamp.t
   | StructFieldAddressCreated of Fieldname.t RevList.t * Location.t * Timestamp.t
+  | TaintSource of Taint.t * Location.t * Timestamp.t
   | VariableAccessed of Pvar.t * Location.t * Timestamp.t
   | VariableDeclared of Pvar.t * Location.t * Timestamp.t
 
-and t = Epoch | Sequence of event * t | Branching of t list [@@deriving compare, equal]
+and t =
+  | Epoch
+  | Sequence of event * t
+  | InContext of {main: t; context: t list}
+  | BinaryOp of Binop.t * t * t
+[@@deriving compare, equal]
+
+let epoch = Epoch
+
+let in_context_f from new_context_opt ~f =
+  match new_context_opt with
+  | None | Some [] ->
+      f from
+  | Some new_context -> (
+    match from with
+    | InContext {main; context} when phys_equal context new_context ->
+        InContext {main= f main; context}
+    | Epoch | Sequence _ | BinaryOp _ | InContext _ ->
+        InContext {main= f from; context= new_context} )
+
+
+let sequence ?context event hist = in_context_f hist context ~f:(fun hist -> Sequence (event, hist))
+
+let in_context context hist = in_context_f hist (Some context) ~f:Fn.id
+
+let binary_op bop hist1 hist2 = BinaryOp (bop, hist1, hist2)
 
 let singleton event = Sequence (event, Epoch)
 
@@ -47,6 +74,7 @@ let location_of_event = function
   | NilMessaging (location, _)
   | Returned (location, _)
   | StructFieldAddressCreated (_, location, _)
+  | TaintSource (_, location, _)
   | VariableAccessed (_, location, _)
   | VariableDeclared (_, location, _) ->
       location
@@ -64,12 +92,13 @@ let timestamp_of_event = function
   | NilMessaging (_, timestamp)
   | Returned (_, timestamp)
   | StructFieldAddressCreated (_, _, timestamp)
+  | TaintSource (_, _, timestamp)
   | VariableAccessed (_, _, timestamp)
   | VariableDeclared (_, _, timestamp) ->
       timestamp
 
 
-let pop_least_timestamp hists0 =
+let pop_least_timestamp ~main_only hists0 =
   let rec aux orig_hists_prefix curr_ts_hists_prefix latest_events (highest_t : Timestamp.t option)
       hists =
     match (highest_t, hists) with
@@ -77,9 +106,13 @@ let pop_least_timestamp hists0 =
         (latest_events, curr_ts_hists_prefix)
     | _, Epoch :: hists ->
         aux orig_hists_prefix curr_ts_hists_prefix latest_events highest_t hists
-    | _, Branching branches_hist :: hists ->
+    | _, InContext {main} :: hists when main_only ->
+        aux orig_hists_prefix curr_ts_hists_prefix latest_events highest_t (main :: hists)
+    | _, InContext {main; context} :: hists ->
         aux orig_hists_prefix curr_ts_hists_prefix latest_events highest_t
-          (List.rev_append branches_hist hists)
+          (main :: List.rev_append context hists)
+    | _, BinaryOp (_, hist1, hist2) :: hists ->
+        aux orig_hists_prefix curr_ts_hists_prefix latest_events highest_t (hist1 :: hist2 :: hists)
     | None, (Sequence (event, hist') as hist) :: hists ->
         aux (hist :: orig_hists_prefix) (hist' :: orig_hists_prefix) [event]
           (Some (timestamp_of_event event))
@@ -105,21 +138,17 @@ type iter_event =
   | ReturnFromCall of CallEvent.t * Location.t
   | Event of event
 
-let rec iter_branches hists ~f =
+let rec iter_branches ~main_only hists ~f =
   if List.is_empty hists then ()
   else
-    let latest_events, hists = pop_least_timestamp hists in
-    iter_simultaneous_events latest_events ~f ;
-    iter_branches hists ~f
+    let latest_events, hists = pop_least_timestamp ~main_only hists in
+    iter_simultaneous_events ~main_only latest_events ~f ;
+    iter_branches ~main_only hists ~f
 
 
-and iter_simultaneous_events events ~f =
-  let in_call = function
-    | Call {in_call= (Sequence _ | Branching _) as in_call} ->
-        Some in_call
-    | _ ->
-        None
-  in
+and iter_simultaneous_events ~main_only events ~f =
+  let is_nonempty = function Epoch -> false | Sequence _ | InContext _ | BinaryOp _ -> true in
+  let in_call = function Call {in_call} when is_nonempty in_call -> Some in_call | _ -> None in
   match events with
   | [] ->
       ()
@@ -127,9 +156,9 @@ and iter_simultaneous_events events ~f =
       (* operate on just one representative, they should all be the same given they have the same
          timestamp inside the same path of the same procedure call *)
       ( match event with
-      | Call {f= callee; location; in_call= Sequence _ | Branching _} ->
+      | Call {f= callee; location; in_call= in_call'} when is_nonempty in_call' ->
           f (ReturnFromCall (callee, location)) ;
-          iter_branches (List.filter_map events ~f:in_call) ~f ;
+          iter_branches ~main_only (List.filter_map events ~f:in_call) ~f ;
           f (EnterCall (callee, location)) ;
           ()
       | _ ->
@@ -137,16 +166,23 @@ and iter_simultaneous_events events ~f =
       f (Event event)
 
 
-and iter (history : t) ~f =
+and iter ~main_only (history : t) ~f =
   match history with
   | Epoch ->
       ()
   | Sequence (event, rest) ->
-      iter_simultaneous_events [event] ~f ;
-      iter rest ~f
-  | Branching hists ->
-      iter_branches hists ~f
+      iter_simultaneous_events ~main_only [event] ~f ;
+      iter ~main_only rest ~f
+  | InContext {main} when main_only ->
+      iter ~main_only main ~f
+  | InContext {main; context} ->
+      (* [not main_only] *)
+      iter_branches ~main_only (main :: context) ~f
+  | BinaryOp (_, hist1, hist2) ->
+      iter_branches ~main_only [hist1; hist2] ~f
 
+
+let iter_main = iter ~main_only:true
 
 let yojson_of_event = [%yojson_of: _]
 
@@ -212,6 +248,8 @@ let pp_event_no_location fmt event =
       F.pp_print_string fmt "returned"
   | StructFieldAddressCreated (field_names, _, _) ->
       F.fprintf fmt "struct field address `%a` created" pp_fields field_names
+  | TaintSource (taint_source, _, _) ->
+      F.fprintf fmt "source of the taint here: %a" Taint.pp taint_source
   | VariableAccessed (pvar, _, _) ->
       F.fprintf fmt "%a accessed here" pp_pvar pvar
   | VariableDeclared (pvar, _, _) ->
@@ -219,7 +257,8 @@ let pp_event_no_location fmt event =
 
 
 let pp_event fmt event =
-  F.fprintf fmt "%a at %a" pp_event_no_location event Location.pp_line (location_of_event event)
+  F.fprintf fmt "%a at %a :t%a" pp_event_no_location event Location.pp_line
+    (location_of_event event) Timestamp.pp (timestamp_of_event event)
 
 
 let pp fmt history =
@@ -228,13 +267,15 @@ let pp fmt history =
         ()
     | Sequence ((Call {in_call} as event), tail) ->
         F.fprintf fmt "%a@;" pp_event event ;
-        F.fprintf fmt "[%a]@;" pp_aux in_call ;
+        F.fprintf fmt "[@[%a@]]@;" pp_aux in_call ;
         pp_aux fmt tail
     | Sequence (event, tail) ->
         F.fprintf fmt "%a@;" pp_event event ;
         pp_aux fmt tail
-    | Branching hists ->
-        F.fprintf fmt "[@[%a@]]" (Pp.seq ~sep:"; " pp_aux) hists
+    | InContext {main; context} ->
+        F.fprintf fmt "(@[%a@]){@[%a@]}" (Pp.seq ~sep:"; " pp_aux) context pp_aux main
+    | BinaryOp (bop, hist1, hist2) ->
+        F.fprintf fmt "[@[%a@]] %a [@[%a@]]" pp_aux hist1 Binop.pp bop pp_aux hist2
   in
   F.fprintf fmt "@[%a@]" pp_aux history
 
@@ -264,10 +305,10 @@ let add_to_errlog ~nesting history errlog =
         errlog := add_returned_from_call_to_errlog ~nesting:!nesting call location !errlog ;
         incr nesting
   in
-  iter history ~f:one_iter_event ;
+  iter ~main_only:false history ~f:one_iter_event ;
   !errlog
 
 
-let get_first_event hist =
-  Iter.head (Iter.rev (fun f -> iter hist ~f))
+let get_first_main_event hist =
+  Iter.head (Iter.rev (fun f -> iter ~main_only:true hist ~f))
   |> Option.bind ~f:(function Event event -> Some event | _ -> None)

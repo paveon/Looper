@@ -24,7 +24,6 @@
 <a href="#DESCRIPTION">DESCRIPTION</a><br>
 <a href="#OPTIONS">OPTIONS</a><br>
 <a href="#BUCK OPTIONS">BUCK OPTIONS</a><br>
-<a href="#CLANG LINTERS OPTIONS">CLANG LINTERS OPTIONS</a><br>
 <a href="#CLANG OPTIONS">CLANG OPTIONS</a><br>
 <a href="#ERLANG OPTIONS">ERLANG OPTIONS</a><br>
 <a href="#JAVA OPTIONS">JAVA OPTIONS</a><br>
@@ -61,6 +60,8 @@ infer capture</b> <i>[options]</i>
 <b>--compilation-database-escaped</b> <i>file</i> <b><br>
 infer capture</b> <i>[options]</i> <b>--
 gradle</b>/<b>gradlew</b> <i>...</i> <b><br>
+infer capture</b> <i>[options]</i> <b>-- hackc</b>
+<i>...</i> <b><br>
 infer capture</b> <i>[options]</i> <b>-- javac</b>
 <i>...</i> <b><br>
 infer capture</b> <i>[options]</i> <b>--
@@ -70,7 +71,9 @@ infer capture</b> <i>[options]</i> <b>-- mvn</b>/<b>mvnw</b>
 infer capture</b> <i>[options]</i> <b>-- ndk-build</b>
 <i>...</i> <b><br>
 infer capture</b> <i>[--no-xcpretty] [options]</i> <b>--
-xcodebuild</b> <i>...</i></p>
+xcodebuild</b> <i>...</i> <b><br>
+infer capture --cfg-json</b> <i>file.json</i>
+<b>--tenv-json</b> <i>file.json [options]</i></p>
 
 <h2>DESCRIPTION
 <a name="DESCRIPTION"></a>
@@ -78,11 +81,11 @@ xcodebuild</b> <i>...</i></p>
 
 
 <p style="margin-left:11%; margin-top: 1em">Capture the
-build command or compilation database specified on the
-command line: infer intercepts calls to the compiler to read
-source files, translate them into infer's intermediate
-representation, and store the result of the translation in
-the results directory.</p>
+build command, compilation database, or cfg/tenv json files
+specified on the command line: infer intercepts calls to the
+compiler to read source files, translate them into infer's
+intermediate representation, and store the result of the
+translation in the results directory.</p>
 
 <h2>OPTIONS
 <a name="OPTIONS"></a>
@@ -90,7 +93,19 @@ the results directory.</p>
 
 
 
-<p style="margin-left:11%; margin-top: 1em"><b>--continue</b></p>
+<p style="margin-left:11%; margin-top: 1em"><b>--capture-block-list</b>
+<i>json</i></p>
+
+<p style="margin-left:17%;">Matcher or list of matchers for
+names of files that should not be captured, hence not
+analyzed either. Clang and Java only.</p>
+
+<p style="margin-left:11%;"><b>--cfg-json</b>
+<i>file</i></p>
+
+<p style="margin-left:17%;">Path to CFG json file</p>
+
+<p style="margin-left:11%;"><b>--continue</b></p>
 
 <p style="margin-left:17%;">Activates: Continue the capture
 for the reactive analysis, increasing the changed
@@ -114,8 +129,7 @@ sets <b>--debug-level 2</b>, <b>--developer-mode</b>,
 <p style="margin-left:17%;">Debug level (sets
 <b>--bo-debug</b> <i>level</i>,
 <b>--debug-level-analysis</b> <i>level</i>,
-<b>--debug-level-capture</b> <i>level</i>,
-<b>--debug-level-linters</b> <i>level</i>):</p>
+<b>--debug-level-capture</b> <i>level</i>):</p>
 
 <p style="margin-left:11%;">- 0: only basic debugging
 enabled <br>
@@ -132,12 +146,6 @@ See <b>--debug-level</b> for accepted values.</p>
 <p style="margin-left:17%;">Debug level for the capture.
 See <b>--debug-level</b> for accepted values.</p>
 
-<p style="margin-left:11%;"><b>--debug-level-linters</b>
-<i>int</i></p>
-
-<p style="margin-left:17%;">Debug level for the linters.
-See <b>--debug-level</b> for accepted values.</p>
-
 
 <p style="margin-left:11%;"><b>--force-delete-results-dir</b></p>
 
@@ -151,12 +159,13 @@ infer results directory. (Conversely:
 
 <p style="margin-left:17%;">Proceed as if the first
 argument after <b>--</b> was <i>command</i>. Possible
-values: <i>ant</i>, <i>buck</i>, <i>gradle</i>,
-<i>gradlew</i>, <i>java</i>, <i>javac</i>, <i>cc</i>,
-<i>clang</i>, <i>gcc</i>, <i>clang++</i>, <i>c++</i>,
-<i>g++</i>, <i>make</i>, <i>configure</i>, <i>cmake</i>,
-<i>waf</i>, <i>mvn</i>, <i>mvnw</i>, <i>ndk-build</i>,
-<i>rebar3</i>, <i>xcodebuild</i>.</p>
+values: <i>ant</i>, <i>buck</i>, <i>buck1</i>, <i>buck2</i>,
+<i>gradle</i>, <i>gradlew</i>, <i>java</i>, <i>javac</i>,
+<i>cc</i>, <i>clang</i>, <i>gcc</i>, <i>clang++</i>,
+<i>c++</i>, <i>g++</i>, <i>hackc</i>, <i>make</i>,
+<i>configure</i>, <i>cmake</i>, <i>waf</i>, <i>mvn</i>,
+<i>mvnw</i>, <i>ndk-build</i>, <i>rebar3</i>, <i>erlc</i>,
+<i>xcodebuild</i>.</p>
 
 <p style="margin-left:11%;"><b>--help</b></p>
 
@@ -175,6 +184,12 @@ undefined, and to <b>pager</b> otherwise.</p>
 <p style="margin-left:17%;">Show this manual with all
 internal options in the INTERNAL OPTIONS section</p>
 
+<p style="margin-left:11%;"><b>--keep-going</b></p>
+
+<p style="margin-left:17%;">Activates: Keep going when the
+analysis or capture encounter a failure (Conversely:
+<b>--no-keep-going</b>)</p>
+
 
 <p style="margin-left:11%;"><b>--load-average</b>,<b>-l</b>
 <i>float</i></p>
@@ -182,6 +197,22 @@ internal options in the INTERNAL OPTIONS section</p>
 <p style="margin-left:17%;">Do not start new parallel jobs
 if the load average is greater than that specified (Buck and
 make only)</p>
+
+<p style="margin-left:11%;"><b>--merge-capture</b>
+<i>+string</i></p>
+
+<p style="margin-left:17%;">Specifies an Infer results
+directory. The files and procedures captured in it will be
+merged together into the results directory specified with
+<b>-o</b>. Relative paths are interpreted as relative to
+<b>project-root/buck-out</b>.</p>
+
+<p style="margin-left:11%;"><b>--never-returning-null</b>
+<i>json</i></p>
+
+<p style="margin-left:17%;">[Java only, all analyses]
+Matcher or list of matchers for functions that never return
+<i>null</i>.</p>
 
 <p style="margin-left:11%;"><b>--print-logs</b></p>
 
@@ -209,10 +240,11 @@ the project</p>
 files in the specified directory</p>
 
 <p style="margin-left:11%;"><b>--skip-analysis-in-path</b>
-<i>+path_prefix_OCaml_regex</i></p>
+<i>+regex</i></p>
 
 <p style="margin-left:17%;">Ignore files whose path matches
-the given prefix (can be specified multiple times)</p>
+a given regex (can be specified multiple times, but you must
+make sure each regex is properly bracketed)</p>
 
 <p style="margin-left:11%;"><b>--sqlite-cache-size</b>
 <i>int</i></p>
@@ -233,11 +265,10 @@ database operations, in milliseconds.</p>
 <p style="margin-left:17%;">SQLite page size in bytes, must
 be a power of two between 512 and 65536.</p>
 
-<p style="margin-left:11%;"><b>--sqlite-vacuum</b></p>
+<p style="margin-left:11%;"><b>--tenv-json</b>
+<i>file</i></p>
 
-<p style="margin-left:17%;">Activates: <b>VACUUM</b> the
-SQLite DB after performing capture. (Conversely:
-<b>--no-sqlite-vacuum</b>)</p>
+<p style="margin-left:17%;">Path to TEnv json file</p>
 
 <p style="margin-left:11%;"><b>--workspace</b>
 <i>path</i></p>
@@ -319,6 +350,20 @@ includes clang targets, as per Buck's
 the <b>--buck-compilation-database deps</b> option. By
 default, all recursive dependencies are captured.</p>
 
+<p style="margin-left:11%;"><b>--buck-dependency-depth</b>
+<i>int</i></p>
+
+<p style="margin-left:17%;">Capture dependencies only if
+they are at most the depth provided, or all transitive
+dependencies if depth is not provided (the default). In
+particular, depth zero means capture exactly the targets
+provided and nothing else.</p>
+
+<p style="margin-left:11%;"><b>--buck-erlang</b></p>
+
+<p style="margin-left:17%;">Activates: Buck integration for
+Erlang. (Conversely: <b>--no-buck-erlang</b>)</p>
+
 <p style="margin-left:11%;"><b>--buck-java-flavor</b></p>
 
 <p style="margin-left:17%;">Activates: Buck integration for
@@ -355,8 +400,34 @@ capture. Only valid for <b>--buck-clang</b>. (Conversely:
 <i>+regex</i></p>
 
 <p style="margin-left:17%;">Skip capture of buck targets
-matched by the specified regular expression. Only valid for
-<b>--buck-compilation-database</b>.</p>
+matched by the specified regular expression.</p>
+
+<p style="margin-left:11%;"><b>--buck2-bxl-target</b>
+<i>string</i></p>
+
+<p style="margin-left:17%;">Buck2 BXL script (as a buck
+target) to run when capturing with buck2/clang
+integration.</p>
+
+<p style="margin-left:11%;"><b>--buck2-root</b>
+<i>dir</i></p>
+
+<p style="margin-left:17%;">Specify the parent directory of
+<b>buck-out</b> (used only for <b>buck2</b>).</p>
+
+<p style="margin-left:11%;"><b>--buck2-use-bxl</b></p>
+
+<p style="margin-left:17%;">Activates: Use BXL script when
+capturing with buck2. (Conversely:
+<b>--no-buck2-use-bxl</b>)</p>
+
+<p style="margin-left:11%;"><b>--bxl-file-capture</b></p>
+
+<p style="margin-left:17%;">Activates: Given an
+<b>--changed-file-index</b> file, capture the owning buck2
+targets and their dependencies using the BXL script
+specified by <b>--buck2_bxl_target</b>. (Conversely:
+<b>--no-bxl-file-capture</b>)</p>
 
 <p style="margin-left:11%;"><b>--Xbuck</b>
 <i>+string</i></p>
@@ -373,83 +444,26 @@ arguments to invocations of <i>&rsquo;buck build&rsquo;</i>,
 don't inline any args starting with '@'. Only valid for
 <b>--buck-clang</b>.</p>
 
+<p style="margin-left:11%;"><b>--Xbuck2</b>
+<i>+string</i></p>
+
+<p style="margin-left:17%;">Pass values as command-line
+arguments to invocations of <i>&rsquo;buck2
+build&rsquo;</i>. Only valid for <b>--buck-clang</b>.</p>
+
+<p style="margin-left:11%;"><b>--Xbuck2-no-inline</b>
+<i>+string</i></p>
+
+<p style="margin-left:17%;">Pass values as command-line
+arguments to invocations of <i>&rsquo;buck2
+build&rsquo;</i>, don't inline any args starting with '@'.
+Only valid for <b>--buck-clang</b>.</p>
+
 <p style="margin-left:11%;"><b>--xcode-developer-dir</b>
 <i>XCODE_DEVELOPER_DIR</i></p>
 
 <p style="margin-left:17%;">Specify the path to Xcode
 developer directory, to use for Buck clang targets</p>
-
-<h2>CLANG LINTERS OPTIONS
-<a name="CLANG LINTERS OPTIONS"></a>
-</h2>
-
-
-
-<p style="margin-left:11%; margin-top: 1em"><b>--debug-level-linters</b>
-<i>int</i></p>
-
-<p style="margin-left:17%;">Debug level for the linters.
-See <b>--debug-level</b> for accepted values.</p>
-
-
-<p style="margin-left:11%;"><b>--no-default-linters</b></p>
-
-<p style="margin-left:17%;">Deactivates: Use the default
-linters for the analysis. (Conversely:
-<b>--default-linters</b>)</p>
-
-<p style="margin-left:11%;"><b>--linter</b>
-<i>string</i></p>
-
-<p style="margin-left:17%;">From the linters available,
-only run this one linter. (Useful together with
-<b>--linters-developer-mode</b>)</p>
-
-<p style="margin-left:11%;"><b>--linters-def-file</b>
-<i>+file</i></p>
-
-<p style="margin-left:17%;">Specify the file containing
-linters definition (e.g. 'linters.al')</p>
-
-<p style="margin-left:11%;"><b>--linters-def-folder</b>
-<i>+dir</i></p>
-
-<p style="margin-left:17%;">Specify the folder containing
-linters files with extension .al</p>
-
-
-<p style="margin-left:11%;"><b>--linters-developer-mode</b></p>
-
-<p style="margin-left:17%;">Activates: Debug mode for
-developing new linters. (Sets the analyzer to
-<b>linters</b>; also sets <b>--debug</b>,
-<b>--debug-level-linters 2</b>, <b>--developer-mode</b>, and
-unsets <b>--allowed-failures</b> and
-<b>--default-linters</b>. (Conversely:
-<b>--no-linters-developer-mode</b>)</p>
-
-<p style="margin-left:11%;"><b>--linters-doc-url</b>
-<i>+string</i></p>
-
-<p style="margin-left:17%;">Specify custom documentation
-URL for some linter that overrides the default one. Useful
-if your project has specific ways of fixing a lint error
-that is not true in general or public info. Format:
-linter_name:doc_url.</p>
-
-
-<p style="margin-left:11%;"><b>--linters-ignore-clang-failures</b></p>
-
-<p style="margin-left:17%;">Activates: Continue linting
-files even if some compilation fails. (Conversely:
-<b>--no-linters-ignore-clang-failures</b>)</p>
-
-
-<p style="margin-left:11%;"><b>--linters-validate-syntax-only</b></p>
-
-<p style="margin-left:17%;">Activates: Validate syntax of
-AL files, then emit possible errors in JSON format to stdout
-(Conversely: <b>--no-linters-validate-syntax-only</b>)</p>
 
 <h2>CLANG OPTIONS
 <a name="CLANG OPTIONS"></a>
@@ -575,12 +589,30 @@ files in the given path. These .json files usually come from
 a previous run with <b>--debug</b>.</p>
 
 
-<p style="margin-left:11%;"><b>--erlang-skip-rebar3</b></p>
+<p style="margin-left:11%;"><b>--erlang-check-return</b></p>
 
-<p style="margin-left:17%;">Activates: Skip running rebar,
-to save time. It is useful together with
+<p style="margin-left:17%;">Activates: Check whether the
+values returned by functions correspond to what the
+function's spec promises. This check is introduced at
+capture time. (Conversely:
+<b>--no-erlang-check-return</b>)</p>
+
+
+<p style="margin-left:11%;"><b>--erlang-skip-compile</b></p>
+
+<p style="margin-left:17%;">Activates: Skip running
+compiler (erlc/rebar3), to save time. The build command is
+basically ignored in this case. To be used together with
 <b>--erlang-ast-dir</b>. (Conversely:
-<b>--no-erlang-skip-rebar3</b>)</p>
+<b>--no-erlang-skip-compile</b>)</p>
+
+
+<p style="margin-left:11%;"><b>--erlang-with-otp-specs</b></p>
+
+<p style="margin-left:17%;">Activates: [EXPERIMENTAL] Use
+type specs from OTP (available in the system) to generate
+more precise Pulse summaries for unknown library functions.
+(Conversely: <b>--no-erlang-with-otp-specs</b>)</p>
 
 <h2>JAVA OPTIONS
 <a name="JAVA OPTIONS"></a>
@@ -593,13 +625,6 @@ to save time. It is useful together with
 
 <p style="margin-left:17%;">Specify the Java
 bootclasspath</p>
-
-<p style="margin-left:11%;"><b>--capture-block-list</b>
-<i>regex</i></p>
-
-<p style="margin-left:17%;">Skip capture of files matched
-by the specified OCaml regular expression (only supported by
-the javac integration for now).</p>
 
 <p style="margin-left:11%;"><b>--dependencies</b></p>
 

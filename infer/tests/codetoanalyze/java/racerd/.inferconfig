@@ -1,13 +1,15 @@
 {
   "force-delete-results-dir": true,
   "threadsafe-aliases": ["MyThreadSafeAlias1", "codetoanalyze.java.checkers.MyThreadSafeAlias2"],
-  "skip-translation": [
+  "capture-block-list": [
     {
-      "language": "Java",
       "source_contains": "_SHOULD_BE_SKIPPED_"
     }
   ],
   "external-java-packages" : [
     "com.racerd.donotreport"
+  ],
+  "racerd-ignore-classes" : [
+    "codetoanalyze.java.racerd.IgnoredSub"
   ]
 }

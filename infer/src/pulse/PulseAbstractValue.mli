@@ -8,9 +8,7 @@ open! IStd
 module F = Format
 
 (** An abstract value (or "symbolic variable"), eg an address in memory. *)
-type t = private int [@@deriving compare, yojson_of]
-
-val equal : t -> t -> bool
+type t = private int [@@deriving compare, equal, yojson_of]
 
 val mk_fresh : unit -> t
 (** create an abstract value guaranteed not to appear in the current state *)
@@ -33,14 +31,12 @@ val is_unrestricted : t -> bool
 
 val pp : F.formatter -> t -> unit
 
-val of_id : int -> t
-
 val compare_unrestricted_first : t -> t -> int
 (** an alternative comparison function that sorts unrestricted variables before restricted variables *)
 
 module Constants : sig
   val get_int : IntLit.t -> t
-  (** Get or create an abstract value associated with a constant {!IntLit.t}. The idea is that
+  (** Get or create an abstract value associated with a constant {!IR.IntLit.t}. The idea is that
       clients will record in the abstract state that the returned [t] is equal to the given integer.
       If the same integer is queried later on then this module will return the same abstract
       variable. *)
@@ -52,20 +48,4 @@ module Map : sig
   include PrettyPrintable.PPMap with type key = t
 
   val yojson_of_t : ('a -> Yojson.Safe.t) -> 'a t -> Yojson.Safe.t
-end
-
-(** internal state of the module
-
-    Under the hood a "next fresh" reference counter is maintained to produce fresh [t]. The
-    [Constants] module also remembers a mapping from certain constants to their corresponding [t].
-    Both of these should be per-procedure only so internal state bookkeeping has to be performed by
-    the interprocedural analysis. *)
-module State : sig
-  type t
-
-  val get : unit -> t
-
-  val set : t -> unit
-
-  val reset : unit -> unit
 end

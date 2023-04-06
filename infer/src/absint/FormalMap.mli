@@ -11,7 +11,7 @@ module F = Format
 (** a map from a formal to its positional index *)
 type t
 
-val make : Procdesc.t -> t
+val make : ProcAttributes.t -> t
 (** create a formal map for the given procdesc *)
 
 val empty : t
@@ -30,7 +30,7 @@ val get_formal_base : int -> t -> AccessPath.base option
 (** return the base var for the given index if it exists, or None if it does not. Note: this is
     linear in the size of the formal map *)
 
-val pp : F.formatter -> t -> unit [@@warning "-32"]
+val pp : F.formatter -> t -> unit [@@warning "-unused-value-declaration"]
 
 val cardinal : t -> int
 

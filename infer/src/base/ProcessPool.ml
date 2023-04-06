@@ -99,7 +99,9 @@ type 'result worker_message =
   | UpdateStatus of int * Mtime.t * string
       (** [(i, t, status)]: starting a task from slot [i], at start time [t], with description
           [status]. Watch out that [status] must not be too close in length to [buffer_size]. *)
-  | Ready of {worker: int; result: 'result}
+  | UpdateHeapWords of int * int
+      (** [(i, heap_words)]: update [heap_words] for slot [i] in the progress bar. *)
+  | Ready of {worker: int; heap_words: int option; result: 'result}
       (** Sent after finishing initializing or after finishing a given task. When received by the
           orchestrator, this moves the worker state from [Initializing] or [Processing _] to [Idle]. *)
   | Crash of int  (** there was an error and the child is no longer receiving messages *)
@@ -180,7 +182,7 @@ let wait_for_updates pool buffer =
 
 let killall pool ~slot status =
   Array.iter pool.slots ~f:(fun {pid} ->
-      match Signal.send Signal.term (`Pid pid) with `Ok | `No_such_process -> () ) ;
+      match Signal_unix.send Signal.term (`Pid pid) with `Ok | `No_such_process -> () ) ;
   Array.iter pool.slots ~f:(fun {pid} ->
       try Unix.wait (`Pid pid) |> ignore
       with Unix.Unix_error (ECHILD, _, _) ->
@@ -254,6 +256,8 @@ let process_updates pool buffer =
   |> List.iter ~f:(function
        | UpdateStatus (slot, t, status) ->
            TaskBar.update_status pool.task_bar ~slot t status
+       | UpdateHeapWords (slot, heap_words) ->
+           TaskBar.update_heap_words pool.task_bar ~slot heap_words
        | Crash slot ->
            (* NOTE: the workers only send this message if {!Config.keep_going} is not [true] so if
               we receive it we know we should fail hard *)
@@ -261,7 +265,7 @@ let process_updates pool buffer =
            (* clean crash, give the child process a chance to cleanup *)
            Unix.wait (`Pid pid) |> ignore ;
            killall pool ~slot "see backtrace above"
-       | Ready {worker= slot; result} ->
+       | Ready {worker= slot; heap_words; result} ->
            ( match pool.children_states.(slot) with
            | Initializing ->
                ()
@@ -270,7 +274,7 @@ let process_updates pool buffer =
            | Idle ->
                L.die InternalError "Received a Ready message from an idle worker@." ) ;
            TaskBar.set_remaining_tasks pool.task_bar (pool.tasks.remaining_tasks ()) ;
-           TaskBar.update_status pool.task_bar ~slot (Mtime_clock.now ()) "idle" ;
+           TaskBar.update_status pool.task_bar ~slot (Mtime_clock.now ()) ?heap_words "idle" ;
            pool.children_states.(slot) <- Idle ) ;
   (* try to schedule more work if there are idle workers *)
   if not (pool.tasks.is_empty ()) then
@@ -321,17 +325,24 @@ let wait_all pool =
   in
   ProcessPoolState.has_running_children := false ;
   ( if not (List.is_empty errors) then
-    let pp_error f (slot, status) =
-      F.fprintf f "Error in infer subprocess %d: %s@." slot
-        (Unix.Exit_or_signal.to_string_hum status)
-    in
-    log_or_die "@[<v>%a@]%!" (Pp.seq ~print_env:Pp.text_break ~sep:"" pp_error) errors ) ;
+      let pp_error f (slot, status) =
+        F.fprintf f "Error in infer subprocess %d: %s@." slot
+          (Unix.Exit_or_signal.to_string_hum status)
+      in
+      log_or_die "@[<v>%a@]%!" (Pp.seq ~print_env:Pp.text_break ~sep:"" pp_error) errors ) ;
   results
 
 
 (** worker loop: wait for tasks and run [f] on them until we are told to go home *)
 let rec child_loop ~slot send_to_parent send_final receive_from_parent ~f ~epilogue ~prev_result =
-  send_to_parent (Ready {worker= slot; result= prev_result}) ;
+  let heap_words =
+    match Config.progress_bar with
+    | `MultiLine ->
+        Some (Gc.quick_stat ()).heap_words
+    | `Plain | `Quiet ->
+        None
+  in
+  send_to_parent (Ready {worker= slot; heap_words; result= prev_result}) ;
   match receive_from_parent () with
   | GoHome -> (
     match epilogue () with
@@ -376,8 +387,6 @@ let fork_child ~child_prologue ~slot (updates_r, updates_w) ~f ~epilogue =
   | `In_the_child ->
       Unix.close updates_r ;
       Unix.close to_child_w ;
-      (* Pin to a core. [setcore] does the modulo <number of cores> for us. *)
-      Utils.set_best_cpu_for slot ;
       ProcessPoolState.in_child := true ;
       ProcessPoolState.reset_pid () ;
       child_prologue () ;
@@ -403,6 +412,15 @@ let fork_child ~child_prologue ~slot (updates_r, updates_w) ~f ~epilogue =
             send_to_parent (UpdateStatus (slot, t, status))
       in
       ProcessPoolState.update_status := update_status ;
+      let update_heap_words () =
+        match Config.progress_bar with
+        | `MultiLine ->
+            let heap_words = (Gc.quick_stat ()).heap_words in
+            send_to_parent (UpdateHeapWords (slot, heap_words))
+        | `Quiet | `Plain ->
+            ()
+      in
+      ProcessPoolState.update_heap_words := update_heap_words ;
       let orders_ic = Unix.in_channel_of_descr to_child_r in
       let receive_from_parent () =
         PerfEvent.log (fun logger ->
@@ -422,22 +440,31 @@ let fork_child ~child_prologue ~slot (updates_r, updates_w) ~f ~epilogue =
       {pid; down_pipe= Unix.out_channel_of_descr to_child_w}
 
 
+module Worker = struct
+  type id = int
+end
+
 let rec create_pipes n = if Int.equal n 0 then [] else Unix.pipe () :: create_pipes (n - 1)
 
 let create :
        jobs:int
-    -> child_prologue:(unit -> unit)
+    -> child_prologue:(Worker.id -> unit)
     -> f:('work -> 'result option)
-    -> child_epilogue:(unit -> 'final)
+    -> child_epilogue:(Worker.id -> 'final)
     -> tasks:(unit -> ('work, 'result) TaskGenerator.t)
     -> ('work, 'final, 'result) t =
  fun ~jobs ~child_prologue ~f ~child_epilogue ~tasks ->
   let task_bar = TaskBar.create ~jobs in
   let children_pipes = create_pipes jobs in
+  (* Flush formatters in the parent before we start forking children. *)
+  L.flush_formatters () ;
   let slots =
     Array.init jobs ~f:(fun slot ->
         let child_pipe = List.nth_exn children_pipes slot in
-        fork_child ~child_prologue ~slot child_pipe ~f ~epilogue:child_epilogue )
+        fork_child
+          ~child_prologue:(fun () -> child_prologue (slot :> Worker.id))
+          ~slot child_pipe ~f
+          ~epilogue:(fun () -> child_epilogue (slot :> Worker.id)) )
   in
   ProcessPoolState.has_running_children := true ;
   Epilogues.register ~description:"Wait children processes exit" ~f:(fun () ->

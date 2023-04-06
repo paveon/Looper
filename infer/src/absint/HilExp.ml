@@ -9,25 +9,17 @@ open! IStd
 module F = Format
 module L = Logging
 
-type typ_ = Typ.t
-
-let yojson_of_typ_ = [%yojson_of: _]
-
-let compare_typ_ _ _ = 0
-
-let equal_typ_ = [%compare.equal: typ_]
-
 module Access = struct
   type ('fieldname, 'array_index) t_ =
     | FieldAccess of 'fieldname
-    | ArrayAccess of typ_ * 'array_index
+    | ArrayAccess of (Typ.t[@ignore]) * 'array_index
     | TakeAddress
     | Dereference
   [@@deriving compare, equal, yojson_of]
 
-  type 'array_index t = (Fieldname.t, 'array_index) t_ [@@deriving compare, yojson_of]
+  type 'array_index t = (Fieldname.t, 'array_index) t_ [@@deriving compare, equal, yojson_of]
 
-  let loose_compare compare_array_index = compare_t_ Fieldname.loose_compare compare_array_index
+  let loose_compare compare_array_index = compare_t_ Fieldname.compare_name compare_array_index
 
   let pp pp_array_index fmt = function
     | FieldAccess field_name ->
@@ -67,10 +59,10 @@ module T : sig
   and access_expression = private
     | Base of AccessPath.base
     | FieldOffset of access_expression * Fieldname.t
-    | ArrayOffset of access_expression * typ_ * t option
+    | ArrayOffset of access_expression * (Typ.t[@ignore]) * t option
     | AddressOf of access_expression
     | Dereference of access_expression
-  [@@deriving compare]
+  [@@deriving compare, equal]
 
   module UnsafeAccessExpression : sig
     val base : AccessPath.base -> access_expression
@@ -106,10 +98,10 @@ end = struct
   and access_expression =
     | Base of AccessPath.base
     | FieldOffset of access_expression * Fieldname.t
-    | ArrayOffset of access_expression * typ_ * t option
+    | ArrayOffset of access_expression * (Typ.t[@ignore]) * t option
     | AddressOf of access_expression
     | Dereference of access_expression
-  [@@deriving compare]
+  [@@deriving compare, equal]
 
   module UnsafeAccessExpression = struct
     let base base = Base base
@@ -234,10 +226,10 @@ module AccessExpression = struct
   type nonrec t = access_expression = private
     | Base of AccessPath.base
     | FieldOffset of access_expression * Fieldname.t
-    | ArrayOffset of access_expression * typ_ * t option
+    | ArrayOffset of access_expression * (Typ.t[@ignore]) * t option
     | AddressOf of access_expression
     | Dereference of access_expression
-  [@@deriving compare]
+  [@@deriving compare, equal]
 
   let pp = pp_access_expr
 
@@ -300,8 +292,6 @@ module AccessExpression = struct
         let base_typ_opt = get_typ ae tenv in
         match base_typ_opt with Some {Typ.desc= Tptr (typ, _)} -> Some typ | _ -> None )
 
-
-  let equal = [%compare.equal: t]
 
   let base_of_id id typ = (Var.of_id id, typ)
 
@@ -655,7 +645,7 @@ and eval = function
       Some c
   | Cast (_, e) ->
       eval e
-  | BinaryOperator (Binop.Div, e1, e2) -> (
+  | BinaryOperator (Binop.DivI, e1, e2) -> (
     try eval_arithmetic_binop IntLit.div e1 e2 with Division_by_zero -> None )
   | BinaryOperator (Binop.MinusA _, e1, e2) ->
       eval_arithmetic_binop IntLit.sub e1 e2

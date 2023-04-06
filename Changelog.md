@@ -1,3 +1,11 @@
+## Next version
+
+### Checkers
+
+- The linter framework ASTLanguage (AL) has been removed. Other linter frameworks, for example clang-based ones, can be used instead.
+
+- [Eradicate](https://fbinfer.com/docs/checker-eradicate) is now deprecated and will be removed in the future.
+
 ## Version 1.1.0
 
 ### Frontends

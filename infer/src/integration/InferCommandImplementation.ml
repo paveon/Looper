@@ -14,64 +14,84 @@ let debug () =
       "Expected at least one of '--global-tenv', '--procedures' or '--source_files'.@\n"
   else (
     ( if Config.global_tenv then
-      match Tenv.load_global () with
-      | None ->
-          L.result "No global type environment was found.@."
-      | Some tenv ->
-          L.result "Global type environment:@\n@[<v>%a@]" Tenv.pp tenv ) ;
+        match Tenv.load_global () with
+        | None ->
+            L.result "No global type environment was found.@."
+        | Some tenv ->
+            L.result "Global type environment:@\n@[<v>%a@]" Tenv.pp tenv ) ;
     ( if Config.procedures then
-      let filter = Lazy.force Filtering.procedures_filter in
-      if Config.procedures_summary || Config.procedures_summary_json then
-        let f_console_output proc_names =
-          let pp_summary fmt proc_name =
-            match Summary.OnDisk.get proc_name with
-            | None ->
-                F.fprintf fmt "No summary found: %a@\n" Procname.pp proc_name
-            | Some summary ->
-                Summary.pp_text fmt summary
+        let filter = Lazy.force Filtering.procedures_filter in
+        if Config.procedures_summary || Config.procedures_summary_json then
+          let summary_of proc_name = Summary.OnDisk.get ~lazy_payloads:false proc_name in
+          let filter =
+            if Config.procedures_summary_skip_empty then fun source_file proc_name ->
+              filter source_file proc_name && Option.is_some (summary_of proc_name)
+            else filter
           in
-          L.result "%t" (fun fmt -> List.iter proc_names ~f:(pp_summary fmt))
-        in
-        let json_of_summary proc_name =
-          Summary.OnDisk.get proc_name |> Option.map ~f:Summary.yojson_of_t
-        in
-        let f_json proc_names =
-          Yojson.Safe.to_channel stdout (`List (List.filter_map ~f:json_of_summary proc_names)) ;
-          Out_channel.newline stdout ;
-          Out_channel.flush stdout
-        in
-        Option.iter
-          (Procedures.select_proc_names_interactive ~filter)
-          ~f:(if Config.procedures_summary_json then f_json else f_console_output)
-      else
-        L.result "%a"
-          Config.(
-            Procedures.pp_all ~filter ~proc_name:procedures_name ~attr_kind:procedures_definedness
-              ~source_file:procedures_source_file ~proc_attributes:procedures_attributes
-              ~proc_cfg:procedures_cfg)
-          () ) ;
+          let f_console_output proc_names =
+            let pp_summary fmt proc_name =
+              match summary_of proc_name with
+              | None ->
+                  F.fprintf fmt "No summary found: %a@\n" Procname.pp proc_name
+              | Some summary ->
+                  Summary.pp_text fmt summary
+            in
+            L.result "%t" (fun fmt -> List.iter proc_names ~f:(pp_summary fmt))
+          in
+          let json_of_summary proc_name =
+            Summary.OnDisk.get ~lazy_payloads:false proc_name |> Option.map ~f:Summary.yojson_of_t
+          in
+          let f_json proc_names =
+            Yojson.Safe.to_channel stdout (`List (List.filter_map ~f:json_of_summary proc_names)) ;
+            Out_channel.newline stdout ;
+            Out_channel.flush stdout
+          in
+          Option.iter
+            (Procedures.select_proc_names_interactive ~filter)
+            ~f:(if Config.procedures_summary_json then f_json else f_console_output)
+        else if Config.procedures_call_graph then
+          let files_to_graph =
+            match SourceFile.read_config_files_to_analyze () with
+            | Some file_set ->
+                SourceFile.Set.elements file_set
+            | None ->
+                SourceFiles.get_all ~filter:(fun _ -> true) ()
+          in
+          SyntacticCallGraph.(build_from_sources files_to_graph |> to_dotty)
+        else
+          L.result "%a"
+            Config.(
+              Procedures.pp_all ~filter ~proc_name:procedures_name ~defined:procedures_definedness
+                ~source_file:procedures_source_file ~proc_attributes:procedures_attributes
+                ~proc_cfg:procedures_cfg )
+            () ) ;
     if Config.source_files then (
-      let filter = Lazy.force Filtering.source_files_filter in
-      L.result "%a"
-        (SourceFiles.pp_all ~filter ~type_environment:Config.source_files_type_environment
-           ~procedure_names:Config.source_files_procedure_names
-           ~freshly_captured:Config.source_files_freshly_captured )
-        () ;
-      if Config.source_files_cfg then (
-        let source_files = SourceFiles.get_all ~filter () in
-        List.iter source_files ~f:(fun source_file ->
-            (* create directory in captured/ *)
-            DB.Results_dir.init ~debug:true source_file ;
-            (* collect the CFGs for all the procedures in [source_file] *)
-            let proc_names = SourceFiles.proc_names_of_source source_file in
-            let cfgs = Procname.Hash.create (List.length proc_names) in
-            List.iter proc_names ~f:(fun proc_name ->
-                Procdesc.load proc_name
-                |> Option.iter ~f:(fun cfg -> Procname.Hash.add cfgs proc_name cfg) ) ;
-            (* emit the dot file in captured/... *)
-            DotCfg.emit_frontend_cfg source_file cfgs ) ;
-        L.result "CFGs written in %s/*/%s@." (ResultsDir.get_path Debug)
-          Config.dotty_frontend_output ) ) )
+      if Config.source_files_call_graph then SourceFileGraph.to_dotty "file-call-graph.dot"
+      else if Option.is_some Config.source_files_call_graph_partition then
+        Option.iter Config.source_files_call_graph_partition ~f:(fun n_workers ->
+            SourceFileGraph.partition_source_file_call_graph ~n_workers )
+      else
+        let filter = Lazy.force Filtering.source_files_filter in
+        L.result "%a"
+          (SourceFiles.pp_all ~filter ~type_environment:Config.source_files_type_environment
+             ~procedure_names:Config.source_files_procedure_names
+             ~freshly_captured:Config.source_files_freshly_captured )
+          () ;
+        if Config.source_files_cfg then (
+          let source_files = SourceFiles.get_all ~filter () in
+          List.iter source_files ~f:(fun source_file ->
+              (* create directory in captured/ *)
+              DB.Results_dir.init ~debug:true source_file ;
+              (* collect the CFGs for all the procedures in [source_file] *)
+              let proc_names = SourceFiles.proc_names_of_source source_file in
+              let cfgs = Procname.Hash.create (List.length proc_names) in
+              List.iter proc_names ~f:(fun proc_name ->
+                  Procdesc.load proc_name
+                  |> Option.iter ~f:(fun cfg -> Procname.Hash.add cfgs proc_name cfg) ) ;
+              (* emit the dot file in captured/... *)
+              DotCfg.emit_frontend_cfg source_file cfgs ) ;
+          L.result "CFGs written in %s/*/%s@." (ResultsDir.get_path Debug)
+            Config.dotty_frontend_output ) ) )
 
 
 let explore () =
@@ -91,7 +111,7 @@ let help () =
     Config.(
       list_checkers || list_issue_types || Option.is_some write_website
       || (not (List.is_empty help_checker))
-      || not (List.is_empty help_issue_type))
+      || not (List.is_empty help_issue_type) )
   then (
     if Config.list_checkers then Help.list_checkers () ;
     if Config.list_issue_types then Help.list_issue_types () ;
@@ -203,6 +223,14 @@ let merge_reports () =
   ReportSet.store acc
 
 
+let merge_report_summaries () =
+  let (), duration_ms =
+    Utils.timeit ~f:(fun () ->
+        DBWriter.merge_report_summaries ~infer_outs:Config.merge_report_summaries )
+  in
+  L.debug Analysis Quiet "Merging report summaries took %d ms.@\n" duration_ms
+
+
 let report () =
   let write_from_json out_path =
     IssuesTest.write_from_json ~json_path:Config.from_json_report ~out_path
@@ -221,23 +249,41 @@ let report () =
     , Config.cost_issues_tests
     , Config.config_impact_issues_tests
     , Config.simple_lineage_json_report
-    , Config.merge_report )
+    , Config.merge_report
+    , Config.merge_report_summaries
+    , Config.pulse_report_flows_from_taint_source
+    , Config.pulse_report_flows_to_taint_sink )
   with
-  | None, None, None, false, [] ->
+  | None, None, None, false, [], _, None, None ->
+      if not (List.is_empty Config.merge_report_summaries) then merge_report_summaries () ;
+      Driver.report ()
+  | _, _, _, _, [], _, Some _, Some _ ->
       L.die UserError
-        "Expected at least one of '--issues-tests', '--cost-issues-tests', \
-         '--config-impact-issues-tests', '--simple-lineage-json-report' or '--merge-report'.@\n"
-  | out_path, cost_out_path, config_impact_out_path, report_lineage, [] ->
+        "Only one of '--pulse-report-flows-from-taint-source' and \
+         '--pulse-report-flows-to-taint-sink' can be used.@\n"
+  | ( out_path
+    , cost_out_path
+    , config_impact_out_path
+    , report_lineage
+    , []
+    , []
+    , taint_source
+    , taint_sink ) ->
       Option.iter out_path ~f:write_from_json ;
       Option.iter cost_out_path ~f:write_from_cost_json ;
       Option.iter config_impact_out_path ~f:write_from_config_impact_json ;
-      if report_lineage then ReportSimpleLineage.report ()
-  | None, None, None, false, _ ->
+      if report_lineage then ReportSimpleLineage.report () ;
+      Option.iter taint_source
+        ~f:(ReportDataFlows.report_data_flows_of_procname ~flow_type:FromSource) ;
+      Option.iter taint_sink ~f:(ReportDataFlows.report_data_flows_of_procname ~flow_type:ToSink)
+  | None, None, None, false, _ :: _, [], None, None ->
       merge_reports ()
-  | _, _, _, _, _ :: _ ->
+  | _, _, _, _, _ :: _, _, _, _ | _, _, _, _, _, _ :: _, _, _ ->
       L.die UserError
-        "Option '--merge-report' cannot be used with '--issues-tests', '--cost-issues-tests', \
-         '--config-impact-issues-tests' or '--simple-lineage-json-report'.@\n"
+        "Options '--merge-report' or '--merge-summaries' cannot be used with '--issues-tests', \
+         '--cost-issues-tests', '--config-impact-issues-tests', '--simple-lineage-json-report', \
+         '--pulse-report-flows-from-taint-source', '--pulse-report-flows-to-taint-sink', or each \
+         other.@\n"
 
 
 let report_diff () =

@@ -14,7 +14,7 @@ module L = Logging
 let new_session node =
   let pname = Procdesc.Node.get_proc_name node in
   let node_id = (Procdesc.Node.get_id node :> int) in
-  match Summary.OnDisk.get pname with
+  match Summary.OnDisk.get ~lazy_payloads:true pname with
   | None ->
       0
   | Some summary ->
@@ -36,9 +36,12 @@ let kind_to_string = function
 
 let with_kind pp_name kind f = Format.fprintf f "[%s] %t" (kind_to_string kind) pp_name
 
+(* turned off in preanalysis *)
+let print_html = ref true
+
 let with_session ?kind ~pp_name node ~f =
   AnalysisState.set_node node ;
-  if Config.write_html then (
+  if Config.write_html && !print_html then (
     L.reset_delayed_prints () ;
     let session = new_session node in
     AnalysisState.set_session session ;

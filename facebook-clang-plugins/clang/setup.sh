@@ -11,21 +11,15 @@ set -o pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CLANG_RELATIVE_SRC="src/download/llvm-project/llvm"
-CLANG_SRC="$SCRIPT_DIR/$CLANG_RELATIVE_SRC"
-CLANG_PREBUILD_PATCHES=(
-    "$SCRIPT_DIR/src/err_ret_local_block.patch"
-    "$SCRIPT_DIR/src/mangle_suppress_errors.patch"
-    "$SCRIPT_DIR/src/AArch64SVEACLETypes.patch"
-    "$SCRIPT_DIR/src/benchmark_register.patch"
-    "$SCRIPT_DIR/src/nsattributedstring.patch"
-)
+CLANG_SRC="${CLANG_SRC:-$SCRIPT_DIR/$CLANG_RELATIVE_SRC}"
 CLANG_PREFIX="$SCRIPT_DIR/install"
 CLANG_INSTALLED_VERSION_FILE="$SCRIPT_DIR/installed.version"
-PATCH=${PATCH:-patch}
 PATCHELF=${PATCHELF:-patchelf}
+PLATFORM=$(uname)
 PLATFORM_ENV=${PLATFORM_ENV:-}
 STRIP=${STRIP:-strip}
 CMAKE=${CMAKE:-cmake}
+ZLIB=${ZLIB:-$CLANG_SRC}
 
 NCPUS="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)"
 JOBS="${JOBS:-$(($NCPUS>=8?$NCPUS/4:2))}"
@@ -45,10 +39,15 @@ usage () {
 }
 
 clang_hash () {
-    pushd "$SCRIPT_DIR" > /dev/null
-    HASH=$($SHASUM setup.sh src/prepare_clang_src.sh | $SHASUM)
-    printf "%s" "$HASH" | cut -d ' ' -f 1
-    popd > /dev/null
+    if [ "$CLANG_HASH_USE_GIT" = "yes" ]; then
+        HASH=$(git -C "$CLANG_SRC" rev-parse HEAD)
+        echo "$HASH"
+    else
+        pushd "$SCRIPT_DIR" > /dev/null
+        HASH=$($SHASUM setup.sh src/prepare_clang_src.sh | $SHASUM)
+        printf "%s" "$HASH" | cut -d ' ' -f 1
+        popd > /dev/null
+    fi
 }
 
 check_installed () {
@@ -158,27 +157,27 @@ if [[ x"$DESTDIR" != x ]]; then
     unset DESTDIR
 fi
 
-platform=`uname`
-
-if [[ "$platform" = "Linux" ]] && [[ -n "${PLATFORM_ENV}" ]] ; then
-    CXXFLAGS="$CXXFLAGS -D _GLIBCXX_INCLUDE_NEXT_C_HEADERS -Wl,-rpath-link,${PLATFORM_ENV}/lib"
+if [[ "$PLATFORM" = "Linux" ]] && [[ -n "${PLATFORM_ENV}" ]] ; then
+    CXXFLAGS="$CXXFLAGS -DHAVE_RPC_XDR_H=0 -D_GLIBCXX_INCLUDE_NEXT_C_HEADERS -Wl,-rpath-link,${PLATFORM_ENV}/lib"
 fi
 
 CMAKE_ARGS=(
-  -DCMAKE_INSTALL_PREFIX="$CLANG_PREFIX"
   -DCMAKE_BUILD_TYPE=Release
   -DCMAKE_C_FLAGS="$CFLAGS $CMAKE_C_FLAGS"
   -DCMAKE_CXX_FLAGS="$CXXFLAGS $CPPFLAGS $CMAKE_CXX_FLAGS"
+  -DCMAKE_INSTALL_PREFIX="$CLANG_PREFIX"
+  -DLLVM_BUILD_EXTERNAL_COMPILER_RT=On
+  -DLLVM_BUILD_TOOLS=Off
   -DLLVM_ENABLE_ASSERTIONS=Off
   -DLLVM_ENABLE_EH=On
   -DLLVM_ENABLE_RTTI=On
   -DLLVM_INCLUDE_DOCS=Off
-  -DLLVM_ENABLE_PROJECTS="clang;compiler-rt;libcxx;libcxxabi;openmp"
+  -DLLVM_INCLUDE_EXAMPLES=Off
+  -DLLVM_INCLUDE_TESTS=Off
   -DLLVM_TARGETS_TO_BUILD="X86;AArch64;ARM;Mips"
-  -DLLVM_BUILD_EXTERNAL_COMPILER_RT=On
 )
 
-if [ "$platform" = "Darwin" ]; then
+if [ "$PLATFORM" = "Darwin" ]; then
     CMAKE_ARGS+=(
       -DLLVM_ENABLE_LIBCXX=On
       -DCMAKE_SHARED_LINKER_FLAGS="$LDFLAGS $CMAKE_SHARED_LINKER_FLAGS"
@@ -187,6 +186,20 @@ if [ "$platform" = "Darwin" ]; then
 else
     CMAKE_ARGS+=(
       -DCMAKE_SHARED_LINKER_FLAGS="$LDFLAGS $CMAKE_SHARED_LINKER_FLAGS -lstdc++ -fPIC"
+    )
+fi
+
+if [[ "$PLATFORM" = "Linux" ]] && [[ -n "${PLATFORM_ENV}" ]] ; then
+    # Please note that this case only applies to infer/master platform builds
+    # Prevent CMAKE from adding -isystem /usr/include for platform builds
+    CMAKE_ARGS+=(
+        -DLLVM_ENABLE_PROJECTS="clang;compiler-rt"
+        -DLLVM_ENABLE_RUNTIMES="libcxx;libcxxabi"
+        -DZLIB_INCLUDE_DIR="$ZLIB/include"
+    )
+else
+    CMAKE_ARGS+=(-DLLVM_ENABLE_PROJECTS="clang;compiler-rt;openmp"
+                 -DLLVM_ENABLE_RUNTIMES="libcxx;libcxxabi"
     )
 fi
 
@@ -221,13 +234,6 @@ if [ ! -d "$CLANG_SRC" ]; then
     exit 1
 fi
 
-# apply prebuild patch
-pushd "${SCRIPT_DIR}/src/download"
-for PATCH_FILE in ${CLANG_PREBUILD_PATCHES[*]}; do
-    "$PATCH" --force -p 1 < "$PATCH_FILE"
-done
-popd
-
 if [ -n "$CLANG_TMP_DIR" ]; then
     TMP=$CLANG_TMP_DIR
 else
@@ -256,11 +262,23 @@ $BUILD_BIN $BUILD_ARGS install
 popd # build
 popd # $TMP
 
+# On Linux, copy __config_site to install directory. This way we don't need additional -I statements
+CONFIG_SITE="$CLANG_PREFIX/include/x86_64-unknown-linux-gnu/c++/v1/__config_site"
+if [[ "$PLATFORM" = "Linux" ]] && [[ -f "$CONFIG_SITE" ]]; then
+    cp -f "$CONFIG_SITE" "$CLANG_PREFIX/include/c++/v1/__config_site"
+fi
+
+# delete libs not needed by Infer
+if [ "$KEEP_LIBS" != "yes" ]; then
+    rm -v "$CLANG_PREFIX"/lib/libclang*
+    rm -v "$CLANG_PREFIX"/lib/libLLVM*
+fi
+
 # brutally strip everything, ignore errors
 set +e
 find "$CLANG_PREFIX"/{bin,lib} -type f -exec "$STRIP" -x \{\} \;
 
-if [[ "$platform" = "Linux" ]] && [[ -n "${PLATFORM_ENV}" ]]; then
+if [[ "$PLATFORM" = "Linux" ]] && [[ -n "${PLATFORM_ENV}" ]]; then
     # patch binaries to use platform_env rpath, ignore errors
     find "$CLANG_PREFIX"/{bin,lib} -type f -exec "$PATCHELF" --set-rpath "${PLATFORM_ENV}/lib" \{\} \;
 fi

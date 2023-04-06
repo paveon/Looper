@@ -14,41 +14,58 @@ module F = Format
 (* based on the build_system and options passed to infer, we run in different driver modes *)
 type mode =
   | Analyze
-  | AnalyzeJson
   | Ant of {prog: string; args: string list}
+  | Buck2Clang of {build_cmd: string list}
+  | Buck2Java of {build_cmd: string list}
   | BuckClangFlavor of {build_cmd: string list}
   | BuckCompilationDB of {deps: BuckMode.clang_compilation_db_deps; prog: string; args: string list}
+  | BuckErlang of {prog: string; args: string list}
   | BuckGenrule of {prog: string}
   | BuckJavaFlavor of {build_cmd: string list}
+  | BxlClang of {build_cmd: string list}
+  | BxlClangFile
   | Clang of {compiler: Clang.compiler; prog: string; args: string list}
   | ClangCompilationDB of {db_files: [`Escaped of string | `Raw of string] list}
   | Gradle of {prog: string; args: string list}
   | Javac of {compiler: Javac.compiler; prog: string; args: string list}
+  | JsonSIL of {cfg_json: string; tenv_json: string}
   | Maven of {prog: string; args: string list}
   | NdkBuild of {build_cmd: string list}
   | Rebar3 of {args: string list}
   | Erlc of {args: string list}
+  | Hackc of {prog: string; args: string list}
+  | Textual of {textualfiles: string list}
   | XcodeBuild of {prog: string; args: string list}
   | XcodeXcpretty of {prog: string; args: string list}
 
 let is_analyze_mode = function Analyze -> true | _ -> false
 
+let is_compatible_with_textual_generation = function Javac _ -> true | _ -> false
+
 let pp_mode fmt = function
   | Analyze ->
       F.fprintf fmt "Analyze driver mode"
-  | AnalyzeJson ->
-      F.fprintf fmt "Analyze json mode"
   | Ant {prog; args} ->
       F.fprintf fmt "Ant driver mode:@\nprog = '%s'@\nargs = %a" prog Pp.cli_args args
+  | Buck2Clang {build_cmd} ->
+      F.fprintf fmt "Buck2/Clang driver mode: build_cmd = %a" Pp.cli_args build_cmd
+  | Buck2Java {build_cmd} ->
+      F.fprintf fmt "Buck2/Java driver mode: build_cmd = %a" Pp.cli_args build_cmd
   | BuckClangFlavor {build_cmd} ->
       F.fprintf fmt "BuckClangFlavor driver mode: build_cmd = %a" Pp.cli_args build_cmd
   | BuckCompilationDB {deps; prog; args} ->
       F.fprintf fmt "BuckCompilationDB driver mode:@\nprog = '%s'@\nargs = %a@\ndeps = %a" prog
         Pp.cli_args args BuckMode.pp_clang_compilation_db_deps deps
+  | BuckErlang {prog; args} ->
+      F.fprintf fmt "BuckErlang driver mode:@\nprog = '%s'@\nargs = %a" prog Pp.cli_args args
   | BuckGenrule {prog} ->
       F.fprintf fmt "BuckGenRule driver mode:@\nprog = '%s'" prog
   | BuckJavaFlavor {build_cmd} ->
       F.fprintf fmt "BuckJavaFlavor driver mode:@\nbuild command = %a" Pp.cli_args build_cmd
+  | BxlClang {build_cmd} ->
+      F.fprintf fmt "BxlClang driver mode:@\nbuild command = %a" Pp.cli_args build_cmd
+  | BxlClangFile ->
+      F.fprintf fmt "BxlClang file driver mode"
   | Clang {prog; args} ->
       F.fprintf fmt "Clang driver mode:@\nprog = '%s'@\nargs = %a" prog Pp.cli_args args
   | ClangCompilationDB _ ->
@@ -57,6 +74,8 @@ let pp_mode fmt = function
       F.fprintf fmt "Gradle driver mode:@\nprog = '%s'@\nargs = %a" prog Pp.cli_args args
   | Javac {prog; args} ->
       F.fprintf fmt "Javac driver mode:@\nprog = '%s'@\nargs = %a" prog Pp.cli_args args
+  | JsonSIL {cfg_json; tenv_json} ->
+      F.fprintf fmt "Json driver mode:@\ncfg_json= '%s'@\ntenv_json = %s" cfg_json tenv_json
   | Maven {prog; args} ->
       F.fprintf fmt "Maven driver mode:@\nprog = '%s'@\nargs = %a" prog Pp.cli_args args
   | NdkBuild {build_cmd} ->
@@ -65,6 +84,14 @@ let pp_mode fmt = function
       F.fprintf fmt "Rebar3 driver mode:@\nargs = %a" Pp.cli_args args
   | Erlc {args} ->
       F.fprintf fmt "Erlc driver mode:@\nargs = %a" Pp.cli_args args
+  | Hackc {prog; args} ->
+      F.fprintf fmt "Hackc driver mode:@\nprog = '%s'@\nargs = %a" prog Pp.cli_args args
+  | Textual {textualfiles} -> (
+    match textualfiles with
+    | [] ->
+        ()
+    | _ :: _ ->
+        F.fprintf fmt "Textual capture mode:@\nfiles = %a" Pp.cli_args textualfiles )
   | XcodeBuild {prog; args} ->
       F.fprintf fmt "XcodeBuild driver mode:@\nprog = '%s'@\nargs = %a" prog Pp.cli_args args
   | XcodeXcpretty {prog; args} ->
@@ -86,9 +113,7 @@ let clean_compilation_command mode =
 let reset_duplicates_file () =
   let start = ResultsDir.get_path DuplicateFunctions in
   let delete () = Unix.unlink start in
-  let create () =
-    Unix.close (Unix.openfile ~perm:0o0666 ~mode:[Unix.O_CREAT; Unix.O_WRONLY] start)
-  in
+  let create () = Unix.close (Unix.openfile ~perm:0o0666 ~mode:[O_CREAT; O_WRONLY] start) in
   if ISys.file_exists start then delete () ;
   create ()
 
@@ -106,62 +131,126 @@ let check_xcpretty () =
 
 
 let capture ~changed_files mode =
-  ( match mode with
-  | Analyze | AnalyzeJson ->
-      ()
-  | Ant {prog; args} ->
-      L.progress "Capturing in ant mode...@." ;
-      Ant.capture ~prog ~args
-  | BuckClangFlavor {build_cmd} ->
-      L.progress "Capturing in buck mode...@." ;
-      BuckFlavors.capture build_cmd
-  | BuckCompilationDB {deps; prog; args} ->
-      L.progress "Capturing using Buck's compilation database...@." ;
-      let db_files =
-        CaptureCompilationDatabase.get_compilation_database_files_buck deps ~prog ~args
-      in
-      CaptureCompilationDatabase.capture ~changed_files ~db_files
-  | BuckGenrule {prog} ->
-      L.progress "Capturing for Buck genrule compatibility...@." ;
-      JMain.from_arguments prog
-  | BuckJavaFlavor {build_cmd} ->
-      L.progress "Capturing for BuckJavaFlavor integration...@." ;
-      BuckJavaFlavor.capture build_cmd
-  | Clang {compiler; prog; args} ->
-      if Config.is_originator then L.progress "Capturing in make/cc mode...@." ;
-      Clang.capture compiler ~prog ~args
-  | ClangCompilationDB {db_files} ->
-      L.progress "Capturing using compilation database...@." ;
-      CaptureCompilationDatabase.capture ~changed_files ~db_files
-  | Gradle {prog; args} ->
-      L.progress "Capturing in gradle mode...@." ;
-      Gradle.capture ~prog ~args
-  | Javac {compiler; prog; args} ->
-      if Config.is_originator then L.progress "Capturing in javac mode...@." ;
-      Javac.capture compiler ~prog ~args
-  | Maven {prog; args} ->
-      L.progress "Capturing in maven mode...@." ;
-      Maven.capture ~prog ~args
-  | NdkBuild {build_cmd} ->
-      L.progress "Capturing in ndk-build mode...@." ;
-      NdkBuild.capture ~build_cmd
-  | Rebar3 {args} ->
-      L.progress "Capturing in rebar3 mode...@." ;
-      Rebar3.capture ~command:"rebar3" ~args
-  | Erlc {args} ->
-      L.progress "Capturing in erlc mode...@." ;
-      Rebar3.capture ~command:"erlc" ~args
-  | XcodeBuild {prog; args} ->
-      L.progress "Capturing in xcodebuild mode...@." ;
-      XcodeBuild.capture ~prog ~args
-  | XcodeXcpretty {prog; args} ->
-      L.progress "Capturing using xcodebuild and xcpretty...@." ;
-      check_xcpretty () ;
-      let db_files =
-        CaptureCompilationDatabase.get_compilation_database_files_xcodebuild ~prog ~args
-      in
-      CaptureCompilationDatabase.capture ~changed_files ~db_files ) ;
-  if Config.sqlite_vacuum then DBWriter.canonicalize ()
+  ( if not (List.is_empty Config.merge_capture) then (
+      let expanded_args = Utils.inline_argument_files Config.merge_capture in
+      let infer_deps_file = ResultsDir.get_path CaptureDependencies in
+      List.map expanded_args ~f:(fun dir -> Printf.sprintf "-\t-\t%s" dir)
+      |> Out_channel.write_lines infer_deps_file ;
+      () )
+    else
+      let dolifiles = Config.capture_doli in
+      ( match dolifiles with
+      | [] ->
+          ()
+      | _ :: _ ->
+          let dfiles =
+            List.map dolifiles ~f:(fun x -> TextualParser.TextualFile.StandaloneFile x)
+          in
+          TextualParser.capture ~capture:DoliCapture dfiles ) ;
+      match mode with
+      | Analyze ->
+          ()
+      | Ant {prog; args} ->
+          L.progress "Capturing in ant mode...@." ;
+          Ant.capture ~prog ~args
+      | Buck2Clang {build_cmd} ->
+          L.progress "Capturing in buck2/clang mode...@." ;
+          Buck2Clang.capture build_cmd
+      | Buck2Java {build_cmd} ->
+          L.progress "Capturing in buck2/java mode...@." ;
+          Buck2Java.capture build_cmd
+      | BuckClangFlavor {build_cmd} ->
+          L.progress "Capturing in buck mode...@." ;
+          BuckFlavors.capture build_cmd
+      | BuckCompilationDB {deps; prog; args} ->
+          L.progress "Capturing using Buck's compilation database...@." ;
+          let db_files =
+            CaptureCompilationDatabase.get_compilation_database_files_buck deps ~prog ~args
+          in
+          CaptureCompilationDatabase.capture ~changed_files ~db_files
+      | BuckErlang {prog; args} ->
+          L.progress "Capturing Erlang using Buck...@." ;
+          Erlang.capture_buck ~command:prog ~args
+      | BuckGenrule {prog} ->
+          L.progress "Capturing for Buck genrule compatibility...@." ;
+          JMain.from_arguments prog
+      | BuckJavaFlavor {build_cmd} ->
+          L.progress "Capturing for BuckJavaFlavor integration...@." ;
+          BuckJavaFlavor.capture build_cmd
+      | BxlClang {build_cmd} ->
+          L.progress "Capturing in bxl/clang mode...@." ;
+          BxlClang.capture build_cmd
+      | BxlClangFile ->
+          L.progress "Capturing in bxl/clang file mode...@." ;
+          BxlClang.file_capture ()
+      | Clang {compiler; prog; args} ->
+          if Config.is_originator then L.progress "Capturing in make/cc mode...@." ;
+          Clang.capture compiler ~prog ~args
+      | ClangCompilationDB {db_files} ->
+          L.progress "Capturing using compilation database...@." ;
+          CaptureCompilationDatabase.capture ~changed_files ~db_files
+      | Gradle {prog; args} ->
+          L.progress "Capturing in gradle mode...@." ;
+          Gradle.capture ~prog ~args
+      | Javac {compiler; prog; args} ->
+          if Config.is_originator then L.progress "Capturing in javac mode...@." ;
+          Javac.capture compiler ~prog ~args
+      | JsonSIL {cfg_json; tenv_json} ->
+          L.progress "Capturing using JSON mode...@." ;
+          CaptureSILJson.capture ~cfg_json ~tenv_json
+      | Maven {prog; args} ->
+          L.progress "Capturing in maven mode...@." ;
+          Maven.capture ~prog ~args
+      | NdkBuild {build_cmd} ->
+          L.progress "Capturing in ndk-build mode...@." ;
+          NdkBuild.capture ~build_cmd
+      | Rebar3 {args} ->
+          L.progress "Capturing in rebar3 mode...@." ;
+          Erlang.capture ~command:"rebar3" ~args
+      | Erlc {args} ->
+          L.progress "Capturing in erlc mode...@." ;
+          Erlang.capture ~command:"erlc" ~args
+      | Hackc {prog; args} ->
+          L.progress "Capturing in hackc mode...@." ;
+          Hack.capture ~prog ~args
+      | Textual {textualfiles} ->
+          let tfiles =
+            List.map textualfiles ~f:(fun x -> TextualParser.TextualFile.StandaloneFile x)
+          in
+          TextualParser.capture ~capture:TextualCapture tfiles
+      | XcodeBuild {prog; args} ->
+          L.progress "Capturing in xcodebuild mode...@." ;
+          XcodeBuild.capture ~prog ~args
+      | XcodeXcpretty {prog; args} ->
+          L.progress "Capturing using xcodebuild and xcpretty...@." ;
+          check_xcpretty () ;
+          let db_files =
+            CaptureCompilationDatabase.get_compilation_database_files_xcodebuild ~prog ~args
+          in
+          CaptureCompilationDatabase.capture ~changed_files ~db_files ) ;
+  let should_merge =
+    match mode with
+    | Buck2Clang _
+    | Buck2Java _
+    | BuckClangFlavor _
+    | BuckJavaFlavor _
+    | BxlClang _
+    | BxlClangFile
+    | Gradle _ ->
+        true
+    | _ ->
+        not (List.is_empty Config.merge_capture)
+  in
+  if should_merge then (
+    if Config.export_changed_functions then MergeCapture.merge_changed_functions () ;
+    let root =
+      match mode with
+      | Buck2Clang _ | BxlClang _ | BxlClangFile ->
+          Config.buck2_root
+      | _ ->
+          Config.project_root
+    in
+    MergeCapture.merge_captured_targets ~root )
 
 
 (* shadowed for tracing *)
@@ -183,18 +272,7 @@ let execute_analyze ~changed_files =
   PerfEvent.(log (fun logger -> log_end_event logger ()))
 
 
-let execute_analyze_json () =
-  match (Config.cfg_json, Config.tenv_json) with
-  | Some cfg_json, Some tenv_json ->
-      InferAnalyzeJson.analyze_json cfg_json tenv_json
-  | _, _ ->
-      L.user_warning
-        "** Missing cfg or tenv json files. Provide them as arguments throught '--cfg-json' and \
-         '--tenv-json' **\n" ;
-      ()
-
-
-let report ?(suppress_console = false) () =
+let report () =
   let issues_json = ResultsDir.get_path ReportJson in
   let costs_json = ResultsDir.get_path ReportCostsJson in
   let config_impact_json = ResultsDir.get_path ReportConfigImpactJson in
@@ -203,30 +281,30 @@ let report ?(suppress_console = false) () =
   (* Post-process the report according to the user config.
      Do not bother calling the report hook when called from within Buck. *)
   if not Config.buck_cache_mode then (
-    (* Create a dummy bugs.txt file for backwards compatibility. TODO: Stop doing that one day. *)
-    Utils.with_file_out (Config.results_dir ^/ "bugs.txt") ~f:(fun outc ->
-        Out_channel.output_string outc "The contents of this file have moved to report.txt.\n" ) ;
-    TextReport.create_from_json
-      ~quiet:(Config.quiet || suppress_console)
-      ~console_limit:Config.report_console_limit ~report_txt:(ResultsDir.get_path ReportText)
-      ~report_json:issues_json ;
+    TextReport.create_from_json ~quiet:Config.quiet ~console_limit:Config.report_console_limit
+      ~report_txt:(ResultsDir.get_path ReportText) ~report_json:issues_json ;
     if Config.pmd_xml then
       XMLReport.write ~xml_path:(ResultsDir.get_path ReportXML) ~json_path:issues_json ;
     if Config.sarif then
       SarifReport.create_from_json ~report_sarif:(ResultsDir.get_path ReportSarif)
         ~report_json:issues_json ;
+    if Config.is_checker_enabled Checker.Datalog then
+      DatalogFacts.create_from_json
+        ~datalog_dir:(ResultsDir.get_path DatalogFacts)
+        ~report_json:issues_json ;
     () ) ;
+  if Config.export_changed_functions then TestDeterminator.merge_changed_functions_results () ;
   if Config.(test_determinator && process_clang_ast) then
     TestDeterminator.merge_test_determinator_results () ;
   ()
 
 
 (* shadowed for tracing *)
-let report ?suppress_console () =
+let report () =
   GCStats.log_f ~name:"report" Analysis
   @@ fun () ->
   PerfEvent.(log (fun logger -> log_begin_event logger ~name:"report" ())) ;
-  report ?suppress_console () ;
+  report () ;
   PerfEvent.(log (fun logger -> log_end_event logger ()))
 
 
@@ -246,48 +324,30 @@ let error_nothing_to_analyze mode =
   L.progress "There was nothing to analyze.@."
 
 
-let analyze_and_report ?suppress_console_report ~changed_files mode =
-  let should_analyze, should_report =
-    match (Config.command, mode) with
-    | _, BuckClangFlavor _ when not (Option.exists ~f:BuckMode.is_clang_flavors Config.buck_mode) ->
-        (* In Buck mode when compilation db is not used, analysis is invoked from capture if buck flavors are not used *)
-        (false, false)
-    | _ when Config.infer_is_clang || Config.infer_is_javac ->
-        (* Called from another integration to do capture only. *)
-        (false, false)
-    | (Capture | Compile | Debug | Explore | Help | Report | ReportDiff), _ ->
-        (false, false)
-    | (Analyze | AnalyzeJson | Run), _ ->
-        (true, true)
-  in
-  let should_analyze = should_analyze && Config.capture in
-  let should_merge =
-    match mode with
-    | _ when Config.merge ->
-        (* [--merge] overrides other behaviors *)
-        true
-    | Analyze | BuckClangFlavor _ | BuckJavaFlavor _ | Gradle _ ->
-        ResultsDir.RunState.get_merge_capture ()
-    | _ ->
-        false
-  in
-  let analyze_json = match mode with AnalyzeJson -> true | _ -> false in
-  if should_merge then (
-    if Config.export_changed_functions then MergeCapture.merge_changed_functions () ;
-    MergeCapture.merge_captured_targets () ;
-    ResultsDir.RunState.set_merge_capture false ) ;
-  if should_analyze then
-    if analyze_json then execute_analyze_json ()
-    else if SourceFiles.is_empty () && Config.capture then error_nothing_to_analyze mode
-    else (
-      execute_analyze ~changed_files ;
-      if Config.starvation_whole_program then StarvationGlobalAnalysis.whole_program_analysis () ) ;
-  if should_report && Config.report then report ?suppress_console:suppress_console_report ()
+let analyze_and_report ~changed_files mode =
+  match (Config.command, mode) with
+  | _, BuckClangFlavor _ when not (Option.exists ~f:BuckMode.is_clang Config.buck_mode) ->
+      (* In Buck mode when compilation db is not used, analysis is invoked from capture if buck flavors are not used *)
+      ()
+  | _ when Config.infer_is_clang || Config.infer_is_javac ->
+      (* Called from another integration to do capture only. *) ()
+  | (Capture | Compile | Debug | Explore | Help | Report | ReportDiff), _ ->
+      ()
+  | (Analyze | Run), _ when Config.invalidate_only ->
+      ()
+  | (Analyze | Run), _ ->
+      if Config.capture then
+        if SourceFiles.is_empty () then error_nothing_to_analyze mode
+        else (
+          execute_analyze ~changed_files ;
+          if Config.starvation_whole_program then StarvationGlobalAnalysis.whole_program_analysis () ;
+          if Config.shrink_analysis_db then DBWriter.shrink_analysis_db () ) ;
+      if Config.report then report ()
 
 
-let analyze_and_report ?suppress_console_report ~changed_files mode =
+let analyze_and_report ~changed_files mode =
   ScubaLogging.execute_with_time_logging "analyze_and_report" (fun () ->
-      analyze_and_report ?suppress_console_report ~changed_files mode )
+      analyze_and_report ~changed_files mode )
 
 
 (** as the Config.fail_on_bug flag mandates, exit with error when an issue is reported *)
@@ -313,6 +373,8 @@ let assert_supported_mode required_analyzer requested_mode_string =
         Version.java_enabled
     | `Erlang ->
         Version.erlang_enabled
+    | `Hack ->
+        Version.hack_enabled
     | `Xcode ->
         Version.clang_enabled && Version.xcode_enabled
   in
@@ -327,6 +389,8 @@ let assert_supported_mode required_analyzer requested_mode_string =
           "java"
       | `Erlang ->
           "erlang"
+      | `Hack ->
+          "hack"
       | `Xcode ->
           "clang and xcode"
     in
@@ -339,8 +403,8 @@ let assert_supported_mode required_analyzer requested_mode_string =
 let error_no_buck_mode_specified () =
   L.die UserError
     "`buck` command detected on the command line but no Buck integration has been selected. Please \
-     specify `--buck-clang`, `--buck-java`, or `--buck-compilation-database`. See `infer capture \
-     --help` for more information."
+     specify `--buck-clang`, `--buck-java`, `--buck-erlang`, or `--buck-compilation-database`. See \
+     `infer capture --help` for more information."
 
 
 let assert_supported_build_system build_system =
@@ -353,6 +417,8 @@ let assert_supported_build_system build_system =
       Config.string_of_build_system build_system |> assert_supported_mode `Erlang
   | BErlc ->
       Config.string_of_build_system build_system |> assert_supported_mode `Erlang
+  | BHackc ->
+      Config.string_of_build_system build_system |> assert_supported_mode `Hack
   | BXcode ->
       Config.string_of_build_system build_system |> assert_supported_mode `Xcode
   | BBuck ->
@@ -360,23 +426,53 @@ let assert_supported_build_system build_system =
         match Config.buck_mode with
         | None ->
             error_no_buck_mode_specified ()
-        | Some ClangFlavors ->
+        | Some Clang ->
             (`Clang, "buck with flavors")
         | Some (ClangCompilationDB _) ->
             (`Clang, "buck compilation database")
-        | Some JavaFlavor ->
+        | Some Java ->
             (`Java, Config.string_of_build_system build_system)
+        | Some Erlang ->
+            L.die UserError "Unsupported buck2 integration."
+      in
+      assert_supported_mode analyzer build_string
+  | BBuck2 ->
+      let analyzer, build_string =
+        match Config.buck_mode with
+        | None ->
+            error_no_buck_mode_specified ()
+        | Some Clang ->
+            (`Clang, Config.string_of_build_system build_system)
+        | Some Erlang ->
+            (`Erlang, Config.string_of_build_system build_system)
+        | Some Java ->
+            (`Java, Config.string_of_build_system build_system)
+        | Some (ClangCompilationDB _) ->
+            L.die UserError "Unsupported buck2 integration."
       in
       assert_supported_mode analyzer build_string
 
 
 let mode_of_build_command build_cmd (buck_mode : BuckMode.t option) =
   match build_cmd with
-  | [] ->
-      if not (List.is_empty Config.clang_compilation_dbs) then (
-        assert_supported_mode `Clang "clang compilation database" ;
-        ClangCompilationDB {db_files= Config.clang_compilation_dbs} )
-      else Analyze
+  | [] when Config.bxl_file_capture ->
+      BxlClangFile
+  | [] -> (
+      let textualfiles = Config.capture_textual in
+      match (Config.clang_compilation_dbs, textualfiles) with
+      | _ :: _, _ :: _ ->
+          L.die UserError "Both --clang-compilation-dbs and --capture-textual are set."
+      | _ :: _, [] ->
+          assert_supported_mode `Clang "clang compilation database" ;
+          ClangCompilationDB {db_files= Config.clang_compilation_dbs}
+      | [], _ :: _ ->
+          Textual {textualfiles}
+      | [], [] -> (
+        match (Config.cfg_json, Config.tenv_json) with
+        | Some cfg_json, Some tenv_json ->
+            JsonSIL {cfg_json; tenv_json}
+        | _ ->
+            Analyze ) )
   | prog :: args -> (
       let build_system =
         match Config.force_integration with
@@ -386,43 +482,63 @@ let mode_of_build_command build_cmd (buck_mode : BuckMode.t option) =
             Config.build_system_of_exe_name (Filename.basename prog)
       in
       assert_supported_build_system build_system ;
-      match ((build_system : Config.build_system), buck_mode) with
-      | BAnt, _ ->
+      match (build_system : Config.build_system) with
+      | BAnt ->
           Ant {prog; args}
-      | BBuck, None ->
-          error_no_buck_mode_specified ()
-      | BBuck, Some (ClangCompilationDB deps) ->
-          BuckCompilationDB {deps; prog; args= List.append args Config.buck_build_args}
-      | BBuck, Some ClangFlavors when Config.is_checker_enabled Linters ->
-          L.user_warning
-            "WARNING: the linters require --buck-compilation-database to be set.@ Alternatively, \
-             set --no-linters to disable them and this warning.@." ;
-          BuckClangFlavor {build_cmd}
-      | BBuck, Some JavaFlavor ->
-          BuckJavaFlavor {build_cmd}
-      | BBuck, Some ClangFlavors ->
-          BuckClangFlavor {build_cmd}
-      | BClang, _ ->
+      | BBuck -> (
+        match buck_mode with
+        | None ->
+            error_no_buck_mode_specified ()
+        | Some (ClangCompilationDB deps) ->
+            BuckCompilationDB {deps; prog; args= List.append args Config.buck_build_args}
+        | Some Clang when Config.process_clang_ast ->
+            L.user_warning
+              "WARNING: the clang AST can only be processed when --buck-compilation-database is \
+               set.@ Alternatively, set --no-process-clang-ast to disable this warning.@." ;
+            BuckClangFlavor {build_cmd}
+        | Some Java ->
+            BuckJavaFlavor {build_cmd}
+        | Some Clang ->
+            BuckClangFlavor {build_cmd}
+        | Some buck_mode ->
+            L.die UserError "%a not supported in buck1.@." BuckMode.pp buck_mode )
+      | BBuck2 -> (
+        match buck_mode with
+        | None ->
+            error_no_buck_mode_specified ()
+        | Some Erlang ->
+            BuckErlang {prog; args}
+        | Some Clang when Config.buck2_use_bxl ->
+            BxlClang {build_cmd}
+        | Some Clang ->
+            Buck2Clang {build_cmd}
+        | Some Java ->
+            Buck2Java {build_cmd}
+        | Some buck_mode ->
+            L.die UserError "%a is not supported with buck2.@." BuckMode.pp buck_mode )
+      | BClang ->
           Clang {compiler= Clang.Clang; prog; args}
-      | BGradle, _ ->
+      | BGradle ->
           Gradle {prog; args}
-      | BJava, _ ->
+      | BJava ->
           Javac {compiler= Javac.Java; prog; args}
-      | BJavac, _ ->
+      | BJavac ->
           Javac {compiler= Javac.Javac; prog; args}
-      | BMake, _ ->
+      | BMake ->
           Clang {compiler= Clang.Make; prog; args}
-      | BMvn, _ ->
+      | BMvn ->
           Maven {prog; args}
-      | BNdk, _ ->
+      | BNdk ->
           NdkBuild {build_cmd}
-      | BRebar3, _ ->
+      | BRebar3 ->
           Rebar3 {args}
-      | BErlc, _ ->
+      | BErlc ->
           Erlc {args}
-      | BXcode, _ when Config.xcpretty ->
+      | BHackc ->
+          Hackc {prog; args}
+      | BXcode when Config.xcpretty ->
           XcodeXcpretty {prog; args}
-      | BXcode, _ ->
+      | BXcode ->
           XcodeBuild {prog; args} )
 
 

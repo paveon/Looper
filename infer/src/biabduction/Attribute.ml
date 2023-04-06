@@ -241,7 +241,7 @@ let find_arithmetic_problem tenv proc_node_session prop exp =
     | Exp.UnOp (_, e, _) ->
         walk e
     | Exp.BinOp (op, e1, e2) ->
-        if Binop.equal op Binop.Div || Binop.equal op Binop.Mod then
+        if Binop.equal op DivI || Binop.equal op DivF || Binop.equal op Mod then
           exps_divided := e2 :: !exps_divided ;
         walk e1 ;
         walk e2
@@ -318,7 +318,7 @@ let deallocate_stack_vars tenv (p : 'a Prop.t) pvars =
     let do_var (v, freshv) =
       (* static locals are not stack-allocated *)
       if not (Pvar.is_static_local v) then
-        (* the address of a de-allocated stack var in in the post *)
+        (* the address of a de-allocated stack var is in the post *)
         if Ident.Set.mem freshv p'_fav then (
           stack_vars_address_in_post := v :: !stack_vars_address_in_post ;
           let pred = Predicates.Apred (Adangling DAaddr_stack_var, [Exp.Var freshv]) in

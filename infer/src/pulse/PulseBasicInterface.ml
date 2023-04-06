@@ -13,11 +13,11 @@ module AbstractValue = PulseAbstractValue
 module Attribute = PulseAttribute
 module Attributes = PulseAttribute.Attributes
 module CallEvent = PulseCallEvent
-module Diagnostic = PulseDiagnostic
+module Formula = PulseFormula
 module Invalidation = PulseInvalidation
-module PathCondition = PulsePathCondition
 module SatUnsat = PulseSatUnsat
 module SkippedCalls = PulseSkippedCalls
+module Taint = PulseTaint
 module Timestamp = PulseTimestamp
 module Trace = PulseTrace
 module ValueHistory = PulseValueHistory
@@ -26,20 +26,18 @@ include SatUnsat.Types
 (** {2 Enforce short form usage} *)
 
 include struct
-  [@@@warning "-60"]
+  [@@@warning "-unused-module"]
 
   module PulseAbstractValue = PulseAbstractValue
   [@@deprecated "use the short form AbstractValue instead"]
   module PulseAttribute = PulseAttribute [@@deprecated "use the short form Attribute instead"]
   module PulseCallEvent = PulseCallEvent [@@deprecated "use the short form CallEvent instead"]
-  module PulseDiagnostic = PulseDiagnostic [@@deprecated "use the short form Diagnostic instead"]
   module PulseInvalidation = PulseInvalidation
   [@@deprecated "use the short form Invalidation instead"]
-  module PulsePathCondition = PulsePathCondition
-  [@@deprecated "use the short form PathCondition instead"]
   module PulseTimestamp = PulseTimestamp [@@deprecated "use the short form Timestamp instead"]
   module PulseSkippedCalls = PulseSkippedCalls
   [@@deprecated "use the short form SkippedCalls instead"]
+  module PulseTaint = PulseTaint [@@deprecated "use the short form Taint instead"]
   module PulseTrace = PulseTrace [@@deprecated "use the short form Trace instead"]
   module PulseValueHistory = PulseValueHistory
   [@@deprecated "use the short form ValueHistory instead"]

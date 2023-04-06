@@ -12,6 +12,8 @@ type 'a t [@@deriving compare, equal]
 val empty : 'a t
 (** Return empty list *)
 
+val is_empty : 'a t -> bool
+
 val cons : 'a -> 'a t -> 'a t
 (** Add an element to the end of list *)
 
@@ -20,6 +22,9 @@ val to_list : 'a t -> 'a list
 
 val of_list : 'a list -> 'a t
 (** Make reverse-ordered list from normal-ordered one *)
+
+val append : 'a t -> 'a t -> 'a t
+(** [append (of_list l1) (of_list l2)] is the same as [of_list (List.append l1 l2)] *)
 
 val exists : 'a t -> f:('a -> bool) -> bool
 (** Similar to [List.exists] *)

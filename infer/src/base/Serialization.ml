@@ -22,7 +22,7 @@ module Key = struct
 
   (** Current keys for various serializable objects. The keys are computed using the [generate_keys]
       function below *)
-  let tenv, issues = ({name= "tenv"; key= 425184201}, {name= "issues"; key= 852343110})
+  let tenv = {name= "tenv"; key= 425184201}
 end
 
 (** version of the binary files, to be incremented for each change *)
@@ -49,7 +49,7 @@ let create_serializer (key : Key.t) : 'a serializer =
        so the deserialization cannot read a file while it is being written. *)
     let filename = DB.filename_to_string fname in
     PerfEvent.(
-      log (fun logger -> log_begin_event logger ~name:("reading " ^ key.name) ~categories:["io"] ())) ;
+      log (fun logger -> log_begin_event logger ~name:("reading " ^ key.name) ~categories:["io"] ()) ) ;
     let result =
       try Utils.with_file_in filename ~f:(fun inc -> read_data (Marshal.from_channel inc) filename)
       with Sys_error _ -> None
@@ -60,7 +60,7 @@ let create_serializer (key : Key.t) : 'a serializer =
   let write_to_file ~(data : 'a) (fname : DB.filename) =
     let filename = DB.filename_to_string fname in
     PerfEvent.(
-      log (fun logger -> log_begin_event logger ~name:("writing " ^ key.name) ~categories:["io"] ())) ;
+      log (fun logger -> log_begin_event logger ~name:("writing " ^ key.name) ~categories:["io"] ()) ) ;
     Utils.with_intermediate_temp_file_out filename ~f:(fun outc ->
         Marshal.to_channel outc (key.key, version, data) [] ) ;
     PerfEvent.(log (fun logger -> log_end_event logger ()))

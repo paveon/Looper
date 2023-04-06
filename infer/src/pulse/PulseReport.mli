@@ -7,18 +7,19 @@
 
 open! IStd
 open PulseDomainInterface
-open PulseBasicInterface
 
-[@@@warning "-32"]
+[@@@warning "-unused-value-declaration"]
 
-val report : latent:bool -> Procdesc.t -> Errlog.t -> Diagnostic.t -> unit
+val report : is_suppressed:bool -> latent:bool -> Procdesc.t -> Errlog.t -> Diagnostic.t -> unit
 
 val report_summary_error :
      Tenv.t
   -> Procdesc.t
   -> Errlog.t
-  -> AbductiveDomain.summary AccessResult.error
-  -> _ ExecutionDomain.base_t
+  -> AccessResult.error * AbductiveDomain.Summary.t
+  -> _ ExecutionDomain.base_t option
+(** [None] means that the execution can continue but we could not compute the continuation state
+    (because this only takes a [AccessResult.error], which doesn't have the ok state) *)
 
 val report_result :
      Tenv.t

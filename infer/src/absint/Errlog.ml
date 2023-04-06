@@ -84,8 +84,6 @@ type err_data =
   ; loc_in_ml_source: L.ocaml_pos option
   ; loc_trace: loc_trace
   ; visibility: IssueType.visibility
-  ; linters_def_file: string option
-  ; doc_url: string option
   ; access: string option
   ; extras: Jsonbug_t.extra option (* NOTE: Please consider adding new fields as part of extras *)
   }
@@ -106,7 +104,7 @@ module ErrLogHash = struct
     let hash key = Hashtbl.hash (key.severity, key.issue_type, Localise.error_desc_hash key.err_desc)
 
     let equal key1 key2 =
-      [%compare.equal: IssueType.severity * IssueType.t] (key1.severity, key1.issue_type)
+      [%equal: IssueType.severity * IssueType.t] (key1.severity, key1.issue_type)
         (key2.severity, key2.issue_type)
       && Localise.error_desc_equal key1.err_desc key2.err_desc
   end
@@ -196,8 +194,8 @@ let update errlog_old errlog_new =
   ErrLogHash.iter (fun err_key l -> ignore (add_issue errlog_old err_key l)) errlog_new
 
 
-let log_issue ?severity_override err_log ~loc ~node ~session ~ltr ~linters_def_file ~doc_url ~access
-    ~extras checker (error : IssueToReport.t) =
+let log_issue ?severity_override err_log ~loc ~node ~session ~ltr ~access ~extras checker
+    (error : IssueToReport.t) =
   if not (IssueType.checker_can_report checker error.issue_type) then
     L.die InternalError
       "Issue type \"%s\" cannot be reported by the checker \"%s\". The only checker that is \
@@ -241,8 +239,6 @@ let log_issue ?severity_override err_log ~loc ~node ~session ~ltr ~linters_def_f
         ; loc_in_ml_source= error.ocaml_pos
         ; loc_trace= ltr
         ; visibility= error.issue_type.visibility
-        ; linters_def_file
-        ; doc_url
         ; access
         ; extras }
       in
@@ -268,7 +264,7 @@ let log_issue ?severity_override err_log ~loc ~node ~session ~ltr ~linters_def_f
               L.d_error
           | Warning ->
               L.d_warning
-          | Info | Advice | Like ->
+          | Info | Advice ->
               L.d_info
         in
         d warn_str ;

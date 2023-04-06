@@ -8,7 +8,7 @@ TESTS_DIR = ../../..
 CLANG_OPTIONS = -c $(OBJC_CLANG_OPTIONS)
 
 CLEAN_EXTRA = infer-out-arc infer-out-all infer-out-all infer-out-arc \
-              issues.exp.test.all issues.exp.test.arc issues.exp.test.default
+              issues.exp.test.all issues.exp.test.arc issues.exp.test.default $(wildcard *.o)
 INFER_OPTIONS = --biabduction-only --dump-duplicate-symbols --debug-exceptions --project-root $(TESTS_DIR)
 INFERPRINT_OPTIONS = --issues-tests
 
@@ -27,7 +27,6 @@ SOURCES_DEFAULT = \
   resource_leaks/Dispatch_sources.m \
   shared/block/block-it.m \
   shared/block/dispatch.m \
-  shared/category_procdesc/EOCPerson.m \
   shared/memory_leaks_benchmark/ArcExample.m \
   shared/memory_leaks_benchmark/AutoreleaseExample.m \
   shared/memory_leaks_benchmark/RetainReleaseExample.m \
@@ -55,7 +54,6 @@ SOURCES_BUCKET_ALL = \
   shared/block/block_release.m \
   shared/block/dispatch_in_macro.m \
   shared/block/Blocks_as_parameters.m \
-  shared/category_procdesc/main.c \
   shared/field_superclass/SuperExample.m \
   shared/npe/npe_malloc.m \
   warnings/ParameterNotNullableExample.m \

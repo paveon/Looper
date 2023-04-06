@@ -92,6 +92,21 @@ let get_method_body method_decl =
       raise CFrontend_errors.Invalid_declaration
 
 
+let get_point_of_instantiation method_decl =
+  let open Clang_ast_t in
+  match method_decl with
+  | FunctionDecl (_, _, _, function_decl_info)
+  | CXXMethodDecl (_, _, _, function_decl_info, _)
+  | CXXConstructorDecl (_, _, _, function_decl_info, _)
+  | CXXConversionDecl (_, _, _, function_decl_info, _)
+  | CXXDestructorDecl (_, _, _, function_decl_info, _) ->
+      function_decl_info.fdi_point_of_instantiation
+  | ObjCMethodDecl _ | BlockDecl _ ->
+      None
+  | _ ->
+      raise CFrontend_errors.Invalid_declaration
+
+
 let is_cpp_lambda_call_operator meth_decl =
   let open Clang_ast_t in
   match meth_decl with
@@ -113,6 +128,48 @@ let is_cpp_virtual method_decl =
   | CXXConversionDecl (_, _, _, _, mdi)
   | CXXDestructorDecl (_, _, _, _, mdi) ->
       mdi.xmdi_is_virtual
+  | _ ->
+      false
+
+
+let is_cpp_copy_assignment method_decl =
+  let open Clang_ast_t in
+  match method_decl with
+  | CXXMethodDecl (_, _, _, _, mdi)
+  | CXXConstructorDecl (_, _, _, _, mdi)
+  | CXXConversionDecl (_, _, _, _, mdi)
+  | CXXDestructorDecl (_, _, _, _, mdi) ->
+      mdi.xmdi_is_copy_assignment
+  | _ ->
+      false
+
+
+let is_cpp_copy_ctor method_decl =
+  let open Clang_ast_t in
+  match method_decl with
+  | CXXConstructorDecl (_, _, _, _, {xmdi_is_copy_constructor}) ->
+      xmdi_is_copy_constructor
+  | _ ->
+      false
+
+
+let is_cpp_move_ctor method_decl =
+  let open Clang_ast_t in
+  match method_decl with
+  | CXXConstructorDecl (_, _, _, _, {xmdi_is_move_constructor}) ->
+      xmdi_is_move_constructor
+  | _ ->
+      false
+
+
+let is_cpp_deleted method_decl =
+  let open Clang_ast_t in
+  match method_decl with
+  | CXXConstructorDecl (_, _, _, fdi, _)
+  | CXXConversionDecl (_, _, _, fdi, _)
+  | CXXDestructorDecl (_, _, _, fdi, _)
+  | CXXMethodDecl (_, _, _, fdi, _) ->
+      fdi.fdi_is_deleted
   | _ ->
       false
 

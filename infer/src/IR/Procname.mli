@@ -44,7 +44,7 @@ module Java : sig
         (** in Java, procedures called with invokevirtual, invokespecial, and invokeinterface *)
     | Static  (** in Java, procedures called with invokestatic *)
 
-  type t [@@deriving compare]
+  type t [@@deriving compare, equal]
 
   val to_simplified_string : ?withclass:bool -> t -> string
 
@@ -140,13 +140,14 @@ module Parameter : sig
 end
 
 module ObjC_Cpp : sig
+  type mangled = string option [@@deriving compare]
+
   type kind =
-    | CPPMethod of {mangled: string option}
-    | CPPConstructor of {mangled: string option}
-    | CPPDestructor of {mangled: string option}
+    | CPPMethod of mangled
+    | CPPConstructor of mangled
+    | CPPDestructor of mangled
     | ObjCClassMethod
     | ObjCInstanceMethod
-    | ObjCInternalMethod
   [@@deriving compare]
 
   (** Type of Objective C and C++ procedure names: method signatures. *)
@@ -155,6 +156,7 @@ module ObjC_Cpp : sig
     ; kind: kind
     ; method_name: string
     ; parameters: Parameter.clang_parameter list
+          (** NOTE: [parameters] should NOT include additional [this/self] or [__return_param]. *)
     ; template_args: Typ.template_spec_info }
   [@@deriving compare]
 
@@ -164,7 +166,7 @@ module ObjC_Cpp : sig
 
   val get_class_name : t -> string
 
-  val get_class_type_name : t -> Typ.Name.t [@@warning "-32"]
+  val get_class_type_name : t -> Typ.Name.t [@@warning "-unused-value-declaration"]
 
   val get_class_qualifiers : t -> QualifiedCppName.t
 
@@ -173,9 +175,6 @@ module ObjC_Cpp : sig
 
   val is_objc_constructor : string -> bool
   (** Check if this is a constructor method in Objective-C. *)
-
-  val is_objc_dealloc : string -> bool
-  (** Check if this is a dealloc method in Objective-C. *)
 
   val is_destructor : t -> bool
   (** Check if this is a dealloc method. *)
@@ -193,7 +192,11 @@ module C : sig
     ; template_args: Typ.template_spec_info }
 
   val c :
-    QualifiedCppName.t -> string -> Parameter.clang_parameter list -> Typ.template_spec_info -> t
+       QualifiedCppName.t
+    -> ?mangled:string
+    -> Parameter.clang_parameter list
+    -> Typ.template_spec_info
+    -> t
   (** Create a C procedure name from plain and mangled name. *)
 
   val is_make_shared : t -> bool
@@ -210,8 +213,6 @@ module Block : sig
 
   type t = {block_type: block_type; parameters: Parameter.clang_parameter list} [@@deriving compare]
 
-  val make_surrounding : Typ.name option -> string -> Parameter.clang_parameter list -> t
-
   val make_in_outer_scope : block_type -> int -> Parameter.clang_parameter list -> t
 end
 
@@ -219,23 +220,38 @@ module Erlang : sig
   type t = private {module_name: string; function_name: string; arity: int}
 end
 
-(** Type of procedure names. WithBlockParameters is used for creating an instantiation of a method
-    that contains block parameters and it's called with concrete blocks. For example:
+module FunctionParameters : sig
+  type t = private FunPtr of C.t | Block of Block.t
+end
+
+module Hack : sig
+  type t = private {class_name: HackClassName.t option; function_name: string}
+end
+
+(** Type of procedure names. WithFunctionParameters is used for creating an instantiation of a
+    method that contains function parameters and it's called with concrete functions. For example:
     [foo(Block block) {block();}] [bar() {foo(my_block)}] is executed as
-    [foo_my_block() {my_block(); }] where foo_my_block is created with WithBlockParameters (foo,
+    [foo_my_block() {my_block(); }] where foo_my_block is created with WithFunctionParameters (foo,
     [my_block]) *)
 type t =
-  | CSharp of CSharp.t
-  | Java of Java.t
-  | C of C.t
-  | Erlang of Erlang.t
-  | Linters_dummy_method
   | Block of Block.t
+  | C of C.t
+  | CSharp of CSharp.t
+  | Erlang of Erlang.t
+  | Hack of Hack.t
+  | Java of Java.t
+  | Linters_dummy_method
   | ObjC_Cpp of ObjC_Cpp.t
-  | WithBlockParameters of t * Block.t list
-[@@deriving compare, yojson_of]
+  | WithAliasingParameters of t * Mangled.t list list
+  | WithFunctionParameters of t * FunctionParameters.t list
+[@@deriving compare, yojson_of, sexp, hash]
 
-val block_of_procname : t -> Block.t
+val base_of : t -> t
+(** if a procedure has been specialised, return the original one, otherwise itself *)
+
+val of_function_parameter : FunctionParameters.t -> t
+
+val to_function_parameter : t -> FunctionParameters.t
 
 val equal : t -> t -> bool
 
@@ -252,6 +268,14 @@ val replace_parameters : Parameter.t list -> t -> t
 
 val parameter_of_name : t -> Typ.Name.t -> Parameter.t
 
+val is_cpp_assignment_operator : t -> bool
+
+val is_destructor : t -> bool
+
+val is_java_static_method : t -> bool
+
+val is_java_instance_method : t -> bool
+
 val is_java_access_method : t -> bool
 
 val is_java_class_initializer : t -> bool
@@ -266,6 +290,16 @@ val is_objc_method : t -> bool
 val is_objc_instance_method : t -> bool
 (** Includes specialized objective-c instance methods*)
 
+val is_objc_class_method : t -> bool
+(** Includes specialized objective-c class methods*)
+
+val get_objc_class_name : t -> string option
+
+val is_std_move : t -> bool
+
+val is_shared_ptr_observer : t -> bool
+(** Check if it is C++ shared pointer observer, e.g. [std::shared_ptr::operator*] *)
+
 (** Hash tables with proc names as keys. *)
 module Hash : Caml.Hashtbl.S with type key = t
 
@@ -273,19 +307,15 @@ module LRUHash : LRUHashtbl.S with type key = t
 
 module HashQueue : Hash_queue.S with type key = t
 
+module HashSet : HashSet.S with type elt = t
+
 (** Maps from proc names. *)
 module Map : PrettyPrintable.PPMap with type key = t
 
 (** Sets of proc names. *)
 module Set : PrettyPrintable.PPSet with type elt = t
 
-module SQLite : sig
-  val serialize : t -> Sqlite3.Data.t
-
-  val deserialize : Sqlite3.Data.t -> t
-
-  val clear_cache : unit -> unit
-end
+module SQLite : SqliteUtils.Data with type t = t
 
 module SQLiteList : SqliteUtils.Data with type t = t list
 
@@ -315,6 +345,9 @@ val make_csharp :
 val make_erlang : module_name:string -> function_name:string -> arity:int -> t
 (** Create an Erlang procedure name. *)
 
+val make_hack : class_name:HackClassName.t option -> function_name:string -> t
+(** Create a Hack procedure name. *)
+
 val make_objc_dealloc : Typ.Name.t -> t
 (** Create a Objective-C dealloc name. This is a destructor for an Objective-C class. This procname
     is given by the class name, since it is always an instance method with the name "dealloc" *)
@@ -336,6 +369,9 @@ val get_method : t -> string
 val is_objc_block : t -> bool
 (** Return whether the procname is a block procname. *)
 
+val is_specialized_with_function_parameters : t -> bool
+(** Return whether the procname is a specialized with functions procname. *)
+
 val is_cpp_lambda : t -> bool
 (** Return whether the procname is a cpp lambda procname. *)
 
@@ -354,20 +390,31 @@ val is_constructor : t -> bool
 val is_csharp : t -> bool
 (** Check if this is a CSharp procedure name. *)
 
+val is_hack : t -> bool
+(** Check if this is a Hack procedure name. *)
+
 val is_java : t -> bool
 (** Check if this is a Java procedure name. *)
 
 val as_java_exn : explanation:string -> t -> Java.t
 (** Converts to a Java.t. Throws if [is_java] is false *)
 
-val with_block_parameters : t -> Block.t list -> t
-(** Create a procedure name instantiated with block parameters from a base procedure name and a list
-    of block procedures. *)
+val with_aliasing_parameters : t -> Mangled.t list list -> t
+(** Create a procedure name instantiated with aliasing parameters from a base procedure name and a
+    list aliases. *)
+
+val with_function_parameters : t -> FunctionParameters.t list -> t option
+(** Create a procedure name instantiated with function parameters from a base procedure name and a
+    list of function procedures. It returns [None] when the given function parameter list is empty. *)
 
 val objc_cpp_replace_method_name : t -> string -> t
 
 val is_infer_undefined : t -> bool
 (** Check if this is a special Infer undefined procedure. *)
+
+val is_static : t -> bool option
+(** Check if a procedure is a static class method or not. If the procedure is not a class method or
+    is unknown to be static, it returns [None]. For now, this checking does not work on C++ methods. *)
 
 val get_global_name_of_initializer : t -> string option
 (** Return the name of the global for which this procedure is the initializer if this is an
@@ -378,6 +425,9 @@ val pp_without_templates : Format.formatter -> t -> unit
 
 val pp : Format.formatter -> t -> unit
 (** Pretty print a proc name for the user to see. *)
+
+val pp_verbose : Format.formatter -> t -> unit
+(** Pretty print a proc name for the user to see with verbosity parameter. *)
 
 val to_string : t -> string
 (** Convert a proc name into a string for the user to see. *)
@@ -417,5 +467,37 @@ val to_filename : t -> string
 
 val get_qualifiers : t -> QualifiedCppName.t
 (** get qualifiers of C/objc/C++ method/function *)
+
+val pp_name_only : F.formatter -> t -> unit
+(** Print name of procedure with at most one-level path. For example,
+
+    - In C++: "<ClassName>::<ProcName>"
+    - In Java, ObjC, C#: "<ClassName>.<ProcName>"
+    - In C/Erlang: "<ProcName>" *)
+
+val is_c : t -> bool
+
+val is_lambda_or_block : t -> bool
+
+val patterns_match : Re.Str.regexp list -> t -> bool
+(** Test whether a proc name matches to one of the regular expressions. *)
+
+val is_erlang_unsupported : t -> bool
+
+val is_erlang : t -> bool
+
+val erlang_call_unqualified : arity:int -> t
+(** A special infer-erlang procname that represents a syntactic erlang (unqualified) function call.
+    [arity] is the arity of the erlang function. First parameter of this procedure is expecteed to
+    be the erlang function name, and the remaining parameters are the erlang parameters (given
+    one-by-one and not as an erlang list). *)
+
+val erlang_call_qualified : arity:int -> t
+(** Same as [erlang_call_unqualified] but is expected to have an erlang module name as the first
+    parameter, and the function name as second. [arity] is (still) the erlang arity of the function. *)
+
+val is_erlang_call_unqualified : t -> bool
+
+val is_erlang_call_qualified : t -> bool
 
 module Normalizer : HashNormalizer.S with type t = t

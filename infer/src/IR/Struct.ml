@@ -12,29 +12,15 @@ type field = Fieldname.t * Typ.t * Annot.Item.t [@@deriving compare, equal]
 
 type fields = field list [@@deriving equal]
 
-type java_class_kind = Interface | AbstractClass | NormalClass [@@deriving equal, compare]
-
-let pp_java_class_kind fmt kind =
-  F.pp_print_string fmt
-    ( match kind with
-    | Interface ->
-        "Interface"
-    | AbstractClass ->
-        "AbstractClass"
-    | NormalClass ->
-        "NormalClass" )
-
+type java_class_kind = Interface | AbstractClass | NormalClass
+[@@deriving equal, compare, show {with_path= false}]
 
 type java_class_info =
   { kind: java_class_kind  (** class kind in Java *)
   ; loc: Location.t option
         (** None should correspond to rare cases when it was impossible to fetch the location in
             source file *) }
-[@@deriving equal]
-
-let pp_java_class_info fmt {kind; loc} =
-  F.fprintf fmt "{kind= %a; loc= %a}" pp_java_class_kind kind (Pp.option Location.pp) loc
-
+[@@deriving equal, show {with_path= false}]
 
 let pp_java_class_info_opt fmt jopt = Pp.option pp_java_class_info fmt jopt
 
@@ -48,7 +34,8 @@ type t =
   ; exported_objc_methods: Procname.t list  (** methods in ObjC interface, subset of [methods] *)
   ; annots: Annot.Item.t  (** annotations *)
   ; java_class_info: java_class_info option  (** present if and only if the class is Java *)
-  ; dummy: bool  (** dummy struct for class including static method *) }
+  ; dummy: bool  (** dummy struct for class including static method *)
+  ; source_file: SourceFile.t option  (** source file containing this struct's declaration *) }
 [@@deriving equal]
 
 type lookup = Typ.Name.t -> t option
@@ -66,7 +53,8 @@ let pp pe name f
      ; exported_objc_methods
      ; annots
      ; java_class_info
-     ; dummy } [@warning "+9"] ) =
+     ; dummy
+     ; source_file } [@warning "+missing-record-field-pattern"] ) =
   let pp_field pe f (field_name, typ, ann) =
     F.fprintf f "@;<0 2>%a %a %a" (Typ.pp_full pe) typ Fieldname.pp field_name Annot.Item.pp ann
   in
@@ -88,7 +76,7 @@ let pp pe name f
      annots: {@[<v>%a@]}@,\
      java_class_info: {@[<v>%a@]}@,\
      dummy: %b@,\
-     @]"
+     %a@]"
     Typ.Name.pp name
     (seq (pp_field pe))
     fields
@@ -102,10 +90,32 @@ let pp pe name f
     methods
     (seq (fun f m -> F.fprintf f "@;<0 2>%a" Procname.pp m))
     exported_objc_methods Annot.Item.pp annots pp_java_class_info_opt java_class_info dummy
+    (fun fs -> Option.iter ~f:(Format.fprintf fs "source_file: %a@," SourceFile.pp))
+    source_file
+
+
+let compare_custom_field (fld, _, _) (fld', _, _) = Fieldname.compare fld fld'
+
+let make_java_struct fields' statics' methods' supers' annots' java_class_info ?source_file dummy =
+  let fields = List.dedup_and_sort ~compare:compare_custom_field fields' in
+  let statics = List.dedup_and_sort ~compare:compare_custom_field statics' in
+  let methods = List.dedup_and_sort ~compare:Procname.compare methods' in
+  let supers = List.dedup_and_sort ~compare:Typ.Name.compare supers' in
+  let annots = List.dedup_and_sort ~compare:Annot.compare annots' in
+  { fields
+  ; statics
+  ; methods
+  ; exported_objc_methods= []
+  ; supers
+  ; objc_protocols= []
+  ; annots
+  ; java_class_info
+  ; dummy
+  ; source_file }
 
 
 let internal_mk_struct ?default ?fields ?statics ?methods ?exported_objc_methods ?supers
-    ?objc_protocols ?annots ?java_class_info ?dummy () =
+    ?objc_protocols ?annots ?java_class_info ?dummy ?source_file typename =
   let default_ =
     { fields= []
     ; statics= []
@@ -115,24 +125,30 @@ let internal_mk_struct ?default ?fields ?statics ?methods ?exported_objc_methods
     ; objc_protocols= []
     ; annots= Annot.Item.empty
     ; java_class_info= None
-    ; dummy= false }
+    ; dummy= false
+    ; source_file= None }
   in
   let mk_struct_ ?(default = default_) ?(fields = default.fields) ?(statics = default.statics)
       ?(methods = default.methods) ?(exported_objc_methods = default.exported_objc_methods)
       ?(supers = default.supers) ?(objc_protocols = default.objc_protocols)
-      ?(annots = default.annots) ?(dummy = default.dummy) () =
-    { fields
-    ; statics
-    ; methods
-    ; exported_objc_methods
-    ; supers
-    ; objc_protocols
-    ; annots
-    ; java_class_info
-    ; dummy }
+      ?(annots = default.annots) ?(dummy = default.dummy) ?source_file typename =
+    match typename with
+    | Typ.JavaClass _jclass ->
+        make_java_struct fields statics methods supers annots java_class_info ?source_file dummy
+    | _ ->
+        { fields
+        ; statics
+        ; methods
+        ; exported_objc_methods
+        ; supers
+        ; objc_protocols
+        ; annots
+        ; java_class_info
+        ; dummy
+        ; source_file }
   in
   mk_struct_ ?default ?fields ?statics ?methods ?exported_objc_methods ?supers ?objc_protocols
-    ?annots ?dummy ()
+    ?annots ?dummy ?source_file typename
 
 
 (** the element typ of the final extensible array in the given typ, if any *)
@@ -154,21 +170,23 @@ let rec get_extensible_array_element_typ ~lookup (typ : Typ.t) =
       None
 
 
-(** If a struct type with field f, return the type of f. If not, return the default *)
-let fld_typ ~lookup ~default fn (typ : Typ.t) =
+(** If a struct type with field f, return Some (the type of f). If not, return None. *)
+let fld_typ_opt ~lookup fn (typ : Typ.t) =
   (* Note: would be nice migrate it to get_field_info
      (for that one needs to ensure adding Tptr to pattern match does not break thing) *)
   match typ.desc with
   | Tstruct name -> (
     match lookup name with
     | Some {fields} ->
-        List.find ~f:(fun (f, _, _) -> Fieldname.equal f fn) fields
-        |> Option.value_map ~f:snd3 ~default
+        List.find ~f:(fun (f, _, _) -> Fieldname.equal f fn) fields |> Option.map ~f:snd3
     | None ->
-        default )
+        None )
   | _ ->
-      default
+      None
 
+
+(** If a struct type with field f, return the type of f. If not, return the default *)
+let fld_typ ~lookup ~default fn (typ : Typ.t) = Option.value (fld_typ_opt ~lookup fn typ) ~default
 
 type field_info = {typ: Typ.t; annotations: Annot.Item.t; is_static: bool}
 
@@ -204,41 +222,83 @@ let get_field_type_and_annotation ~lookup field_name_to_lookup typ =
 
 let is_dummy {dummy} = dummy
 
+let get_source_file {source_file} = source_file
+
+(* is [lhs] included in [rhs] when both are sorted and deduped *)
+let rec is_subsumed ~compare lhs rhs =
+  match (lhs, rhs) with
+  | [], _ ->
+      true
+  | _, [] ->
+      false
+  | x :: xs, y :: ys ->
+      let r = compare x y in
+      if Int.equal 0 r then (* [x] is in both lists so skip *) is_subsumed ~compare xs ys
+      else if r < 0 then (* [x < y] but lists are sorted so [x] is not in [rhs] *) false
+      else (* [x > y] so it could be that [x] is in [ys] *) is_subsumed ~compare lhs ys
+
+
+let merge_dedup_sorted_lists ~compare lhs rhs =
+  let rec merge_dedup_sorted_lists_inner ~compare prev_opt lhs rhs =
+    match (lhs, rhs, prev_opt) with
+    | [], ys, _ ->
+        ys
+    | xs, [], _ ->
+        xs
+    | x :: xs, ys, Some last when Int.equal 0 (compare last x) ->
+        merge_dedup_sorted_lists_inner ~compare prev_opt xs ys
+    | xs, y :: ys, Some last when Int.equal 0 (compare last y) ->
+        merge_dedup_sorted_lists_inner ~compare prev_opt xs ys
+    | x :: xs, y :: ys, prev_opt -> (
+      match compare x y with
+      | 0 ->
+          (* first elements equal, drop lhs first and continue, keeping same [prev_opt] *)
+          merge_dedup_sorted_lists_inner ~compare prev_opt xs rhs
+      | r when r < 0 ->
+          (* first of lhs < first of rhs, keep [x] *)
+          x :: merge_dedup_sorted_lists_inner ~compare (Some x) xs rhs
+      | _ ->
+          (* first of lhs > first of rhs, keep [y] *)
+          y :: merge_dedup_sorted_lists_inner ~compare (Some y) lhs ys )
+  in
+  merge_dedup_sorted_lists_inner ~compare None lhs rhs
+
+
 let merge_lists ~compare ~newer ~current =
-  let equal x y = Int.equal 0 (compare x y) in
   match (newer, current) with
   | [], _ ->
       current
   | _, [] ->
       newer
-  | _, _ when List.equal equal newer current ->
-      newer
+  | _, _ when is_subsumed ~compare newer current ->
+      current
   | _, _ ->
-      List.dedup_and_sort ~compare (newer @ current)
+      merge_dedup_sorted_lists ~compare newer current
 
 
-let merge_fields ~newer ~current = merge_lists ~compare:compare_field ~newer ~current
+let merge_fields ~newer ~current = merge_lists ~compare:compare_custom_field ~newer ~current
 
 let merge_supers ~newer ~current = merge_lists ~compare:Typ.Name.compare ~newer ~current
 
 let merge_methods ~newer ~current = merge_lists ~compare:Procname.compare ~newer ~current
 
-let merge_annots ~newer ~current = merge_lists ~compare:[%compare: Annot.t * bool] ~newer ~current
+let merge_annots ~newer ~current = merge_lists ~compare:Annot.compare ~newer ~current
 
 let merge_kind ~newer ~current =
   (* choose the maximal, ie most concrete *)
-  if compare_java_class_kind newer current < 0 then current else newer
+  if compare_java_class_kind newer current <= 0 then current else newer
 
 
 (* choose [Some] option if possible, [newer] if both [None] else [merge] *)
 let merge_opt ~merge ~newer ~current =
   match (newer, current) with
-  | _, None ->
-      newer
   | None, _ ->
       current
-  | Some newer, Some current ->
-      Some (merge ~newer ~current)
+  | _, None ->
+      newer
+  | Some newer_val, Some current_val ->
+      let merged_val = merge ~newer:newer_val ~current:current_val in
+      if phys_equal merged_val current_val then current else Some merged_val
 
 
 let merge_loc ~newer ~current =
@@ -252,8 +312,9 @@ let merge_loc ~newer ~current =
 let merge_loc_opt ~newer ~current = merge_opt ~merge:merge_loc ~newer ~current
 
 let merge_java_class_info ~newer ~current =
-  { kind= merge_kind ~newer:newer.kind ~current:current.kind
-  ; loc= merge_loc_opt ~newer:newer.loc ~current:current.loc }
+  let kind = merge_kind ~newer:newer.kind ~current:current.kind in
+  let loc = merge_loc_opt ~newer:newer.loc ~current:current.loc in
+  if phys_equal kind current.kind && phys_equal loc current.loc then current else {kind; loc}
 
 
 let merge_java_class_info_opt ~newer ~current =
@@ -264,33 +325,36 @@ let full_merge ~newer ~current =
   let fields = merge_fields ~newer:newer.fields ~current:current.fields in
   let statics = merge_fields ~newer:newer.statics ~current:current.statics in
   let supers = merge_supers ~newer:newer.supers ~current:current.supers in
-  (* the semantics of [subs] is such that no merging is attempted *)
   let methods = merge_methods ~newer:newer.methods ~current:current.methods in
   (* we are merging only Java classes, so [exported_obj_methods] should be empty, so no merge *)
   let annots = merge_annots ~newer:newer.annots ~current:current.annots in
   let java_class_info =
     merge_java_class_info_opt ~newer:newer.java_class_info ~current:current.java_class_info
   in
-  {newer with fields; statics; supers; methods; annots; java_class_info}
+  if
+    phys_equal fields current.fields
+    && phys_equal statics current.statics
+    && phys_equal supers current.supers
+    && phys_equal methods current.methods
+    && phys_equal annots current.annots
+    && phys_equal java_class_info current.java_class_info
+  then current
+  else {current with fields; statics; supers; methods; annots; java_class_info}
 
 
 let merge typename ~newer ~current =
   match (typename : Typ.Name.t) with
-  | CStruct _ | CUnion _ | ErlangType _ | ObjcClass _ | ObjcProtocol _ | CppClass _ ->
+  | CStruct _ | CUnion _ | ErlangType _ | HackClass _ | ObjcClass _ | ObjcProtocol _ | CppClass _ ->
       if not (is_dummy newer) then newer else current
   | JavaClass _ when is_dummy newer ->
       current
   | JavaClass _ when is_dummy current ->
-      newer
-  | JavaClass _ when equal newer current ->
       newer
   | JavaClass _ ->
       full_merge ~newer ~current
   | CSharpClass _ when is_dummy newer ->
       current
   | CSharpClass _ when is_dummy current ->
-      newer
-  | CSharpClass _ when equal newer current ->
       newer
   | CSharpClass _ ->
       full_merge ~newer ~current
@@ -335,49 +399,45 @@ module JavaClassInfoOptNormalizer = HashNormalizer.Make (struct
     IOption.map_changed java_class_info_opt ~equal:phys_equal ~f:normalize_java_class_info
 end)
 
-module Normalizer = struct
-  include HashNormalizer.Make (struct
-    type nonrec t = t [@@deriving equal]
+module Normalizer = HashNormalizer.Make (struct
+  type nonrec t = t [@@deriving equal]
 
-    let hash = Hashtbl.hash
+  let hash = Hashtbl.hash
 
-    let normalize t =
-      let fields = IList.map_changed ~equal:phys_equal ~f:FieldNormalizer.normalize t.fields in
-      let statics = IList.map_changed ~equal:phys_equal ~f:FieldNormalizer.normalize t.statics in
-      let supers = IList.map_changed ~equal:phys_equal ~f:Typ.Name.Normalizer.normalize t.supers in
-      let objc_protocols =
-        IList.map_changed ~equal:phys_equal ~f:Typ.Name.Normalizer.normalize t.objc_protocols
-      in
-      let methods =
-        IList.map_changed ~equal:phys_equal ~f:Procname.Normalizer.normalize t.methods
-      in
-      let exported_objc_methods =
-        IList.map_changed ~equal:phys_equal ~f:Procname.Normalizer.normalize t.exported_objc_methods
-      in
-      let annots = Annot.Item.Normalizer.normalize t.annots in
-      let java_class_info = JavaClassInfoOptNormalizer.normalize t.java_class_info in
-      if
-        phys_equal fields t.fields && phys_equal statics t.statics && phys_equal supers t.supers
-        && phys_equal objc_protocols t.objc_protocols
-        && phys_equal methods t.methods
-        && phys_equal exported_objc_methods t.exported_objc_methods
-        && phys_equal annots t.annots
-        && phys_equal java_class_info t.java_class_info
-      then t
-      else
-        { fields
-        ; statics
-        ; supers
-        ; objc_protocols
-        ; methods
-        ; exported_objc_methods
-        ; annots
-        ; java_class_info
-        ; dummy= t.dummy }
-  end)
-
-  let reset () =
-    reset () ;
-    FieldNormalizer.reset () ;
-    JavaClassInfoOptNormalizer.reset ()
-end
+  let normalize t =
+    let fields = IList.map_changed ~equal:phys_equal ~f:FieldNormalizer.normalize t.fields in
+    let statics = IList.map_changed ~equal:phys_equal ~f:FieldNormalizer.normalize t.statics in
+    let supers = IList.map_changed ~equal:phys_equal ~f:Typ.NameNormalizer.normalize t.supers in
+    let objc_protocols =
+      IList.map_changed ~equal:phys_equal ~f:Typ.NameNormalizer.normalize t.objc_protocols
+    in
+    let methods = IList.map_changed ~equal:phys_equal ~f:Procname.Normalizer.normalize t.methods in
+    let exported_objc_methods =
+      IList.map_changed ~equal:phys_equal ~f:Procname.Normalizer.normalize t.exported_objc_methods
+    in
+    let annots = Annot.Item.Normalizer.normalize t.annots in
+    let java_class_info = JavaClassInfoOptNormalizer.normalize t.java_class_info in
+    let source_file =
+      IOption.map_changed ~equal:phys_equal ~f:SourceFile.Normalizer.normalize t.source_file
+    in
+    if
+      phys_equal fields t.fields && phys_equal statics t.statics && phys_equal supers t.supers
+      && phys_equal objc_protocols t.objc_protocols
+      && phys_equal methods t.methods
+      && phys_equal exported_objc_methods t.exported_objc_methods
+      && phys_equal annots t.annots
+      && phys_equal java_class_info t.java_class_info
+      && phys_equal source_file t.source_file
+    then t
+    else
+      { fields
+      ; statics
+      ; supers
+      ; objc_protocols
+      ; methods
+      ; exported_objc_methods
+      ; annots
+      ; java_class_info
+      ; dummy= t.dummy
+      ; source_file }
+end)

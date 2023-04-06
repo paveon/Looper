@@ -104,7 +104,7 @@ let spec_find_rename proc_attrs specs :
         (Exceptions.Precondition_not_found
            (Localise.verbatim_desc (Procname.to_string proc_name), __POS__) ) ;
     let formal_parameters =
-      List.map ~f:(fun (x, _) -> Pvar.mk_callee x proc_name) proc_attrs.ProcAttributes.formals
+      List.map ~f:(fun (x, _, _) -> Pvar.mk_callee x proc_name) proc_attrs.ProcAttributes.formals
     in
     (List.map ~f:rename_vars specs, formal_parameters)
   with Caml.Not_found ->
@@ -745,15 +745,9 @@ let prop_set_exn tenv pname prop se_exn =
   Prop.normalize tenv (Prop.set prop ~sigma:sigma')
 
 
-let get_attributes proc_name =
-  if BiabductionModels.mem proc_name then
-    AnalysisCallbacks.get_model_proc_desc proc_name |> Option.map ~f:Procdesc.get_attributes
-  else Attributes.load proc_name
-
-
 (** Include a subtrace for a procedure call if the callee is not a model. *)
 let include_subtrace callee_pname =
-  match get_attributes callee_pname with
+  match Attributes.load callee_pname with
   | Some attrs ->
       (not attrs.ProcAttributes.is_biabduction_model)
       && SourceFile.is_under_project_root attrs.ProcAttributes.loc.Location.file
@@ -1270,11 +1264,7 @@ let exe_call_postprocess tenv ret_id callee_pname callee_attrs loc results =
                 raise (Exceptions.Dangling_pointer_dereference (true, desc, __POS__))
             | Dereference_error (Deref_null pos, desc, path_opt) ->
                 extend_path path_opt (Some pos) ;
-                if Localise.is_parameter_not_null_checked_desc desc then
-                  raise (Exceptions.Parameter_not_null_checked (desc, __POS__))
-                else if Localise.is_field_not_null_checked_desc desc then
-                  raise (Exceptions.Field_not_null_checked (desc, __POS__))
-                else if Localise.is_empty_vector_access_desc desc then
+                if Localise.is_empty_vector_access_desc desc then
                   raise (Exceptions.Empty_vector_access (desc, __POS__))
                 else raise (Exceptions.Null_dereference (desc, __POS__))
             | Dereference_error (Deref_undef _, _, _)
@@ -1343,8 +1333,8 @@ let exe_call_postprocess tenv ret_id callee_pname callee_attrs loc results =
       ~f:(fun (p, path) -> (quantify_path_idents_remove_constant_strings tenv p, path))
       res_with_path_idents
   in
-  let ret_annot = callee_attrs.ProcAttributes.method_annotation.return in
-  let returns_nullable ret_annot = Annotations.ia_is_nullable ret_annot in
+  let ret_annots = callee_attrs.ProcAttributes.ret_annots in
+  let returns_nullable ret_annots = Annotations.ia_is_nullable ret_annots in
   let should_add_ret_attr _ =
     let is_likely_getter = function
       | Procname.Java pn_java ->
@@ -1353,13 +1343,13 @@ let exe_call_postprocess tenv ret_id callee_pname callee_attrs loc results =
           false
     in
     (Config.idempotent_getters && Language.curr_language_is Java && is_likely_getter callee_pname)
-    || returns_nullable ret_annot
+    || returns_nullable ret_annots
   in
   if should_add_ret_attr () then
     (* add attribute to remember what function call a return id came from *)
     let ret_var = Exp.Var ret_id in
     let mark_id_as_retval (p, path) =
-      let att_retval = PredSymb.Aretval (callee_pname, ret_annot) in
+      let att_retval = PredSymb.Aretval (callee_pname, ret_annots) in
       (Attribute.add tenv p att_retval [ret_var], path)
     in
     List.map ~f:mark_id_as_retval res

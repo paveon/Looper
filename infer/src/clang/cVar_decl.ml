@@ -10,8 +10,8 @@ module F = Format
 
 let is_custom_var_pointer pointer = pointer <= 0
 
-let mk_sil_global_var {CFrontend_config.source_file} ?(mk_name = fun _ x -> x) decl_info
-    named_decl_info var_decl_info qt =
+let mk_sil_global_var tenv {CFrontend_config.source_file} ?(mk_name = fun _ x -> x) decl_info
+    named_decl_info var_decl_info template_args_opt qt =
   let name_string, simple_name =
     CGeneral_utils.get_var_name_mangled decl_info named_decl_info var_decl_info
   in
@@ -44,14 +44,21 @@ let mk_sil_global_var {CFrontend_config.source_file} ?(mk_name = fun _ x -> x) d
   let is_constant_array =
     Option.exists desugared_type ~f:(function Clang_ast_t.ConstantArrayType _ -> true | _ -> false)
   in
+  let template_args =
+    match template_args_opt with
+    | Some template_args ->
+        Typ.Template {mangled= None; args= CType_decl.get_template_args tenv template_args}
+    | None ->
+        Typ.NoTemplate
+  in
   Pvar.mk_global ~is_constexpr ~is_ice ~is_pod
     ~is_static_local:var_decl_info.Clang_ast_t.vdi_is_static_local ~is_static_global
-    ~is_constant_array ~is_const ?translation_unit (mk_name name_string simple_name)
+    ~is_constant_array ~is_const ?translation_unit ~template_args (mk_name name_string simple_name)
 
 
-let mk_sil_var trans_unit_ctx named_decl_info decl_info_qual_type_opt procname outer_procname =
+let mk_sil_var tenv trans_unit_ctx named_decl_info decl_info_qual_type_opt procname outer_procname =
   match decl_info_qual_type_opt with
-  | Some (decl_info, qt, var_decl_info, should_be_mangled) ->
+  | Some (decl_info, qt, var_decl_info, should_be_mangled, template_args_opt) ->
       let name_string, simple_name =
         CGeneral_utils.get_var_name_mangled decl_info named_decl_info var_decl_info
       in
@@ -63,7 +70,8 @@ let mk_sil_var trans_unit_ctx named_decl_info decl_info_qual_type_opt procname o
                 Mangled.from_string (F.asprintf "%a.%s" Procname.pp outer_procname name_string) )
           else None
         in
-        mk_sil_global_var trans_unit_ctx ?mk_name decl_info named_decl_info var_decl_info qt
+        mk_sil_global_var tenv trans_unit_ctx ?mk_name decl_info named_decl_info var_decl_info
+          template_args_opt qt
       else if not should_be_mangled then Pvar.mk simple_name procname
       else
         let start_location = fst decl_info.Clang_ast_t.di_source_range in
@@ -83,28 +91,58 @@ let sil_var_of_decl context var_decl procname =
   let outer_procname = CContext.get_outer_procname context in
   let trans_unit_ctx = context.CContext.translation_unit_context in
   let open Clang_ast_t in
-  match var_decl with
-  | VarDecl (decl_info, name_info, qual_type, var_decl_info)
-  | VarTemplateSpecializationDecl (decl_info, name_info, qual_type, var_decl_info) ->
-      let shoud_be_mangled = not (is_custom_var_pointer decl_info.Clang_ast_t.di_pointer) in
-      let var_decl_details = Some (decl_info, qual_type, var_decl_info, shoud_be_mangled) in
-      mk_sil_var trans_unit_ctx name_info var_decl_details procname outer_procname
-  | ParmVarDecl (decl_info, name_info, qual_type, var_decl_info) ->
-      let var_decl_details = Some (decl_info, qual_type, var_decl_info, false) in
-      mk_sil_var trans_unit_ctx name_info var_decl_details procname outer_procname
-  | _ ->
-      assert false
+  let should_be_mangled =
+    match var_decl with
+    | VarDecl (decl_info, _, _, _) | VarTemplateSpecializationDecl (_, decl_info, _, _, _) ->
+        not (is_custom_var_pointer decl_info.Clang_ast_t.di_pointer)
+    | ParmVarDecl _ ->
+        false
+    | _ ->
+        assert false
+  in
+  let name_info, decl_info, qual_type, var_decl_info =
+    match var_decl with
+    | VarDecl (decl_info, name_info, qual_type, var_decl_info)
+    | ParmVarDecl (decl_info, name_info, qual_type, var_decl_info)
+    | VarTemplateSpecializationDecl (_, decl_info, name_info, qual_type, var_decl_info) ->
+        (name_info, decl_info, qual_type, var_decl_info)
+    | _ ->
+        assert false
+  in
+  let template_args =
+    match var_decl with
+    | VarDecl _ | ParmVarDecl _ ->
+        None
+    | VarTemplateSpecializationDecl (template_args, _, _, _, _) ->
+        Some template_args
+    | _ ->
+        assert false
+  in
+  mk_sil_var context.CContext.tenv trans_unit_ctx name_info
+    (Some (decl_info, qual_type, var_decl_info, should_be_mangled, template_args))
+    procname outer_procname
 
 
 let sil_var_of_decl_ref context source_range decl_ref procname =
   let name =
     match decl_ref.Clang_ast_t.dr_name with Some name_info -> name_info | None -> assert false
   in
+  let get_orig_pvar local_pvar =
+    match
+      List.find (Procdesc.get_captured context.CContext.procdesc) ~f:(fun {CapturedVar.pvar} ->
+          Mangled.equal (Pvar.get_name pvar) (Pvar.get_name local_pvar) )
+    with
+    | Some {CapturedVar.pvar} when Procname.is_objc_block procname ->
+        pvar
+    | _ ->
+        local_pvar
+  in
   match decl_ref.Clang_ast_t.dr_kind with
   | `ImplicitParam ->
       let outer_procname = CContext.get_outer_procname context in
       let trans_unit_ctx = context.CContext.translation_unit_context in
-      mk_sil_var trans_unit_ctx name None procname outer_procname
+      mk_sil_var context.CContext.tenv trans_unit_ctx name None procname outer_procname
+      |> get_orig_pvar
   | _ -> (
       let pointer = decl_ref.Clang_ast_t.dr_decl_pointer in
       if is_custom_var_pointer pointer then
@@ -112,7 +150,7 @@ let sil_var_of_decl_ref context source_range decl_ref procname =
       else
         match CAst_utils.get_decl pointer with
         | Some var_decl ->
-            sil_var_of_decl context var_decl procname
+            sil_var_of_decl context var_decl procname |> get_orig_pvar
         | None ->
             (* FIXME(t21762295) *)
             CFrontend_errors.incorrect_assumption __POS__ source_range
@@ -130,7 +168,7 @@ let has_block_attribute decl_info =
 let add_var_to_locals procdesc var_decl typ pvar =
   let open Clang_ast_t in
   match var_decl with
-  | VarDecl (decl_info, _, _, vdi) ->
+  | VarDecl (decl_info, _, _, vdi) | VarTemplateSpecializationDecl (_, decl_info, _, _, vdi) ->
       if not vdi.Clang_ast_t.vdi_is_global then
         let modify_in_block = has_block_attribute decl_info in
         let is_constexpr =

@@ -10,8 +10,6 @@ open! IStd
 
 (** State of symbolic execution *)
 
-type t
-
 val get_instr : unit -> Sil.instr option
 (** Get last instruction seen in symbolic execution *)
 
@@ -27,6 +25,9 @@ val get_node_exn : unit -> Procdesc.Node.t
 val get_node : unit -> Procdesc.Node.t option
 (** Get last node seen in symbolic execution *)
 
+val get_remaining_disjuncts : unit -> int option
+(** Get number of remaining disjuncts in the transfer function for Pulse *)
+
 val get_session : unit -> int
 (** Get last session seen in symbolic execution *)
 
@@ -36,13 +37,8 @@ val set_instr : Sil.instr -> unit
 val set_node : Procdesc.Node.t -> unit
 (** Set last node seen in symbolic execution *)
 
+val set_remaining_disjuncts : int -> unit
+(** Set number of remaining disjuncts in the transfer function for Pulse *)
+
 val set_session : int -> unit
 (** Set last session seen in symbolic execution *)
-
-(** {2 State management} *)
-
-val restore : t -> unit
-(** Restore the old state. *)
-
-val save : unit -> t
-(** Return the old state, and revert the current state to the initial one. *)

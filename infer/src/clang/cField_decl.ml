@@ -11,7 +11,7 @@ open! IStd
 
 module L = Logging
 
-type field_type = Fieldname.t * Typ.t * (Annot.t * bool) list
+type field_type = Fieldname.t * Typ.t * Annot.Item.t
 
 let rec get_fields_super_classes tenv super_class =
   L.(debug Capture Verbose)
@@ -26,8 +26,8 @@ let rec get_fields_super_classes tenv super_class =
       fields
 
 
-let fields_superclass tenv interface_decl_info =
-  match interface_decl_info.Clang_ast_t.otdi_super with
+let fields_superclass tenv otdi_super =
+  match otdi_super with
   | Some dr -> (
     match dr.Clang_ast_t.dr_name with
     | Some sc ->
@@ -59,9 +59,9 @@ let build_sil_field qual_type_to_sil_type tenv class_tname ni_name qual_type pro
   let item_annotations =
     match prop_atts with
     | [] ->
-        ({Annot.class_name= Config.ivar_attributes; parameters= annotation_from_type typ}, true)
+        {Annot.class_name= Config.ivar_attributes; parameters= annotation_from_type typ}
     | _ ->
-        ({Annot.class_name= Config.property_attributes; parameters= prop_atts}, true)
+        {Annot.class_name= Config.property_attributes; parameters= prop_atts}
   in
   let item_annotations = item_annotations :: CAst_utils.sil_annot_of_type qual_type in
   (fname, typ, item_annotations)
@@ -100,20 +100,6 @@ let get_fields ~implements_remodel_class qual_type_to_sil_type tenv class_tname 
         fields
   in
   List.fold ~f:get_field ~init:[] decl_list
-
-
-(* Add potential extra fields defined only in the implementation of the class *)
-(* to the info given in the interface. Update the tenv accordingly. *)
-let add_missing_fields tenv class_name missing_fields =
-  let class_tn_name = Typ.Name.Objc.from_qual_name class_name in
-  match Tenv.lookup tenv class_tn_name with
-  | Some ({fields} as struct_typ) ->
-      let new_fields = CGeneral_utils.append_no_duplicates_fields fields missing_fields in
-      ignore (Tenv.mk_struct tenv ~default:struct_typ ~fields:new_fields ~statics:[] class_tn_name) ;
-      L.(debug Capture Verbose)
-        " Updating info for class '%a' in tenv@\n" QualifiedCppName.pp class_name
-  | _ ->
-      ()
 
 
 let modelled_fields_in_classes = [("NSArray", "elementData", Typ.mk (Tint Typ.IInt))]

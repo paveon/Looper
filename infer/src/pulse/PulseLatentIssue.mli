@@ -6,8 +6,10 @@
  *)
 
 open! IStd
+module F = Format
 open PulseBasicInterface
 module AbductiveDomain = PulseAbductiveDomain
+module Diagnostic = PulseDiagnostic
 
 (** A subset of [PulseDiagnostic] that can be "latent", i.e. there is a potential issue in the code
     but we want to delay reporting until we see the conditions for the bug manifest themselves in
@@ -15,12 +17,19 @@ module AbductiveDomain = PulseAbductiveDomain
 
 type t =
   | AccessToInvalidAddress of Diagnostic.access_to_invalid_address
-  | ErlangError of Diagnostic.erlang_error
+  | ErlangError of Diagnostic.ErlangError.t
   | ReadUninitializedValue of Diagnostic.read_uninitialized_value
 [@@deriving compare, equal, yojson_of]
 
+val pp : F.formatter -> t -> unit
+
 val to_diagnostic : t -> Diagnostic.t
 
-val should_report : AbductiveDomain.summary -> Diagnostic.t -> [> `DelayReport of t | `ReportNow]
+val should_report : AbductiveDomain.Summary.t -> Diagnostic.t -> [> `DelayReport of t | `ReportNow]
 
-val add_call : CallEvent.t * Location.t -> t -> t
+val add_call :
+     CallEvent.t * Location.t
+  -> (AbstractValue.t * ValueHistory.t) AbstractValue.Map.t
+  -> AbductiveDomain.t
+  -> t
+  -> t

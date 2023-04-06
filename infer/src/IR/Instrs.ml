@@ -244,8 +244,12 @@ let last (type r) (t : r t) =
 
 let find_map t ~f = Container.find_map ~iter t ~f
 
-let pp pe fmt t =
-  iter t ~f:(fun instr -> F.fprintf fmt "%a;@\n" (Sil.pp_instr ~print_types:false pe) instr)
+let pp ?(indent = true) ?(print_types = false) pe fmt t =
+  if indent then F.fprintf fmt "@[<v>" ;
+  iter t ~f:(fun instr ->
+      F.fprintf fmt "%a;" (Sil.pp_instr ~print_types pe) instr ;
+      F.fprintf fmt (if indent then "@," else "@\n") ) ;
+  if indent then F.fprintf fmt "@]"
 
 
 (** Return the list of normal ids occurring in the instructions *)

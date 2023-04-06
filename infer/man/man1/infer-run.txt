@@ -16,6 +16,10 @@ DESCRIPTION
 
 
 OPTIONS
+       --capture-block-list json
+           Matcher or list of matchers for names of files that should not be
+           captured, hence not analyzed either. Clang and Java only.
+
        --no-censor-report +issue_type_regex
            For debugging/experimentation only: Specify issues not to be
            censored by --censor-report.
@@ -48,8 +52,7 @@ OPTIONS
 
        --debug-level level
            Debug level (sets --bo-debug level, --debug-level-analysis level,
-           --debug-level-capture level, --debug-level-linters level):       
-      - 0: only basic debugging enabled
+           --debug-level-capture level):             - 0: only basic debugging enabled
              - 1: verbose debugging enabled
              - 2: very verbose debugging enabled
 
@@ -59,10 +62,6 @@ OPTIONS
 
        --debug-level-capture int
            Debug level for the capture. See --debug-level for accepted
-           values.
-
-       --debug-level-linters int
-           Debug level for the linters. See --debug-level for accepted
            values.
 
        --fail-on-issue
@@ -76,9 +75,9 @@ OPTIONS
 
        --force-integration command
            Proceed as if the first argument after -- was command. Possible
-           values: ant, buck, gradle, gradlew, java, javac, cc, clang, gcc,
-           clang++, c++, g++, make, configure, cmake, waf, mvn, mvnw,
-           ndk-build, rebar3, erlc, xcodebuild.
+           values: ant, buck, buck1, buck2, gradle, gradlew, java, javac, cc,
+           clang, gcc, clang++, c++, g++, hackc, make, configure, cmake, waf,
+           mvn, mvnw, ndk-build, rebar3, erlc, xcodebuild.
 
        --help
            Show this manual
@@ -91,6 +90,10 @@ OPTIONS
        --help-full
            Show this manual with all internal options in the INTERNAL OPTIONS
            section
+
+       --never-returning-null json
+           [Java only, all analyses] Matcher or list of matchers for
+           functions that never return null.
 
        --pmd-xml
            Activates: Output issues in (PMD) XML format in
@@ -138,9 +141,10 @@ OPTIONS
            Interchange Format) in infer-out/report.sarif (Conversely:
            --no-sarif)
 
-       --skip-analysis-in-path +path_prefix_OCaml_regex
-           Ignore files whose path matches the given prefix (can be specified
-           multiple times)
+       --skip-analysis-in-path +regex
+           Ignore files whose path matches a given regex (can be specified
+           multiple times, but you must make sure each regex is properly
+           bracketed)
 
        --sqlite-cache-size int
            SQLite cache size in pages (if positive) or kB (if negative),
@@ -152,6 +156,10 @@ OPTIONS
        --sqlite-page-size int
            SQLite page size in bytes, must be a power of two between 512 and
            65536.
+
+       --timeout float
+           Time after which any checker (except biabduction) should give up
+           analysing the current function or method, in seconds
 
        --version
            Print version information and exit
@@ -168,11 +176,10 @@ BUCK OPTIONS
 
        --buck-targets-block-list +regex
            Skip capture of buck targets matched by the specified regular
-           expression. Only valid for --buck-compilation-database.
-JAVA OPTIONS
-       --capture-block-list regex
-           Skip capture of files matched by the specified OCaml regular
-           expression (only supported by the javac integration for now).
+           expression.
+
+       --buck2-root dir
+           Specify the parent directory of buck-out (used only for buck2).
 
 
 ENVIRONMENT

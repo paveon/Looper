@@ -214,7 +214,6 @@
                       "column" : 5
                     },
                     {
-                      "column" : 5
                     }
                   ]
                 },
@@ -225,7 +224,8 @@
                   ]
                 },
                 {
-                  "type_ptr" : 13
+                  "type_ptr" : 13,
+                  "is_trivially_copyable" : true
                 },
                 {
                   "parm_index_in_function" : 0
@@ -310,7 +310,6 @@
                 "column" : 8
               },
               {
-                "column" : 8
               }
             ],
             "is_implicit" : true,
@@ -337,10 +336,8 @@
                   "pointer" : 20,
                   "source_range" : [
                     {
-                      "column" : 8
                     },
                     {
-                      "column" : 8
                     }
                   ]
                 },
@@ -360,6 +357,7 @@
             ]
           },
           {
+            "is_copy_constructor" : true
           }
         ]],
         ["CXXConstructorDecl" , [
@@ -368,10 +366,8 @@
             "parent_pointer" : 7,
             "source_range" : [
               {
-                "column" : 8
               },
               {
-                "column" : 8
               }
             ],
             "is_implicit" : true,
@@ -398,10 +394,8 @@
                   "pointer" : 24,
                   "source_range" : [
                     {
-                      "column" : 8
                     },
                     {
-                      "column" : 8
                     }
                   ]
                 },
@@ -421,6 +415,7 @@
             ]
           },
           {
+            "is_move_constructor" : true
           }
         ]],
         ["CXXDestructorDecl" , [
@@ -429,10 +424,8 @@
             "parent_pointer" : 7,
             "source_range" : [
               {
-                "column" : 8
               },
               {
-                "column" : 8
               }
             ],
             "is_implicit" : true,
@@ -567,10 +560,8 @@
             "pointer" : 32,
             "source_range" : [
               {
-                "column" : 12
               },
               {
-                "column" : 12
               }
             ],
             "is_implicit" : true,
@@ -589,10 +580,8 @@
             "pointer" : 33,
             "source_range" : [
               {
-                "column" : 12
               },
               {
-                "column" : 12
               }
             ],
             "is_implicit" : true,
@@ -611,10 +600,8 @@
             "pointer" : 34,
             "source_range" : [
               {
-                "column" : 12
               },
               {
-                "column" : 12
               }
             ],
             "is_implicit" : true,
@@ -638,7 +625,6 @@
                 "column" : 8
               },
               {
-                "column" : 8
               }
             ],
             "is_implicit" : true,
@@ -657,7 +643,8 @@
           {
             "mangled_name" : "8928078380412315851",
             "is_cpp" : true,
-            "is_inline" : true
+            "is_inline" : true,
+            "is_deleted" : true
           },
           {
           }
@@ -668,10 +655,8 @@
             "parent_pointer" : 28,
             "source_range" : [
               {
-                "column" : 8
               },
               {
-                "column" : 8
               }
             ],
             "is_implicit" : true,
@@ -698,10 +683,8 @@
                   "pointer" : 39,
                   "source_range" : [
                     {
-                      "column" : 8
                     },
                     {
-                      "column" : 8
                     }
                   ]
                 },
@@ -721,6 +704,7 @@
             ]
           },
           {
+            "is_copy_constructor" : true
           }
         ]],
         ["CXXConstructorDecl" , [
@@ -729,10 +713,8 @@
             "parent_pointer" : 28,
             "source_range" : [
               {
-                "column" : 8
               },
               {
-                "column" : 8
               }
             ],
             "is_implicit" : true,
@@ -759,10 +741,8 @@
                   "pointer" : 43,
                   "source_range" : [
                     {
-                      "column" : 8
                     },
                     {
-                      "column" : 8
                     }
                   ]
                 },
@@ -782,6 +762,7 @@
             ]
           },
           {
+            "is_move_constructor" : true
           }
         ]],
         ["CXXConstructorDecl" , [
@@ -794,7 +775,6 @@
                 "column" : 12
               },
               {
-                "column" : 12
               }
             ],
             "is_implicit" : true,
@@ -822,10 +802,8 @@
                   "pointer" : 47,
                   "source_range" : [
                     {
-                      "column" : 12
                     },
                     {
-                      "column" : 12
                     }
                   ],
                   "is_implicit" : true
@@ -837,7 +815,8 @@
                   ]
                 },
                 {
-                  "type_ptr" : 13
+                  "type_ptr" : 13,
+                  "is_trivially_copyable" : true
                 },
                 {
                   "parm_index_in_function" : 0
@@ -850,10 +829,8 @@
                 "pointer" : 48,
                 "source_range" : [
                   {
-                    "column" : 12
                   },
                   {
-                    "column" : 12
                   }
                 ]
               },
@@ -865,26 +842,22 @@
             "cxx_ctor_initializers" : [
               {
                 "subject" : ["BaseClass" , [
-                  8,
+                  49,
                   false
                 ]],
                 "source_range" : [
                   {
-                    "column" : 12
                   },
                   {
-                    "column" : 12
                   }
                 ],
                 "init_expr" : ["CXXInheritedCtorInitExpr" , [
                   {
-                    "pointer" : 49,
+                    "pointer" : 50,
                     "source_range" : [
                       {
-                        "column" : 12
                       },
                       {
-                        "column" : 12
                       }
                     ]
                   },
@@ -892,7 +865,8 @@
                   ],
                   {
                     "qual_type" : {
-                      "type_ptr" : 8
+                      "type_ptr" : 49,
+                      "is_trivially_copyable" : true
                     }
                   },
                   {
@@ -926,13 +900,13 @@
       },
       {
         "bases" : [
-          8
+          49
         ]
       }
     ]],
     ["FunctionDecl" , [
       {
-        "pointer" : 50,
+        "pointer" : 51,
         "source_range" : [
           {
             "line" : 16,
@@ -950,14 +924,14 @@
         ]
       },
       {
-        "type_ptr" : 51
+        "type_ptr" : 52
       },
       {
         "is_cpp" : true,
-        "decl_ptr_with_body" : 50,
+        "decl_ptr_with_body" : 51,
         "body" : ["CompoundStmt" , [
           {
-            "pointer" : 52,
+            "pointer" : 53,
             "source_range" : [
               {
                 "column" : 12
@@ -970,7 +944,7 @@
           [
             ["DeclStmt" , [
               {
-                "pointer" : 53,
+                "pointer" : 54,
                 "source_range" : [
                   {
                     "column" : 14
@@ -983,7 +957,7 @@
               [
                 ["CXXConstructExpr" , [
                   {
-                    "pointer" : 54,
+                    "pointer" : 55,
                     "source_range" : [
                       {
                         "column" : 16
@@ -996,13 +970,12 @@
                   [
                     ["IntegerLiteral" , [
                       {
-                        "pointer" : 55,
+                        "pointer" : 56,
                         "source_range" : [
                           {
                             "column" : 18
                           },
                           {
-                            "column" : 18
                           }
                         ]
                       },
@@ -1010,7 +983,8 @@
                       ],
                       {
                         "qual_type" : {
-                          "type_ptr" : 13
+                          "type_ptr" : 13,
+                          "is_trivially_copyable" : true
                         }
                       },
                       {
@@ -1022,7 +996,8 @@
                   ],
                   {
                     "qual_type" : {
-                      "type_ptr" : 29
+                      "type_ptr" : 57,
+                      "is_trivially_copyable" : true
                     }
                   },
                   {
@@ -1046,7 +1021,7 @@
               [
                 ["VarDecl" , [
                   {
-                    "pointer" : 56,
+                    "pointer" : 58,
                     "source_range" : [
                       {
                         "column" : 14
@@ -1063,12 +1038,13 @@
                     ]
                   },
                   {
-                    "type_ptr" : 29
+                    "type_ptr" : 57,
+                    "is_trivially_copyable" : true
                   },
                   {
                     "init_expr" : ["CXXConstructExpr" , [
                       {
-                        "pointer" : 54,
+                        "pointer" : 55,
                         "source_range" : [
                           {
                             "column" : 16
@@ -1081,13 +1057,12 @@
                       [
                         ["IntegerLiteral" , [
                           {
-                            "pointer" : 55,
+                            "pointer" : 56,
                             "source_range" : [
                               {
                                 "column" : 18
                               },
                               {
-                                "column" : 18
                               }
                             ]
                           },
@@ -1095,7 +1070,8 @@
                           ],
                           {
                             "qual_type" : {
-                              "type_ptr" : 13
+                              "type_ptr" : 13,
+                              "is_trivially_copyable" : true
                             }
                           },
                           {
@@ -1107,7 +1083,8 @@
                       ],
                       {
                         "qual_type" : {
-                          "type_ptr" : 29
+                          "type_ptr" : 57,
+                          "is_trivially_copyable" : true
                         }
                       },
                       {
@@ -1137,7 +1114,7 @@
     ]],
     ["TypedefDecl" , [
       {
-        "pointer" : 57,
+        "pointer" : 59,
         "source_range" : [
           {
           },
@@ -1152,7 +1129,7 @@
           "instancetype"
         ]
       },
-      58,
+      60,
       {
       }
     ]]
@@ -1172,31 +1149,31 @@
     "types" : [
       ["BuiltinType" , [
         {
-          "pointer" : 59
+          "pointer" : 61
         },
         "Void"
       ]],
       ["BuiltinType" , [
         {
-          "pointer" : 60
+          "pointer" : 62
         },
         "Bool"
       ]],
       ["BuiltinType" , [
         {
-          "pointer" : 61
+          "pointer" : 63
         },
         "Char_S"
       ]],
       ["BuiltinType" , [
         {
-          "pointer" : 62
+          "pointer" : 64
         },
         "SChar"
       ]],
       ["BuiltinType" , [
         {
-          "pointer" : 63
+          "pointer" : 65
         },
         "Short"
       ]],
@@ -1208,375 +1185,372 @@
       ]],
       ["BuiltinType" , [
         {
-          "pointer" : 64
+          "pointer" : 66
         },
         "Long"
       ]],
       ["BuiltinType" , [
         {
-          "pointer" : 65
+          "pointer" : 67
         },
         "LongLong"
       ]],
       ["BuiltinType" , [
         {
-          "pointer" : 66
+          "pointer" : 68
         },
         "UChar"
       ]],
       ["BuiltinType" , [
         {
-          "pointer" : 67
+          "pointer" : 69
         },
         "UShort"
       ]],
       ["BuiltinType" , [
         {
-          "pointer" : 68
+          "pointer" : 70
         },
         "UInt"
       ]],
       ["BuiltinType" , [
         {
-          "pointer" : 69
+          "pointer" : 71
         },
         "ULong"
       ]],
       ["BuiltinType" , [
         {
-          "pointer" : 70
+          "pointer" : 72
         },
         "ULongLong"
       ]],
       ["BuiltinType" , [
         {
-          "pointer" : 71
+          "pointer" : 73
         },
         "Float"
       ]],
       ["BuiltinType" , [
         {
-          "pointer" : 72
+          "pointer" : 74
         },
         "Double"
       ]],
       ["BuiltinType" , [
         {
-          "pointer" : 73
+          "pointer" : 75
         },
         "LongDouble"
       ]],
       ["BuiltinType" , [
         {
-          "pointer" : 74
+          "pointer" : 76
         },
         "Float128"
       ]],
       ["BuiltinType" , [
         {
-          "pointer" : 75
-        },
-        "Float16"
-      ]],
-      ["BuiltinType" , [
-        {
-          "pointer" : 76
-        },
-        "ShortAccum"
-      ]],
-      ["BuiltinType" , [
-        {
           "pointer" : 77
         },
-        "Accum"
+        "Ibm128"
       ]],
       ["BuiltinType" , [
         {
           "pointer" : 78
         },
-        "LongAccum"
+        "Float16"
       ]],
       ["BuiltinType" , [
         {
           "pointer" : 79
         },
-        "UShortAccum"
+        "ShortAccum"
       ]],
       ["BuiltinType" , [
         {
           "pointer" : 80
         },
-        "UAccum"
+        "Accum"
       ]],
       ["BuiltinType" , [
         {
           "pointer" : 81
         },
-        "ULongAccum"
+        "LongAccum"
       ]],
       ["BuiltinType" , [
         {
           "pointer" : 82
         },
-        "ShortFract"
+        "UShortAccum"
       ]],
       ["BuiltinType" , [
         {
           "pointer" : 83
         },
-        "Fract"
+        "UAccum"
       ]],
       ["BuiltinType" , [
         {
           "pointer" : 84
         },
-        "LongFract"
+        "ULongAccum"
       ]],
       ["BuiltinType" , [
         {
           "pointer" : 85
         },
-        "UShortFract"
+        "ShortFract"
       ]],
       ["BuiltinType" , [
         {
           "pointer" : 86
         },
-        "UFract"
+        "Fract"
       ]],
       ["BuiltinType" , [
         {
           "pointer" : 87
         },
-        "ULongFract"
+        "LongFract"
       ]],
       ["BuiltinType" , [
         {
           "pointer" : 88
         },
-        "SatShortAccum"
+        "UShortFract"
       ]],
       ["BuiltinType" , [
         {
           "pointer" : 89
         },
-        "SatAccum"
+        "UFract"
       ]],
       ["BuiltinType" , [
         {
           "pointer" : 90
         },
-        "SatLongAccum"
+        "ULongFract"
       ]],
       ["BuiltinType" , [
         {
           "pointer" : 91
         },
-        "SatUShortAccum"
+        "SatShortAccum"
       ]],
       ["BuiltinType" , [
         {
           "pointer" : 92
         },
-        "SatUAccum"
+        "SatAccum"
       ]],
       ["BuiltinType" , [
         {
           "pointer" : 93
         },
-        "SatULongAccum"
+        "SatLongAccum"
       ]],
       ["BuiltinType" , [
         {
           "pointer" : 94
         },
-        "SatShortFract"
+        "SatUShortAccum"
       ]],
       ["BuiltinType" , [
         {
           "pointer" : 95
         },
-        "SatFract"
+        "SatUAccum"
       ]],
       ["BuiltinType" , [
         {
           "pointer" : 96
         },
-        "SatLongFract"
+        "SatULongAccum"
       ]],
       ["BuiltinType" , [
         {
           "pointer" : 97
         },
-        "SatUShortFract"
+        "SatShortFract"
       ]],
       ["BuiltinType" , [
         {
           "pointer" : 98
         },
-        "SatUFract"
+        "SatFract"
       ]],
       ["BuiltinType" , [
         {
           "pointer" : 99
         },
-        "SatULongFract"
+        "SatLongFract"
       ]],
       ["BuiltinType" , [
         {
           "pointer" : 100
         },
-        "Int128"
+        "SatUShortFract"
       ]],
       ["BuiltinType" , [
         {
           "pointer" : 101
         },
-        "UInt128"
+        "SatUFract"
       ]],
       ["BuiltinType" , [
         {
           "pointer" : 102
         },
-        "WChar_S"
+        "SatULongFract"
       ]],
       ["BuiltinType" , [
         {
           "pointer" : 103
         },
-        "Char8"
+        "Int128"
       ]],
       ["BuiltinType" , [
         {
           "pointer" : 104
         },
-        "Char16"
+        "UInt128"
       ]],
       ["BuiltinType" , [
         {
           "pointer" : 105
         },
-        "Char32"
+        "WChar_S"
       ]],
       ["BuiltinType" , [
         {
           "pointer" : 106
         },
-        "Dependent"
+        "Char8"
       ]],
       ["BuiltinType" , [
         {
           "pointer" : 107
         },
-        "Overload"
+        "Char16"
       ]],
       ["BuiltinType" , [
         {
           "pointer" : 108
         },
-        "BoundMember"
+        "Char32"
       ]],
       ["BuiltinType" , [
         {
           "pointer" : 109
         },
-        "PseudoObject"
+        "Dependent"
       ]],
       ["BuiltinType" , [
         {
           "pointer" : 110
         },
-        "UnknownAny"
+        "Overload"
       ]],
       ["BuiltinType" , [
         {
           "pointer" : 111
         },
-        "ARCUnbridgedCast"
+        "BoundMember"
       ]],
       ["BuiltinType" , [
         {
           "pointer" : 112
         },
-        "BuiltinFn"
-      ]],
-      ["ComplexType" , [
-        {
-          "pointer" : 113
-        }
-      ]],
-      ["ComplexType" , [
-        {
-          "pointer" : 114
-        }
-      ]],
-      ["ComplexType" , [
-        {
-          "pointer" : 115
-        }
-      ]],
-      ["ComplexType" , [
-        {
-          "pointer" : 116
-        }
+        "PseudoObject"
       ]],
       ["BuiltinType" , [
         {
-          "pointer" : 117
+          "pointer" : 113
+        },
+        "UnknownAny"
+      ]],
+      ["BuiltinType" , [
+        {
+          "pointer" : 114
+        },
+        "ARCUnbridgedCast"
+      ]],
+      ["BuiltinType" , [
+        {
+          "pointer" : 115
+        },
+        "BuiltinFn"
+      ]],
+      ["BuiltinType" , [
+        {
+          "pointer" : 116
         },
         "ObjCId"
       ]],
       ["BuiltinType" , [
         {
-          "pointer" : 118
+          "pointer" : 117
         },
         "ObjCClass"
       ]],
       ["BuiltinType" , [
         {
-          "pointer" : 119
+          "pointer" : 118
         },
         "ObjCSel"
       ]],
       ["PointerType" , [
         {
-          "pointer" : 120
+          "pointer" : 119
         },
         {
-          "type_ptr" : 59
+          "type_ptr" : 61
         }
       ]],
       ["BuiltinType" , [
         {
-          "pointer" : 121
+          "pointer" : 120
         },
         "NullPtr"
       ]],
       ["BuiltinType" , [
         {
-          "pointer" : 122
+          "pointer" : 121
         },
         "Half"
       ]],
       ["BuiltinType" , [
         {
-          "pointer" : 123
+          "pointer" : 122
         },
         "BFloat16"
       ]],
       ["RecordType" , [
         {
-          "pointer" : 124
+          "pointer" : 123
         },
-        125
+        124
+      ]],
+      ["PointerType" , [
+        {
+          "pointer" : 125
+        },
+        {
+          "type_ptr" : 13,
+          "is_const" : true,
+          "is_trivially_copyable" : true
+        }
       ]],
       ["PointerType" , [
         {
           "pointer" : 126
         },
         {
-          "type_ptr" : 13,
-          "is_const" : true
+          "type_ptr" : 63,
+          "is_const" : true,
+          "is_trivially_copyable" : true
         }
       ]],
       ["PointerType" , [
@@ -1584,31 +1558,24 @@
           "pointer" : 127
         },
         {
-          "type_ptr" : 61,
-          "is_const" : true
-        }
-      ]],
-      ["PointerType" , [
-        {
-          "pointer" : 128
-        },
-        {
-          "type_ptr" : 61
+          "type_ptr" : 63,
+          "is_trivially_copyable" : true
         }
       ]],
       ["RecordType" , [
         {
-          "pointer" : 129
+          "pointer" : 128
         },
-        130
+        129
       ]],
       ["ConstantArrayType" , [
         {
-          "pointer" : 131
+          "pointer" : 130
         },
         {
           "element_type" : {
-            "type_ptr" : 129
+            "type_ptr" : 128,
+            "is_trivially_copyable" : true
           },
           "stride" : 24
         },
@@ -1622,10 +1589,11 @@
       ]],
       ["PointerType" , [
         {
-          "pointer" : 132
+          "pointer" : 131
         },
         {
-          "type_ptr" : 8
+          "type_ptr" : 8,
+          "is_trivially_copyable" : true
         }
       ]],
       ["FunctionProtoType" , [
@@ -1634,13 +1602,14 @@
         },
         {
           "return_type" : {
-            "type_ptr" : 59
+            "type_ptr" : 61
           }
         },
         {
           "params_type" : [
             {
-              "type_ptr" : 13
+              "type_ptr" : 13,
+              "is_trivially_copyable" : true
             }
           ]
         }
@@ -1651,7 +1620,7 @@
         },
         {
           "return_type" : {
-            "type_ptr" : 59
+            "type_ptr" : 61
           }
         },
         {
@@ -1663,13 +1632,30 @@
         },
         28
       ]],
+      ["ElaboratedType" , [
+        {
+          "pointer" : 49,
+          "desugared_type" : 8
+        }
+      ]],
+      ["LValueReferenceType" , [
+        {
+          "pointer" : 132
+        },
+        {
+          "type_ptr" : 8,
+          "is_const" : true,
+          "is_trivially_copyable" : true
+        }
+      ]],
       ["LValueReferenceType" , [
         {
           "pointer" : 21
         },
         {
-          "type_ptr" : 8,
-          "is_const" : true
+          "type_ptr" : 49,
+          "is_const" : true,
+          "is_trivially_copyable" : true
         }
       ]],
       ["FunctionProtoType" , [
@@ -1678,13 +1664,13 @@
         },
         {
           "return_type" : {
-            "type_ptr" : 59
+            "type_ptr" : 61
           }
         },
         {
           "params_type" : [
             {
-              "type_ptr" : 21
+              "type_ptr" : 132
             }
           ]
         }
@@ -1695,7 +1681,7 @@
         },
         {
           "return_type" : {
-            "type_ptr" : 59
+            "type_ptr" : 61
           }
         },
         {
@@ -1708,25 +1694,35 @@
       ]],
       ["RValueReferenceType" , [
         {
+          "pointer" : 134
+        },
+        {
+          "type_ptr" : 8,
+          "is_trivially_copyable" : true
+        }
+      ]],
+      ["RValueReferenceType" , [
+        {
           "pointer" : 25
         },
         {
-          "type_ptr" : 8
+          "type_ptr" : 49,
+          "is_trivially_copyable" : true
         }
       ]],
       ["FunctionProtoType" , [
         {
-          "pointer" : 134
+          "pointer" : 135
         },
         {
           "return_type" : {
-            "type_ptr" : 59
+            "type_ptr" : 61
           }
         },
         {
           "params_type" : [
             {
-              "type_ptr" : 25
+              "type_ptr" : 134
             }
           ]
         }
@@ -1737,7 +1733,7 @@
         },
         {
           "return_type" : {
-            "type_ptr" : 59
+            "type_ptr" : 61
           }
         },
         {
@@ -1754,10 +1750,26 @@
         },
         {
           "return_type" : {
-            "type_ptr" : 59
+            "type_ptr" : 61
           }
         },
         {
+        }
+      ]],
+      ["ElaboratedType" , [
+        {
+          "pointer" : 57,
+          "desugared_type" : 29
+        }
+      ]],
+      ["LValueReferenceType" , [
+        {
+          "pointer" : 136
+        },
+        {
+          "type_ptr" : 29,
+          "is_const" : true,
+          "is_trivially_copyable" : true
         }
       ]],
       ["LValueReferenceType" , [
@@ -1765,23 +1777,24 @@
           "pointer" : 40
         },
         {
-          "type_ptr" : 29,
-          "is_const" : true
+          "type_ptr" : 57,
+          "is_const" : true,
+          "is_trivially_copyable" : true
         }
       ]],
       ["FunctionProtoType" , [
         {
-          "pointer" : 135
+          "pointer" : 137
         },
         {
           "return_type" : {
-            "type_ptr" : 59
+            "type_ptr" : 61
           }
         },
         {
           "params_type" : [
             {
-              "type_ptr" : 40
+              "type_ptr" : 136
             }
           ]
         }
@@ -1792,7 +1805,7 @@
         },
         {
           "return_type" : {
-            "type_ptr" : 59
+            "type_ptr" : 61
           }
         },
         {
@@ -1809,7 +1822,7 @@
         },
         {
           "return_type" : {
-            "type_ptr" : 59
+            "type_ptr" : 61
           }
         },
         {
@@ -1817,25 +1830,35 @@
       ]],
       ["RValueReferenceType" , [
         {
+          "pointer" : 138
+        },
+        {
+          "type_ptr" : 29,
+          "is_trivially_copyable" : true
+        }
+      ]],
+      ["RValueReferenceType" , [
+        {
           "pointer" : 44
         },
         {
-          "type_ptr" : 29
+          "type_ptr" : 57,
+          "is_trivially_copyable" : true
         }
       ]],
       ["FunctionProtoType" , [
         {
-          "pointer" : 136
+          "pointer" : 139
         },
         {
           "return_type" : {
-            "type_ptr" : 59
+            "type_ptr" : 61
           }
         },
         {
           "params_type" : [
             {
-              "type_ptr" : 44
+              "type_ptr" : 138
             }
           ]
         }
@@ -1846,7 +1869,7 @@
         },
         {
           "return_type" : {
-            "type_ptr" : 59
+            "type_ptr" : 61
           }
         },
         {
@@ -1859,11 +1882,12 @@
       ]],
       ["FunctionProtoType" , [
         {
-          "pointer" : 51
+          "pointer" : 52
         },
         {
           "return_type" : {
-            "type_ptr" : 13
+            "type_ptr" : 13,
+            "is_trivially_copyable" : true
           }
         },
         {
@@ -1871,25 +1895,45 @@
       ]],
       ["PointerType" , [
         {
-          "pointer" : 137
+          "pointer" : 140
         },
         {
-          "type_ptr" : 128
+          "type_ptr" : 127,
+          "is_trivially_copyable" : true
+        }
+      ]],
+      ["PointerType" , [
+        {
+          "pointer" : 141
+        },
+        {
+          "type_ptr" : 29,
+          "is_trivially_copyable" : true
+        }
+      ]],
+      ["PointerType" , [
+        {
+          "pointer" : 142
+        },
+        {
+          "type_ptr" : 57,
+          "is_trivially_copyable" : true
         }
       ]],
       ["FunctionProtoType" , [
         {
-          "pointer" : 138
+          "pointer" : 143
         },
         {
           "return_type" : {
-            "type_ptr" : 59
+            "type_ptr" : 61
           }
         },
         {
           "params_type" : [
             {
-              "type_ptr" : 13
+              "type_ptr" : 13,
+              "is_trivially_copyable" : true
             }
           ]
         }
@@ -1900,55 +1944,58 @@
         },
         {
           "return_type" : {
-            "type_ptr" : 59
+            "type_ptr" : 61
           }
         },
         {
           "params_type" : [
             {
-              "type_ptr" : 13
+              "type_ptr" : 13,
+              "is_trivially_copyable" : true
             }
           ]
         }
       ]],
       ["ObjCObjectType" , [
         {
-          "pointer" : 139
+          "pointer" : 144
         },
         {
-          "base_type" : 117
+          "base_type" : 116
         }
       ]],
       ["ObjCObjectPointerType" , [
         {
-          "pointer" : 140
+          "pointer" : 145
         },
         {
-          "type_ptr" : 139
+          "type_ptr" : 144
         }
       ]],
       ["TypedefType" , [
         {
-          "pointer" : 141,
-          "desugared_type" : 140
+          "pointer" : 146,
+          "desugared_type" : 145
         },
         {
           "child_type" : {
-            "type_ptr" : 140
+            "type_ptr" : 145,
+            "is_trivially_copyable" : true
           },
-          "decl_ptr" : 142
+          "decl_ptr" : 147
         }
       ]],
       ["TypedefType" , [
         {
-          "pointer" : 58,
-          "desugared_type" : 140
+          "pointer" : 60,
+          "desugared_type" : 145
         },
         {
           "child_type" : {
-            "type_ptr" : 141
+            "type_ptr" : 146,
+            "is_trivially_copyable" : true
           },
-          "decl_ptr" : 57
+          "decl_ptr" : 59
         }
       ]],
       ["NoneType" , [

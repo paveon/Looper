@@ -18,13 +18,18 @@ open Control_intf
 module type Elt = sig
   type t [@@deriving compare, equal, sexp_of]
 
+  module Priority : sig
+    type t [@@deriving compare]
+  end
+
   val pp : t pp
-  val equal_destination : t -> t -> bool
-  val dnf : t -> t list
+  val prio : t -> Priority.t
+  val dnf : t -> t iter
 end
 
 (** Interface of analysis control scheduler "queues". *)
 module type QueueS = sig
+  (** a single element of work *)
   type elt
 
   (** a "queue" of elements, which need not be FIFO *)
@@ -44,7 +49,9 @@ module type QueueS = sig
       the same destination as [e]. [q'] is equivalent to [q] but possibly
       more compactly represented. *)
 
-  val remove : elt -> elt iter -> t -> t
+  val remove_top : t -> t
+  (** [remove_top q] is [q'] where [q'] is [q] with all elements returned by
+      [top] removed *)
 end
 
 (** Type of a queue implementation, which is parameterized over elements. *)
@@ -56,42 +63,29 @@ module type Queue = functor (Elt : Elt) -> QueueS with type elt = Elt.t
 module PriorityQueue (Elt : Elt) : QueueS with type elt = Elt.t = struct
   type elt = Elt.t
 
-  module Elts = Set.Make (Elt)
+  module Pq = Psq.Make (Elt) (Elt.Priority)
 
-  type t = {queue: Elt.t FHeap.t; removed: Elts.t}
+  type t = Pq.t
 
-  let elts {queue; removed} =
-    Iter.unfoldr FHeap.pop queue
-    |> Iter.filter ~f:(fun elt -> not (Elts.mem elt removed))
+  let pp =
+    let sep f () = Format.fprintf f " ::@ " in
+    Pq.pp ~sep (fun f (elt, _) -> Elt.pp f elt)
 
-  let pp ppf q =
-    Format.fprintf ppf "@[%a@]" (List.pp " ::@ " Elt.pp)
-      (Iter.to_list (elts q))
+  let create () = Pq.empty
+  let add elt = Pq.add elt (Elt.prio elt)
 
-  let create () = {queue= FHeap.create ~cmp:Elt.compare; removed= Elts.empty}
+  let top q =
+    let+ top_elt, top_prio = Pq.min q in
+    let elts =
+      Iter.from_iter (fun f -> Pq.iter_at_most top_prio (fun x _ -> f x) q)
+    in
+    (top_elt, elts, q)
 
-  let add elt {queue; removed} =
-    let removed' = Elts.remove elt removed in
-    if removed' == removed then {queue= FHeap.add queue elt; removed}
-    else {queue; removed= removed'}
-
-  let rec top {queue; removed} =
-    let* next = FHeap.top queue in
-    let removed' = Elts.remove next removed in
-    if removed' != removed then
-      let queue' = FHeap.remove_top_exn queue in
-      top {queue= queue'; removed= removed'}
-    else
-      let elts =
-        Iter.filter ~f:(Elt.equal_destination next) (elts {queue; removed})
-      in
-      Some (next, elts, {queue; removed})
-
-  let remove top elts {queue; removed} =
-    assert (Elt.equal top (FHeap.top_exn queue)) ;
-    let queue = FHeap.remove_top_exn queue in
-    let removed = Elts.union (Elts.of_iter elts) removed in
-    {queue; removed}
+  let remove_top q =
+    match Pq.min q with
+    | None -> q
+    | Some (_, top_prio) ->
+        Pq.fold_at_most top_prio (fun e _ q -> Pq.remove e q) q q
 end
 
 module RandomQueue (Elt : Elt) : QueueS with type elt = Elt.t = struct
@@ -174,7 +168,7 @@ module RandomQueue (Elt : Elt) : QueueS with type elt = Elt.t = struct
     ; last= Add_or_pop_frontier }
 
   let add elt q =
-    let add_elt l = List.fold ~f:RAL.cons (Elt.dnf elt) l in
+    let add_elt l = Iter.fold ~f:RAL.cons (Elt.dnf elt) l in
     match q.last with
     | Add_or_pop_frontier ->
         (* elt is a sibling of the elements of recent, so extend recent *)
@@ -188,10 +182,10 @@ module RandomQueue (Elt : Elt) : QueueS with type elt = Elt.t = struct
         ; recent_weight= elt_weight
         ; frontier=
             ( if RAL.is_empty q.recent then q.frontier
-            else
-              M.update elt_weight q.frontier ~f:(function
-                | Some data -> Some (RAL.append q.recent data)
-                | None -> Some q.recent ) )
+              else
+                M.update elt_weight q.frontier ~f:(function
+                  | Some data -> Some (RAL.append q.recent data)
+                  | None -> Some q.recent ) )
         ; frontier_weight=
             q.frontier_weight
             +. Float.of_int (RAL.length q.recent)
@@ -232,7 +226,7 @@ module RandomQueue (Elt : Elt) : QueueS with type elt = Elt.t = struct
                    ; recent_weight= key
                    ; frontier=
                        ( if RAL.is_empty data then M.remove key q.frontier
-                       else M.add ~key ~data q.frontier )
+                         else M.add ~key ~data q.frontier )
                    ; frontier_weight= q.frontier_weight -. w
                    ; last= Add_or_pop_frontier } ) ) )
         ~finish:(fun _ ->
@@ -240,15 +234,20 @@ module RandomQueue (Elt : Elt) : QueueS with type elt = Elt.t = struct
           None )
 
   let top _ = todo "concurrent sampling analysis" ()
-  let remove _ = todo "concurrent sampling analysis" ()
+  let remove_top _ = todo "concurrent sampling analysis" ()
 end
 
-module Make (Config : Config) (D : Domain) (Queue : Queue) = struct
+module MakeDirected
+    (Config : Config)
+    (D : Domain)
+    (Queue : Queue)
+    (Goal : Goal.S) =
+struct
   module Stack : sig
     type t
 
     val empty : t
-    val push_call : Llair.func Llair.call -> D.from_call -> t -> t
+    val push_call : Llair.call_target Llair.call -> D.from_call -> t -> t
     val pop_return : t -> (D.from_call * Llair.jump * t) option
 
     val pop_throw :
@@ -292,7 +291,7 @@ module Make (Config : Config) (D : Domain) (Queue : Queue) = struct
     let empty = Empty |> check invariant
 
     let push_return call from_call stk =
-      let Llair.{callee= {formals; locals}; return; _} = call in
+      let Llair.{callee= {func= {formals; locals}; _}; return; _} = call in
       Return {dst= return; formals; locals; from_call; stk}
       |> check invariant
 
@@ -369,26 +368,38 @@ module Make (Config : Config) (D : Domain) (Queue : Queue) = struct
   (** Representation of a single thread, including identity and scheduling
       state *)
   module Thread : sig
-    type t = Runnable of IP.t | Terminated of ThreadID.t
+    type t =
+      | Runnable of IP.t
+      | Suspended of IP.t
+      | Terminated of D.term_code * ThreadID.t
     [@@deriving equal, sexp_of]
 
     val compare : t Ord.t
     val compare_without_tid : t Ord.t
     val pp : t pp
     val id : t -> ThreadID.t
+    val ip : t -> Llair.IP.t option
   end = struct
     (** Because [ip] needs to include [tid], this is represented as a sum of
         products, but it may be more natural to think in terms of the
         isomorphic representation using a product of a sum such as
-        [(Runnable of ... | Terminated ...) * ThreadID.t]. *)
-    type t = Runnable of IP.t | Terminated of ThreadID.t
+        [(Runnable of ... | ...) * ThreadID.t]. *)
+    type t =
+      | Runnable of IP.t
+      | Suspended of IP.t
+      | Terminated of D.term_code * ThreadID.t
     [@@deriving sexp_of]
 
     let pp ppf = function
       | Runnable ip -> IP.pp ppf ip
-      | Terminated tid -> Format.fprintf ppf "T%i" tid
+      | Suspended ip -> Format.fprintf ppf "S%a" IP.pp ip
+      | Terminated (_, tid) -> Format.fprintf ppf "T%i" tid
 
-    let id = function Runnable {tid} -> tid | Terminated tid -> tid
+    let id = function
+      | Runnable {tid} | Suspended {tid} -> tid
+      | Terminated (_, tid) -> tid
+
+    let ip = function Runnable ip | Suspended ip -> Some ip.ip | _ -> None
 
     (* Note: Threads.inactive relies on comparing tid last *)
     let compare_aux compare_tid x y =
@@ -396,13 +407,16 @@ module Make (Config : Config) (D : Domain) (Queue : Queue) = struct
       if x == y then 0
       else
         match (x, y) with
-        | Runnable x, Runnable y ->
+        | Runnable x, Runnable y | Suspended x, Suspended y ->
             Llair.IP.compare x.ip y.ip
             <?> (Stack.compare_as_inlined_location, x.stk, y.stk)
             <?> (compare_tid, x.tid, y.tid)
         | Runnable _, _ -> -1
         | _, Runnable _ -> 1
-        | Terminated x_tid, Terminated y_tid -> compare_tid x_tid y_tid
+        | Suspended _, _ -> -1
+        | _, Suspended _ -> 1
+        | Terminated (x_tc, x_tid), Terminated (y_tc, y_tid) ->
+            D.compare_term_code x_tc y_tc <?> (compare_tid, x_tid, y_tid)
 
     let compare = compare_aux ThreadID.compare
     let equal = [%compare.equal: t]
@@ -422,7 +436,8 @@ module Make (Config : Config) (D : Domain) (Queue : Queue) = struct
     val init : t
     val create : Llair.block -> t -> ThreadID.t * t
     val after_step : Thread.t -> t -> t * inactive
-    val join : ThreadID.t -> t -> t option
+    val resume : ThreadID.t -> t -> t option
+    val join : ThreadID.t -> t -> (D.term_code * t) option
     val fold : t -> 's -> f:(Thread.t -> 's -> 's) -> 's
   end = struct
     module M = Map.Make (ThreadID)
@@ -456,7 +471,7 @@ module Make (Config : Config) (D : Domain) (Queue : Queue) = struct
         | None -> ThreadID.init
       in
       let tid = max_tid + 1 in
-      let thread = Thread.Runnable {ip; stk= Stack.empty; tid} in
+      let thread = Thread.Suspended {ip; stk= Stack.empty; tid} in
       (tid, M.add ~key:tid ~data:thread threads)
 
     let after_step active threads =
@@ -465,11 +480,19 @@ module Make (Config : Config) (D : Domain) (Queue : Queue) = struct
       let threads = M.add ~key:tid ~data:active threads in
       (threads, inactive)
 
+    let resume tid threads =
+      match M.find tid threads with
+      | Some (Thread.Suspended ip) ->
+          Some (M.add ~key:tid ~data:(Thread.Runnable ip) threads)
+      | _ ->
+          [%Dbg.info " prune resume of non-suspended thread: %i" tid] ;
+          None
+
     let join tid threads =
       match M.find tid threads with
-      | Some (Thread.Terminated _) -> Some (M.remove tid threads)
+      | Some (Thread.Terminated (tc, _)) -> Some (tc, M.remove tid threads)
       | _ ->
-          [%Trace.info " prune join of non-terminated thread: %i" tid] ;
+          [%Dbg.info " prune join of non-terminated thread: %i" tid] ;
           None
   end
 
@@ -481,7 +504,8 @@ module Make (Config : Config) (D : Domain) (Queue : Queue) = struct
       transition need not originate from the terminator of [src]. Edges can
       also represent transitions that produce threads in non-[Runnable]
       scheduling states, determined by the form of [dst]. *)
-  type edge = {dst: Thread.t; src: Llair.Block.t} [@@deriving sexp_of]
+  type edge = {dst: Thread.t; src: Llair.Block.t; retreating: bool}
+  [@@deriving sexp_of]
 
   module Edge = struct
     type t = edge [@@deriving sexp_of]
@@ -500,13 +524,10 @@ module Make (Config : Config) (D : Domain) (Queue : Queue) = struct
       if x == y then 0
       else
         match (x, y) with
-        | {dst= Runnable x_t}, {dst= Runnable y_t} ->
-            let is_rec_call = function
-              | {Llair.term= Call {recursive= true}} -> true
-              | _ -> false
-            in
+        | {dst= Runnable x_t}, {dst= Runnable y_t}
+         |{dst= Suspended x_t}, {dst= Suspended y_t} ->
             let compare_stk stk1 stk2 =
-              if is_rec_call x.src then 0
+              if x.retreating then 0
               else Stack.compare_as_inlined_location stk1 stk2
             in
             Llair.IP.compare x_t.ip y_t.ip
@@ -515,8 +536,13 @@ module Make (Config : Config) (D : Domain) (Queue : Queue) = struct
             <?> (compare_tid, x_t.tid, y_t.tid)
         | {dst= Runnable _}, _ -> -1
         | _, {dst= Runnable _} -> 1
-        | {dst= Terminated x_tid}, {dst= Terminated y_tid} ->
-            Llair.Block.compare x.src y.src <?> (compare_tid, x_tid, y_tid)
+        | {dst= Suspended _}, _ -> -1
+        | _, {dst= Suspended _} -> 1
+        | {dst= Terminated (x_tc, x_tid)}, {dst= Terminated (y_tc, y_tid)}
+          ->
+            Llair.Block.compare x.src y.src
+            <?> (D.compare_term_code, x_tc, y_tc)
+            <?> (compare_tid, x_tid, y_tid)
 
     let compare = compare_aux ThreadID.compare
     let equal = [%compare.equal: t]
@@ -531,11 +557,7 @@ module Make (Config : Config) (D : Domain) (Queue : Queue) = struct
     let empty = M.empty
     let find = M.find
     let add = M.add
-
-    let join x y =
-      M.merge x y ~f:(fun _ -> function
-        | `Left d | `Right d -> Some d
-        | `Both (d1, d2) -> Some (Int.max d1 d2) )
+    let join = M.union ~f:(fun _ d1 d2 -> Some (Int.max d1 d2))
   end
 
   type switches = int [@@deriving compare, equal, sexp_of]
@@ -551,7 +573,9 @@ module Make (Config : Config) (D : Domain) (Queue : Queue) = struct
     ; state: D.t  (** symbolic memory and register state *)
     ; threads: Threads.t  (** scheduling state of the threads *)
     ; switches: switches  (** count of preceding context switches *)
-    ; depths: Depths.t  (** count of retreating edge crossings *) }
+    ; depths: Depths.t  (** count of retreating edge crossings *)
+    ; goal: Goal.t  (** goal for symbolic execution exploration *)
+    ; history: History.t  (** DAG history of executions to this point *) }
   [@@deriving sexp_of]
 
   (** An abstract machine state consists of the instruction pointer of the
@@ -578,13 +602,13 @@ module Make (Config : Config) (D : Domain) (Queue : Queue) = struct
           (** pre-computed summary of inactive thread scheduling states, for
               use by e.g. [Elt.compare] *) }
 
-  let pp_state ppf state = [%Trace.fprintf ppf "@[%a@]@\n" D.pp state]
+  let pp_state ppf state = [%Dbg.fprintf ppf "@[%a@]@\n" D.pp state]
 
   module Work : sig
     type t
 
-    val init : D.t -> Llair.block -> t
-    val add : retreating:bool -> work -> t -> t
+    val init : D.t -> Llair.block -> Goal.t -> t
+    val add : work -> t -> t
     val run : f:(ams -> t -> t) -> t -> unit
   end = struct
     (** Element of the frontier of execution, ordered for scheduler's
@@ -592,15 +616,34 @@ module Make (Config : Config) (D : Domain) (Queue : Queue) = struct
     module Elt = struct
       type t = elt [@@deriving sexp_of]
 
-      let pp ppf {ctrl= {edge; depth}; threads; switches} =
-        Format.fprintf ppf "%i,%i: %a %a" switches depth Edge.pp edge
-          Threads.pp threads
+      module Priority = struct
+        type t = {goal: Goal.t; dst: Llair.block option; threads: Threads.t}
+
+        let status {goal; dst; threads= _} = Goal.status goal dst
+        let threads {goal= _; dst= _; threads} = threads
+
+        let compare =
+          let open Ord.Infix in
+          (Goal.compare_status >|= status) @? (Threads.compare >|= threads)
+      end
+
+      let prio x : Priority.t =
+        let dst = Thread.ip x.ctrl.edge.dst |>= Llair.IP.block in
+        {goal= x.goal; dst; threads= x.threads}
+
+      let pp ppf {ctrl= {edge; depth}; threads; switches; goal} =
+        Format.fprintf ppf "%i,%i: %a %a %a" switches depth Edge.pp edge
+          Threads.pp threads Goal.pp_short goal
+
+      let goal_status x =
+        Goal.status x.goal (Thread.ip x.ctrl.edge.dst |>= Llair.IP.block)
 
       let compare x y =
         let open Ord.Infix in
         if x == y then 0
         else
-          ( (Int.compare >|= fun x -> x.switches)
+          ( (Goal.compare_status >|= goal_status)
+          @? (Int.compare >|= fun x -> x.switches)
           @? (Int.compare >|= fun x -> x.ctrl.depth)
           @? (Edge.compare_without_tid >|= fun x -> x.ctrl.edge)
           @? (Threads.compare_inactive >|= fun x -> x.ctrl.inactive)
@@ -611,23 +654,19 @@ module Make (Config : Config) (D : Domain) (Queue : Queue) = struct
             x y
 
       let equal = [%compare.equal: t]
-      let equal_destination x y = Threads.equal x.threads y.threads
-
-      let dnf x =
-        List.map
-          ~f:(fun state -> {x with state})
-          (D.Set.to_list (D.dnf x.state))
+      let dnf x = Iter.map ~f:(fun state -> {x with state}) (D.dnf x.state)
     end
 
     module Queue = Queue (Elt)
 
-    (** Concurrent state and history projection of abstract machine states.
-        Abstract machine states with the same [switches], [ip], and
-        [threads] fields have, as far as the scheduler is concerned, the
-        same concurrent state and history and can be joined. *)
-    module ConcSH = struct
+    (** Projection of abstract machine states to components that can not be
+        joined across multiple executions. Abstract machine states with the
+        same [switches], [ip], [threads], and [goal] fields have, as far as
+        the scheduler is concerned, the same execution history and can be
+        joined. *)
+    module Partition = struct
       module T = struct
-        type t = switches * IP.t * Threads.t
+        type t = switches * IP.t * Threads.t * Goal.t
         [@@deriving compare, equal, sexp_of]
       end
 
@@ -635,21 +674,23 @@ module Make (Config : Config) (D : Domain) (Queue : Queue) = struct
       module Map = Map.Make (T)
     end
 
-    (** Sequential state and history projection of abstract machine states.
-        Complementary to [ConcSH], [SeqSH] represents the subset of [ams]
-        fields that can be joined across several executions that share the
-        same abstract concurrent state and history. *)
-    module SeqSH = struct
-      module T = struct
-        type t = D.t * Depths.t [@@deriving compare, equal, sexp_of]
+    (** Projection of abstract machine states to components that can be
+        joined across multiple executions. Complementary to [Partition],
+        [Joinable] represents the subset of [ams] fields that can be joined
+        across several executions that share the same execution history. *)
+    module Joinable = struct
+      module Elt = struct
+        type t = {state: D.t; depths: Depths.t; history: History.t [@ignore]}
+        [@@deriving compare, equal, sexp_of]
       end
 
-      module M = Map.Make (T)
+      module M = Map.Make (Elt)
 
       type t = Edge.t list M.t
 
       let empty = M.empty
       let is_empty = M.is_empty
+      let add = M.add_multi
 
       let diff =
         M.merge ~f:(fun _ -> function
@@ -657,17 +698,16 @@ module Make (Config : Config) (D : Domain) (Queue : Queue) = struct
 
       let union = M.union ~f:(fun _ v1 v2 -> Some (List.append v1 v2))
 
-      let of_list l =
-        List.fold l M.empty ~f:(fun (key, data) m ->
-            M.add_multi ~key ~data m )
-
       let join m =
-        let states, depths, edges =
-          M.fold m (D.Set.empty, Depths.empty, [])
-            ~f:(fun ~key:(q, d) ~data:e (qs, ds, es) ->
-              (D.Set.add q qs, Depths.join d ds, List.append e es) )
+        let states, depths, hists, edges =
+          M.fold m (D.Set.empty, Depths.empty, [], [])
+            ~f:(fun ~key ~data:e (qs, ds, hs, es) ->
+              ( D.Set.add key.state qs
+              , Depths.join key.depths ds
+              , key.history :: hs
+              , List.append e es ) )
         in
-        (D.joinN states, depths, edges)
+        (D.joinN states, depths, hists, edges)
     end
 
     (** Sequential states indexed by concurrent states. When sequential
@@ -683,27 +723,26 @@ module Make (Config : Config) (D : Domain) (Queue : Queue) = struct
         progress of this enumeration is a set of sequential states that is
         indexed by concurrent states. *)
     module Cursor = struct
-      type t = SeqSH.t ConcSH.Map.t
+      type t = Joinable.t Partition.Map.t
 
-      let empty = ConcSH.Map.empty
-      let add = ConcSH.Map.add
-      let find = ConcSH.Map.find
+      let empty = Partition.Map.empty
+      let add = Partition.Map.add
+      let find = Partition.Map.find
     end
 
     (** Analysis exploration state *)
     type t = Queue.t * Cursor.t
 
     let prune switches depth edge =
-      [%Trace.info " %i,%i: %a" switches depth Edge.pp edge]
+      [%Dbg.info " %i,%i: %a" switches depth Edge.pp edge]
 
-    let pp_queue ppf queue = [%Trace.fprintf ppf "@ | %a" Queue.pp queue]
+    let pp_queue ppf queue = [%Dbg.fprintf ppf "@ | %a" Queue.pp queue]
 
     let enqueue depth ({ctrl= {dst} as edge; state; threads; depths} as elt)
         (queue, cursor) =
-      [%Trace.info
+      [%Dbg.info
         " %i,%i: %a%a@\n@[%a@]" elt.switches depth Edge.pp edge pp_queue
           queue pp_state state] ;
-      let depths = Depths.add ~key:edge ~data:depth depths in
       let threads, inactive = Threads.after_step dst threads in
       let queue =
         Queue.add
@@ -712,36 +751,46 @@ module Make (Config : Config) (D : Domain) (Queue : Queue) = struct
       in
       (queue, cursor)
 
-    let init state curr =
+    let init state curr goal =
       let depth = 0 in
       let ip = Llair.IP.mk curr in
       let stk = Stack.empty in
       let prev = curr in
       let tid = ThreadID.init in
-      let edge = {dst= Runnable {ip; stk; tid}; src= prev} in
+      let edge =
+        {dst= Runnable {ip; stk; tid}; src= prev; retreating= false}
+      in
       let threads = Threads.init in
       let switches = 0 in
       let depths = Depths.empty in
       let queue = Queue.create () in
       let cursor = Cursor.empty in
+      let history = History.init in
       enqueue depth
-        {ctrl= edge; state; threads; switches; depths}
+        {ctrl= edge; state; threads; switches; depths; goal; history}
         (queue, cursor)
 
-    let add ~retreating ({ctrl= edge; depths} as elt) wl =
-      let depth = Option.value (Depths.find edge depths) ~default:0 in
-      let depth = if retreating then depth + 1 else depth in
-      if depth > Config.loop_bound then (
-        prune elt.switches depth elt.ctrl ;
-        Report.hit_loop_bound Config.loop_bound ;
-        wl )
-      else enqueue depth elt wl
+    let add ({ctrl= edge; depths} as elt) wl =
+      if not edge.retreating then enqueue 0 elt wl
+      else
+        let depth = 1 + Option.value (Depths.find edge depths) ~default:0 in
+        if depth <= Config.loop_bound then
+          let depths = Depths.add ~key:edge ~data:depth depths in
+          enqueue depth {elt with depths} wl
+        else (
+          prune elt.switches depth elt.ctrl ;
+          Report.hit_loop_bound Config.loop_bound ;
+          wl )
 
     module Succs = struct
-      module M = ConcSH.Map
+      module M = Partition.Map
 
       let empty = M.empty
-      let add = M.add_multi
+
+      let add ~key ~data:(elt, edge) m =
+        M.update key m ~f:(fun data ->
+            let joinable = Option.value data ~default:Joinable.empty in
+            Some (Joinable.add ~key:elt ~data:edge joinable) )
 
       let find_first m ~f =
         let exception Stop in
@@ -765,55 +814,63 @@ module Make (Config : Config) (D : Domain) (Queue : Queue) = struct
       let* ({threads} as top), elts, queue = Queue.top queue in
       let succs =
         Iter.fold elts Succs.empty ~f:(fun incoming succs ->
-            let {ctrl= {edge}; state; switches; depths} = incoming in
+            let {ctrl= {edge}; state; switches; depths; goal; history} =
+              incoming
+            in
             let incoming_tid = Thread.id edge.dst in
             Threads.fold threads succs ~f:(fun active succs ->
                 match active with
-                | Terminated _ -> succs
+                | Terminated _ | Suspended _ -> succs
                 | Runnable ({tid} as ip) ->
                     let switches =
                       if tid = incoming_tid then switches else switches + 1
                     in
-                    Succs.add ~key:(switches, ip, threads)
-                      ~data:((state, depths), edge)
+                    Succs.add
+                      ~key:(switches, ip, threads, goal)
+                      ~data:({state; depths; history}, edge)
                       succs ) )
       in
       let found, hit_end =
         Succs.find_first succs
-          ~f:(fun ~key:(switches, ip, threads) ~data:incoming ->
-            let next = (switches, ip, threads) in
-            let curr = SeqSH.of_list incoming in
+          ~f:(fun ~key:(switches, ip, threads, goal) ~data:incoming ->
+            let next = (switches, ip, threads, goal) in
             let+ done_states, next_states =
               match Cursor.find next cursor with
               | Some done_states ->
-                  let next_states = SeqSH.diff curr done_states in
-                  if SeqSH.is_empty next_states then None
+                  let next_states = Joinable.diff incoming done_states in
+                  if Joinable.is_empty next_states then None
                   else Some (done_states, next_states)
-              | None -> Some (SeqSH.empty, curr)
+              | None -> Some (Joinable.empty, incoming)
             in
             let cursor =
               Cursor.add ~key:next
-                ~data:(SeqSH.union done_states next_states)
+                ~data:(Joinable.union done_states next_states)
                 cursor
             in
             (next, next_states, cursor) )
       in
-      let queue = if hit_end then Queue.remove top elts queue else queue in
+      let queue = if hit_end then Queue.remove_top queue else queue in
       match found with
-      | Some ((switches, _, _), _, cursor)
+      | Some ((switches, _, _, _), _, cursor)
         when switches > Config.switch_bound ->
           prune switches top.ctrl.depth top.ctrl.edge ;
           Report.hit_switch_bound Config.switch_bound ;
           dequeue (queue, cursor)
-      | Some ((switches, ip, threads), next_states, cursor) ->
-          let state, depths, edges = SeqSH.join next_states in
-          [%Trace.info
+      | Some ((switches, ip, threads, goal), next_states, cursor) ->
+          let state, depths, histories, edges = Joinable.join next_states in
+          [%Dbg.info
+            "(dist: %i; goal state: %a) %a"
+              Llair.((IP.block ip.ip).goal_distance)
+              Goal.pp_short goal Llair.Block.pp_ident (Llair.IP.block ip.ip)] ;
+          let history = History.extend ip.ip histories in
+          [%Dbg.info
             " %i,%i: %a <-t%i- {@[%a@]}%a" switches top.ctrl.depth IP.pp ip
               ip.tid
               (List.pp " ∨@ " Edge.pp)
               edges pp_queue queue] ;
           Some
-            ({ctrl= ip; state; threads; switches; depths}, (queue, cursor))
+            ( {ctrl= ip; state; threads; switches; depths; goal; history}
+            , (queue, cursor) )
       | None -> dequeue (queue, cursor)
 
     let rec run ~f wl =
@@ -822,13 +879,13 @@ module Make (Config : Config) (D : Domain) (Queue : Queue) = struct
       | None -> ()
   end
 
-  let summary_table = Llair.Function.Tbl.create ()
+  let summary_table = Llair.FuncName.Tbl.create ()
 
   let pp_st () =
-    [%Trace.printf
+    [%Dbg.printf
       "@[<v>%t@]" (fun fs ->
-          Llair.Function.Tbl.iteri summary_table ~f:(fun ~key ~data ->
-              Format.fprintf fs "@[<v>%a:@ @[%a@]@]@ " Llair.Function.pp key
+          Llair.FuncName.Tbl.iteri summary_table ~f:(fun ~key ~data ->
+              Format.fprintf fs "@[<v>%a:@ @[%a@]@]@ " Llair.FuncName.pp key
                 (List.pp "@," D.pp_summary)
                 data ) )]
 
@@ -836,70 +893,108 @@ module Make (Config : Config) (D : Domain) (Queue : Queue) = struct
     let src = Llair.IP.block ip in
     let {Llair.dst; retreating} = jump in
     let ip = Llair.IP.mk dst in
-    let edge = {dst= Runnable {ip; stk; tid}; src} in
-    Work.add ~retreating {ams with ctrl= edge} wl
+    let edge = {dst= Runnable {ip; stk; tid}; src; retreating} in
+    Work.add {ams with ctrl= edge} wl
 
   let exec_skip_func areturn return ({ctrl= {ip; tid}; state} as ams) wl =
     Report.unknown_call (Llair.IP.block ip).term ;
     let state = Option.fold ~f:(D.exec_kill tid) areturn state in
     exec_jump return {ams with state} wl
 
-  let exec_call globals call ({ctrl= {stk; tid}; state} as ams) wl =
-    let Llair.{callee; actuals; areturn; return; recursive} = call in
-    let Llair.{name; formals; freturn; locals; entry} = callee in
-    [%Trace.call fun {pf} ->
+  let exec_call globals call ({ctrl= {stk; tid}; state; history} as ams) wl
+      =
+    let Llair.{callee; actuals; areturn; return} = call in
+    let Llair.{func; recursive} = callee in
+    let Llair.{name; formals; freturn; locals; entry} = func in
+    [%Dbg.call fun {pf} ->
       pf " t%i@[<2>@ %a from %a with state@]@;<1 2>%a" tid
-        Llair.Func.pp_call call Llair.Function.pp return.dst.parent.name
-        D.pp state]
+        Llair.Func.pp_call {call with callee= func} Llair.FuncName.pp
+        return.dst.parent.name D.pp state]
     ;
+    let ip = Llair.IP.mk entry in
+    let goal = Goal.update_after_call name ams.goal in
+    let goal_progressed = goal != ams.goal in
+    let history =
+      if goal_progressed then History.progress_goal history else history
+    in
+    ( if goal_progressed && Goal.reached goal then
+        let history = History.extend ip [history] in
+        let dp_witness fs =
+          History.dump ~show_root:true history fs ;
+          Format.fprintf fs "@\nSymbolic state:@ %a" D.pp state
+        in
+        Report.reached_goal
+          ~dp_goal:(fun fs -> Goal.pp fs goal)
+          ~dp_valid:(History.validate history)
+          ~dp_witness ) ;
     let dnf_states =
-      if Config.function_summaries then D.dnf state else D.Set.of_ state
+      if Config.function_summaries then D.dnf state
+      else Iter.singleton state
     in
     let domain_call =
       D.call tid ~globals ~actuals ~areturn ~formals ~freturn ~locals
     in
-    D.Set.fold dnf_states wl ~f:(fun state wl ->
+    Iter.fold dnf_states wl ~f:(fun state wl ->
         match
           if not Config.function_summaries then None
           else
             let state = fst (domain_call ~summaries:false state) in
-            let* summary = Llair.Function.Tbl.find summary_table name in
+            let* summary = Llair.FuncName.Tbl.find summary_table name in
             List.find_map ~f:(D.apply_summary state) summary
         with
         | None ->
             let state, from_call =
               domain_call ~summaries:Config.function_summaries state
             in
-            let ip = Llair.IP.mk entry in
             let stk = Stack.push_call call from_call stk in
             let src = Llair.IP.block ams.ctrl.ip in
-            let edge = {dst= Runnable {ip; stk; tid}; src} in
-            Work.add ~retreating:recursive {ams with ctrl= edge; state} wl
-        | Some post -> exec_jump return {ams with state= post} wl )
+            let edge =
+              {dst= Runnable {ip; stk; tid}; src; retreating= recursive}
+            in
+            Work.add {ams with ctrl= edge; state; goal; history} wl
+        | Some post ->
+            exec_jump return {ams with state= post; goal; history} wl )
     |>
-    [%Trace.retn fun {pf} _ -> pf ""]
+    [%Dbg.retn fun {pf} _ -> pf ""]
 
   let exec_call call ams wl =
-    let Llair.{callee= {name} as callee; areturn; return; _} = call in
-    if Llair.Func.is_undefined callee then
+    let Llair.{callee= {func}; areturn; return; _} = call in
+    if Llair.Func.is_undefined func then
       exec_skip_func areturn return ams wl
     else
-      let globals = Domain_used_globals.by_function Config.globals name in
+      let globals =
+        Domain_used_globals.by_function Config.globals func.name
+      in
       exec_call globals call ams wl
 
-  let exec_return exp ({ctrl= {ip; stk; tid}; state} as ams) wl =
+  let exec_return exp ({ctrl= {ip; stk; tid}; state; history} as ams) wl =
     let block = Llair.IP.block ip in
     let func = block.parent in
     let Llair.{name; formals; freturn; locals} = func in
-    [%Trace.call fun {pf} -> pf " t%i@ from: %a" tid Llair.Function.pp name]
+    [%Dbg.call fun {pf} -> pf " t%i@ from: %a" tid Llair.FuncName.pp name]
     ;
+    let goal = Goal.update_after_retn name ams.goal in
+    let goal_progressed = goal != ams.goal in
+    let history =
+      if goal_progressed then History.progress_goal history else history
+    in
+    ( if goal_progressed && Goal.reached goal then
+        let history = History.extend ip [history] in
+        let dp_witness fs =
+          History.dump history fs ;
+          Format.fprintf fs "@\nSymbolic state:@ %a" D.pp state
+        in
+        Report.reached_goal
+          ~dp_goal:(fun fs -> Goal.pp fs goal)
+          ~dp_valid:(History.validate history)
+          ~dp_witness ) ;
     let summarize post_state =
       if not Config.function_summaries then post_state
       else
         let function_summary, post_state =
           D.create_summary tid ~locals ~formals post_state
         in
-        Llair.Function.Tbl.add_multi ~key:name ~data:function_summary
+        Llair.FuncName.Tbl.add_multi ~key:name ~data:function_summary
           summary_table ;
         pp_st () ;
         post_state
@@ -919,20 +1014,28 @@ module Make (Config : Config) (D : Domain) (Queue : Queue) = struct
         in
         let retn_state = D.retn tid formals freturn from_call post_state in
         exec_jump retn_site
-          {ams with ctrl= {ams.ctrl with stk}; state= retn_state}
+          { ams with
+            ctrl= {ams.ctrl with stk}
+          ; state= retn_state
+          ; goal
+          ; history }
           wl
     | None ->
-        if Config.function_summaries then summarize exit_state |> ignore ;
-        Work.add ~retreating:false
-          {ams with ctrl= {dst= Terminated tid; src= block}}
+        summarize exit_state |> ignore ;
+        let tc = D.term tid formals freturn exit_state in
+        Work.add
+          { ams with
+            ctrl= {dst= Terminated (tc, tid); src= block; retreating= false}
+          ; goal
+          ; history }
           wl )
     |>
-    [%Trace.retn fun {pf} _ -> pf ""]
+    [%Dbg.retn fun {pf} _ -> pf ""]
 
   let exec_throw exc ({ctrl= {ip; stk; tid}; state} as ams) wl =
     let func = (Llair.IP.block ip).parent in
     let Llair.{name; formals; freturn; fthrow; locals} = func in
-    [%Trace.call fun {pf} -> pf "@ from %a" Llair.Function.pp name]
+    [%Dbg.call fun {pf} -> pf "@ from %a" Llair.FuncName.pp name]
     ;
     let unwind formals scope from_call state =
       D.retn tid formals (Some fthrow) from_call
@@ -951,31 +1054,55 @@ module Make (Config : Config) (D : Domain) (Queue : Queue) = struct
           wl
     | None -> wl )
     |>
-    [%Trace.retn fun {pf} _ -> pf ""]
+    [%Dbg.retn fun {pf} _ -> pf ""]
 
   let exec_assume cond jump ({ctrl= {tid}; state} as ams) wl =
     match D.exec_assume tid state cond with
     | Some state -> exec_jump jump {ams with state} wl
     | None ->
-        [%Trace.info " infeasible %a@\n@[%a@]" Llair.Exp.pp cond D.pp state] ;
+        [%Dbg.info " infeasible %a@\n@[%a@]" Llair.Exp.pp cond D.pp state] ;
         wl
 
-  let exec_thread_create reg {Llair.entry; locals} return
+  let exec_thread_create areturn
+      {Llair.name; formals; freturn; entry; locals} actual return
       ({ctrl= {tid}; state; threads} as ams) wl =
-    let child_tid, threads = Threads.create entry threads in
-    let child =
-      Llair.Exp.integer (Llair.Reg.typ reg) (Z.of_int child_tid)
+    let child, threads = Threads.create entry threads in
+    let state =
+      match areturn with
+      | None -> state
+      | Some reg ->
+          let child =
+            Llair.Exp.integer (Llair.Reg.typ reg) (Z.of_int child)
+          in
+          D.exec_move tid (IArray.of_ (reg, child)) state
     in
-    let state = D.exec_move tid (IArray.of_ (reg, child)) state in
-    let state = D.enter_scope child_tid locals state in
+    let state, _ =
+      let globals = Domain_used_globals.by_function Config.globals name in
+      let actuals = IArray.of_ actual in
+      D.call ~summaries:false tid ~child ~globals ~actuals ~areturn:None
+        ~formals ~freturn ~locals state
+    in
     exec_jump return {ams with state; threads} wl
 
-  let exec_thread_join thread return ({ctrl= {tid}; state; threads} as ams)
-      wl =
+  let exec_thread_resume thread return
+      ({ctrl= {tid}; state; threads} as ams) wl =
+    List.fold (D.resolve_int tid state thread) wl ~f:(fun resume_tid wl ->
+        match Threads.resume resume_tid threads with
+        | None -> wl
+        | Some threads -> exec_jump return {ams with threads} wl )
+
+  let exec_thread_join thread areturn return
+      ({ctrl= {tid}; state; threads} as ams) wl =
     List.fold (D.resolve_int tid state thread) wl ~f:(fun join_tid wl ->
         match Threads.join join_tid threads with
-        | Some threads -> exec_jump return {ams with threads} wl
-        | None -> wl )
+        | None -> wl
+        | Some (term_code, threads) ->
+            let state =
+              match areturn with
+              | None -> state
+              | Some reg -> D.move_term_code tid reg term_code state
+            in
+            exec_jump return {ams with state; threads} wl )
 
   let resolve_callee (pgm : Llair.program) tid callee state =
     let lookup name = Llair.Func.find name pgm.functions in
@@ -1000,36 +1127,61 @@ module Make (Config : Config) (D : Domain) (Queue : Queue) = struct
             exec_assume
               (Llair.Exp.eq ptr
                  (Llair.Exp.label
-                    ~parent:(Llair.Function.name jump.dst.parent.name)
+                    ~parent:(Llair.FuncName.name jump.dst.parent.name)
                     ~name:jump.dst.lbl ) )
               jump ams wl )
-    | Call ({callee; actuals; areturn; return} as call) -> (
-      match
-        (Llair.Function.name callee.name, IArray.to_array actuals, areturn)
-      with
-      | "sledge_thread_create", [|callee|], Some reg -> (
+    | Call ({callee= Direct callee} as call) ->
+        exec_call {call with callee} ams wl
+    | Call
+        ( {callee= Indirect {ptr= callee; candidates}; areturn; return} as
+        call ) -> (
+      match resolve_callee pgm tid callee state with
+      | [] -> exec_skip_func areturn return ams wl
+      | callees ->
+          List.fold callees wl ~f:(fun callee_func wl ->
+              let callee =
+                match
+                  IArray.find candidates ~f:(fun {Llair.func; _} ->
+                      Llair.Func.equal func callee_func )
+                with
+                | Some callee -> callee
+                | None ->
+                    warn "unexpected call target %a at indirect callsite %a"
+                      Llair.Func.pp callee_func Llair.Term.pp term () ;
+                    (* Conservatively assume this call may be recursive *)
+                    {Llair.func= callee_func; recursive= true}
+              in
+              exec_call {call with callee} ams wl ) )
+    | Call {callee= Intrinsic callee; actuals; areturn; return} -> (
+      match (callee, IArray.to_array actuals) with
+      | `sledge_thread_create, [|callee; arg|] -> (
         match resolve_callee pgm tid callee state with
         | [] -> exec_skip_func areturn return ams wl
         | callees ->
             List.fold callees wl ~f:(fun callee wl ->
-                exec_thread_create reg callee return ams wl ) )
-      | "sledge_thread_join", [|thread|], None ->
-          exec_thread_join thread return ams wl
-      | _ -> exec_call call ams wl )
-    | ICall ({callee; areturn; return} as call) -> (
-      match resolve_callee pgm tid callee state with
-      | [] -> exec_skip_func areturn return ams wl
-      | callees ->
-          List.fold callees wl ~f:(fun callee wl ->
-              exec_call {call with callee} ams wl ) )
+                exec_thread_create areturn callee arg return ams wl ) )
+      | `sledge_thread_resume, [|thread|] ->
+          exec_thread_resume thread return ams wl
+      | `sledge_thread_join, [|thread|] ->
+          exec_thread_join thread areturn return ams wl
+      | ( ( `sledge_thread_create | `sledge_thread_resume
+          | `sledge_thread_join )
+        , _ ) ->
+          violates Llair.Term.invariant term )
     | Return {exp} -> exec_return exp ams wl
     | Throw {exc} -> exec_throw exc ams wl
+    | Abort {loc} ->
+        if not (D.is_unsat state) then
+          Report.alarm
+            (Alarm.v Abort loc Llair.Term.pp term D.pp state)
+            ~dp_witness:(History.dump ams.history) ;
+        wl
     | Unreachable -> wl
 
   let rec exec_ip pgm ({ctrl= {ip; stk; tid}; state} as ams) wl =
     match Llair.IP.inst ip with
     | Some inst -> (
-        [%Trace.info
+        [%Dbg.info
           " t%i %a@\n@[%a@]%a" tid Llair.IP.pp ip pp_state state
             Llair.Inst.pp inst] ;
         Report.step_inst ip ;
@@ -1038,46 +1190,56 @@ module Make (Config : Config) (D : Domain) (Queue : Queue) = struct
             let ip = Llair.IP.succ ip in
             if Llair.IP.is_schedule_point ip then
               let src = Llair.IP.block ip in
-              let edge = {dst= Runnable {ip; stk; tid}; src} in
-              Work.add ~retreating:false {ams with ctrl= edge; state} wl
+              let edge =
+                {dst= Runnable {ip; stk; tid}; src; retreating= false}
+              in
+              Work.add {ams with ctrl= edge; state} wl
             else exec_ip pgm {ams with ctrl= {ams.ctrl with ip}; state} wl
         | Error alarm ->
-            Report.alarm alarm ;
+            Report.alarm alarm ~dp_witness:(History.dump ams.history) ;
             wl )
     | None ->
-        [%Trace.info
+        [%Dbg.info
           " t%i %a@\n@[%a@]%a" tid Llair.IP.pp ip pp_state state
             Llair.Term.pp (Llair.IP.block ip).term] ;
         exec_term pgm ams wl
 
-  let call_entry_point pgm =
+  let call_entry_point pgm goal =
     let+ {name; formals; freturn; locals; entry} =
       List.find_map Config.entry_points ~f:(fun entry_point ->
-          let* func = Llair.Func.find entry_point pgm.Llair.functions in
-          if IArray.is_empty func.formals then Some func else None )
+          Llair.Func.find entry_point pgm.Llair.functions )
     in
     let summaries = Config.function_summaries in
     let globals = Domain_used_globals.by_function Config.globals name in
-    let actuals = IArray.empty in
+    let actuals = IArray.map ~f:Llair.Exp.reg formals in
     let areturn = None in
     let state, _ =
       D.call ThreadID.init ~summaries ~globals ~actuals ~areturn ~formals
         ~freturn ~locals (D.init pgm.globals)
     in
-    Work.init state entry
+    Goal.initialize ~pgm ~entry:name goal ;
+    Work.init state entry goal
 
-  let exec_pgm pgm =
-    match call_entry_point pgm with
+  let exec_pgm pgm goal =
+    match call_entry_point pgm goal with
     | Some wl -> Work.run ~f:(exec_ip pgm) wl
     | None -> fail "no entry point found" ()
 
-  let compute_summaries pgm =
+  let compute_summaries pgm goal =
     assert Config.function_summaries ;
-    exec_pgm pgm ;
-    Llair.Function.Tbl.fold summary_table Llair.Function.Map.empty
+    exec_pgm pgm goal ;
+    Llair.FuncName.Tbl.fold summary_table Llair.FuncName.Map.empty
       ~f:(fun ~key ~data map ->
         match data with
         | [] -> map
-        | _ -> Llair.Function.Map.add ~key ~data map )
+        | _ -> Llair.FuncName.Map.add ~key ~data map )
+end
+[@@inlined]
+
+module Make (C : Config) (D : Domain) (Q : Queue) = struct
+  module Ctrl = MakeDirected (C) (D) (Q) (Goal.Undirected)
+
+  let exec_pgm pgm = Ctrl.exec_pgm pgm ()
+  let compute_summaries pgm = Ctrl.compute_summaries pgm ()
 end
 [@@inlined]

@@ -104,7 +104,8 @@ type continuation =
   ; return_temp: bool
         (* true if temps should not be removed in the node but returned to ancestors *) }
 
-let pp_continuation fmt ({break; continue; return_temp} [@warning "+9"]) =
+let pp_continuation fmt ({break; continue; return_temp} [@warning "+missing-record-field-pattern"])
+    =
   if List.is_empty break then F.pp_print_string fmt "empty"
   else
     F.fprintf fmt "@[{break=[%a];@;continue=[%a];@;return_temp=%b}@]"
@@ -145,7 +146,7 @@ type trans_state =
   ; var_exp_typ: (Exp.t * Typ.t) option
   ; opaque_exp: (Exp.t * Typ.t) option
   ; is_fst_arg_objc_instance_method_call: bool
-  ; passed_as_noescape_block_to: Procname.t option
+  ; block_as_arg_attributes: ProcAttributes.block_as_arg_attributes option
         (** Current to-be-translated instruction is being passed as argument to the given method in
             a position annotated with NS_NOESCAPE *) }
 
@@ -157,7 +158,7 @@ let pp_trans_state fmt
      ; var_exp_typ
      ; opaque_exp
      ; is_fst_arg_objc_instance_method_call
-     ; passed_as_noescape_block_to } [@warning "+9"] ) =
+     ; block_as_arg_attributes } [@warning "+missing-record-field-pattern"] ) =
   F.fprintf fmt
     "{@[succ_nodes=[%a];@;\
      continuation=%a@;\
@@ -171,8 +172,9 @@ let pp_trans_state fmt
     (Pp.option (Pp.pair ~fst:Exp.pp ~snd:(Typ.pp_full Pp.text_break)))
     var_exp_typ
     (Pp.option (Pp.pair ~fst:Exp.pp ~snd:(Typ.pp_full Pp.text_break)))
-    opaque_exp is_fst_arg_objc_instance_method_call (Pp.option Procname.pp)
-    passed_as_noescape_block_to
+    opaque_exp is_fst_arg_objc_instance_method_call
+    (Pp.option ProcAttributes.pp_block_as_arg_attributes)
+    block_as_arg_attributes
 
 
 let default_trans_state context =
@@ -183,7 +185,7 @@ let default_trans_state context =
   ; var_exp_typ= None
   ; opaque_exp= None
   ; is_fst_arg_objc_instance_method_call= false
-  ; passed_as_noescape_block_to= None }
+  ; block_as_arg_attributes= None }
 
 
 type control =
@@ -213,14 +215,15 @@ type trans_result =
   { control: control
   ; return: Exp.t * Typ.t
   ; method_name: Procname.t option
+  ; method_signature: CMethodSignature.t option
   ; is_cpp_call_virtual: bool }
 
 let empty_control =
   {root_nodes= []; leaf_nodes= []; instrs= []; initd_exps= []; cxx_temporary_markers_set= []}
 
 
-let mk_trans_result ?method_name ?(is_cpp_call_virtual = false) return control =
-  {control; return; method_name; is_cpp_call_virtual}
+let mk_trans_result ?method_name ?method_signature ?(is_cpp_call_virtual = false) return control =
+  {control; return; method_name; method_signature; is_cpp_call_virtual}
 
 
 let undefined_expression () = Exp.Var (Ident.create_fresh Ident.knormal)
@@ -460,7 +463,7 @@ let objc_new_trans trans_state ~alloc_builtin loc stmt_info cls_name function_ty
   let method_kind = ClangMethodKind.OBJC_INSTANCE in
   let pname =
     CType_decl.CProcname.NoAstDecl.objc_method_of_string_kind cls_name CFrontend_config.init
-      Procname.ObjC_Cpp.ObjCInstanceMethod
+      Procname.ObjC_Cpp.ObjCInstanceMethod []
   in
   CMethod_trans.create_external_procdesc trans_state.context.CContext.translation_unit_context
     trans_state.context.CContext.cfg pname method_kind None ;
@@ -527,7 +530,7 @@ let create_call_to_objc_bridge_transfer sil_loc exp typ =
 
 let dereference_var_sil (exp, typ) sil_loc =
   let id = Ident.create_fresh Ident.knormal in
-  let sil_instr = Sil.Load {id; e= exp; root_typ= typ; typ; loc= sil_loc} in
+  let sil_instr = Sil.Load {id; e= exp; typ; loc= sil_loc} in
   (sil_instr, Exp.Var id)
 
 
@@ -550,6 +553,8 @@ let dereference_value_from_result ?(strip_pointer = false) source_range sil_loc 
 
 let cast_operation ?objc_bridge_cast_kind cast_kind ((exp, typ) as exp_typ) cast_typ sil_loc =
   match cast_kind with
+  | `NoOp when Typ.is_rvalue_reference cast_typ ->
+      ([], (Exp.Cast (cast_typ, exp), cast_typ))
   | `NoOp | `DerivedToBase | `UncheckedDerivedToBase ->
       (* These casts ignore change of type *)
       ([], exp_typ)
@@ -688,8 +693,7 @@ let define_condition_side_effects ((e_cond_exp, e_cond_typ) as e_cond) instrs_co
   match e_cond_exp with
   | Exp.Lvar pvar ->
       let id = Ident.create_fresh Ident.knormal in
-      ( (Exp.Var id, e_cond_typ)
-      , [Sil.Load {id; e= Exp.Lvar pvar; root_typ= e_cond_typ; typ= e_cond_typ; loc= sil_loc}] )
+      ((Exp.Var id, e_cond_typ), [Sil.Load {id; e= Exp.Lvar pvar; typ= e_cond_typ; loc= sil_loc}])
   | _ ->
       (e_cond, instrs_cond)
 
@@ -716,7 +720,7 @@ module Self = struct
         in
         let e = Exp.Lvar (Pvar.mk (Mangled.from_string CFrontend_config.self) procname) in
         let id = Ident.create_fresh Ident.knormal in
-        (t', Exp.Var id, [Sil.Load {id; e; root_typ= t'; typ= t'; loc}])
+        (t', Exp.Var id, [Sil.Load {id; e; typ= t'; loc}])
       in
       Some (mk_trans_result (self_expr, typ) {empty_control with instrs})
     else None

@@ -8,62 +8,7 @@
 open! IStd
 open PulseBasicInterface
 open PulseDomainInterface
-
-(** For [open]ing in other modules. *)
-module Import : sig
-  type access_mode =
-    | Read
-    | Write
-    | NoAccess
-        (** The initialized-ness of the address is not checked when it evaluates a heap address
-            without actual memory access, for example, when evaluating [&x.f] we need to check
-            initialized-ness of [x], not that of [x.f]. *)
-
-  (** {2 Imported types for ease of use and so we can write variants without the corresponding
-      module prefix} *)
-
-  type 'abductive_domain_t execution_domain_base_t = 'abductive_domain_t ExecutionDomain.base_t =
-    | ContinueProgram of 'abductive_domain_t
-    | ExitProgram of AbductiveDomain.summary
-    | AbortProgram of AbductiveDomain.summary
-    | LatentAbortProgram of {astate: AbductiveDomain.summary; latent_issue: LatentIssue.t}
-    | LatentInvalidAccess of
-        { astate: AbductiveDomain.summary
-        ; address: AbstractValue.t
-        ; must_be_valid: Trace.t * Invalidation.must_be_valid_reason option
-        ; calling_context: (CallEvent.t * Location.t) list }
-    | ISLLatentMemoryError of AbductiveDomain.summary
-
-  type 'astate base_error = 'astate AccessResult.error =
-    | PotentialInvalidAccess of
-        { astate: 'astate
-        ; address: AbstractValue.t
-        ; must_be_valid: Trace.t * Invalidation.must_be_valid_reason option }
-    | PotentialInvalidAccessSummary of
-        { astate: AbductiveDomain.summary
-        ; address: AbstractValue.t
-        ; must_be_valid: Trace.t * Invalidation.must_be_valid_reason option }
-    | ReportableError of {astate: 'astate; diagnostic: Diagnostic.t}
-    | ReportableErrorSummary of {astate: AbductiveDomain.summary; diagnostic: Diagnostic.t}
-    | ISLError of 'astate
-
-  (** {2 Monadic syntax} *)
-
-  include module type of IResult.Let_syntax
-
-  val ( let<*> ) : 'a AccessResult.t -> ('a -> 'b AccessResult.t list) -> 'b AccessResult.t list
-  (** monadic "bind" but not really that turns an [AccessResult.t] into a list of [AccessResult.t]s
-      (not really because the first type is not an [AccessResult.t list] but just an
-      [AccessResult.t]) *)
-
-  val ( let<+> ) :
-       'a AccessResult.t
-    -> ('a -> 'abductive_domain_t)
-    -> 'abductive_domain_t execution_domain_base_t AccessResult.t list
-  (** monadic "map" but even less really that turns an [AccessResult.t] into an analysis result *)
-end
-
-include module type of Import
+open PulseOperationResult.Import
 
 type t = AbductiveDomain.t
 
@@ -92,7 +37,16 @@ module ModeledField : sig
 
   val internal_string : Fieldname.t
   (** Modeled field for internal string *)
+
+  val internal_ref_count : Fieldname.t
+  (** Modeled field for reference_counting *)
+
+  val delegated_release : Fieldname.t
+  (** Modeled field for resource release delegation *)
 end
+
+val conservatively_initialize_args : AbstractValue.t list -> t -> t
+(** Set all reachable values from the given list as initialized conservatively. *)
 
 val eval :
      PathContext.t
@@ -100,25 +54,22 @@ val eval :
   -> Location.t
   -> Exp.t
   -> t
-  -> (t * (AbstractValue.t * ValueHistory.t)) AccessResult.t
+  -> (t * (AbstractValue.t * ValueHistory.t)) AccessResult.t SatUnsat.t
 (** Use the stack and heap to evaluate the given expression down to an abstract address representing
     its value.
 
     Return an error state if it traverses some known invalid address or if the end destination is
     known to be invalid. *)
 
-val eval_structure_isl :
-     PathContext.t
-  -> access_mode
-  -> Location.t
-  -> Exp.t
-  -> t
-  -> (bool * (t * (AbstractValue.t * ValueHistory.t)) AccessResult.t list) AccessResult.t
-(** Similar to eval but apply to data structures and ISL abduction. Return a list of abduced states
-    (ISLOk and ISLErs); The boolean indicates whether it is data structures or not. *)
+val eval_var : PathContext.t -> Location.t -> Pvar.t -> t -> t * (AbstractValue.t * ValueHistory.t)
+(** Similar to eval but for pvar only. Always succeeds. *)
 
 val prune :
-  PathContext.t -> Location.t -> condition:Exp.t -> t -> (t * ValueHistory.t) AccessResult.t
+     PathContext.t
+  -> Location.t
+  -> condition:Exp.t
+  -> t
+  -> (t * ValueHistory.t) AccessResult.t SatUnsat.t
 
 val eval_deref :
      PathContext.t
@@ -126,15 +77,8 @@ val eval_deref :
   -> Location.t
   -> Exp.t
   -> t
-  -> (t * (AbstractValue.t * ValueHistory.t)) AccessResult.t
+  -> (t * (AbstractValue.t * ValueHistory.t)) AccessResult.t SatUnsat.t
 (** Like [eval] but evaluates [*exp]. *)
-
-val eval_deref_isl :
-     PathContext.t
-  -> Location.t
-  -> Exp.t
-  -> t
-  -> (t * (AbstractValue.t * ValueHistory.t)) AccessResult.t list
 
 val eval_access :
      PathContext.t
@@ -160,7 +104,7 @@ val eval_deref_access :
 (** Like [eval_access] but does additional dereference. *)
 
 val eval_proc_name :
-  PathContext.t -> Location.t -> Exp.t -> t -> (t * Procname.t option) AccessResult.t
+  PathContext.t -> Location.t -> Exp.t -> t -> (t * Procname.t option) AccessResult.t SatUnsat.t
 
 val havoc_id : Ident.t -> ValueHistory.t -> t -> t
 
@@ -177,6 +121,8 @@ val havoc_deref_field :
 val realloc_pvar : Tenv.t -> PathContext.t -> Pvar.t -> Typ.t -> Location.t -> t -> t
 
 val write_id : Ident.t -> AbstractValue.t * ValueHistory.t -> t -> t
+
+val read_id : Ident.t -> t -> (AbstractValue.t * ValueHistory.t) option
 
 val write_field :
      PathContext.t
@@ -217,15 +163,6 @@ val write_deref :
   -> t AccessResult.t
 (** write the edge [ref --*--> obj] *)
 
-val write_deref_biad_isl :
-     PathContext.t
-  -> Location.t
-  -> ref:AbstractValue.t * ValueHistory.t
-  -> AbstractValue.t HilExp.Access.t
-  -> obj:AbstractValue.t * ValueHistory.t
-  -> t
-  -> t AccessResult.t list
-
 (** the way that was used to get to the invalidated address in the state; this is used to record the
     invalidation point in its history in addition to inside the [Invalid] attribute *)
 type invalidation_access =
@@ -247,19 +184,25 @@ val invalidate :
   -> t AccessResult.t
 (** record that the address is invalid *)
 
-val invalidate_biad_isl :
-     PathContext.t
-  -> Location.t
-  -> Invalidation.t
-  -> AbstractValue.t * ValueHistory.t
-  -> t
-  -> t AccessResult.t list
-(** record that the address is invalid. If the address has not been allocated, abduce ISL specs for
-    both invalid (null, free, unint) and allocated heap. *)
+val always_reachable : AbstractValue.t -> t -> t
 
 val allocate : Attribute.allocator -> Location.t -> AbstractValue.t -> t -> t
 
+val java_resource_release : recursive:bool -> AbstractValue.t -> t -> t
+(** releases the resource of the argument, and recursively calls itself on the delegated resource if
+    [recursive==true] *)
+
+val csharp_resource_release : recursive:bool -> AbstractValue.t -> t -> t
+(** releases the resource of the argument, and recursively calls itself on the delegated resource if
+    [recursive==true] *)
+
 val add_dynamic_type : Typ.t -> AbstractValue.t -> t -> t
+
+val add_dynamic_type_source_file : Typ.t -> SourceFile.t -> AbstractValue.t -> t -> t
+
+val add_ref_counted : AbstractValue.t -> t -> t
+
+val is_ref_counted : AbstractValue.t -> t -> bool
 
 val remove_allocation_attr : AbstractValue.t -> t -> t
 
@@ -300,6 +243,18 @@ val shallow_copy :
   -> (t * (AbstractValue.t * ValueHistory.t)) AccessResult.t
 (** returns the address of a new cell with the same edges as the original *)
 
+val deep_copy :
+     ?depth_max:int
+  -> PathContext.t
+  -> Location.t
+  -> AbstractValue.t * ValueHistory.t
+  -> t
+  -> (t * (AbstractValue.t * ValueHistory.t)) AccessResult.t
+(** returns the address of a new cell with the copied edges from the original. The content is deeply
+    copied up until [max_depth] edges deep in memory. The deepest copied value is then shallow
+    copied. If no [max_depth] is specified, then there is no shallow copy and everything is deeply
+    copied until there is no more edge to follow *)
+
 val get_dynamic_type_unreachable_values : Var.t list -> t -> (Var.t * Typ.t) list
 (** Given a list of variables, computes the unreachable values if the variables were removed from
     the stack, then return the dynamic types of those values if they are available *)
@@ -309,10 +264,28 @@ val remove_vars : Var.t list -> Location.t -> t -> t
 val check_address_escape :
   Location.t -> Procdesc.t -> AbstractValue.t -> ValueHistory.t -> t -> t AccessResult.t
 
+type call_kind =
+  [ `Closure of (Exp.t * Pvar.t * Typ.t * CapturedVar.capture_mode) list
+  | `Var of Ident.t
+  | `ResolvedProcname ]
+
 val get_captured_actuals :
-     PathContext.t
+     Procname.t
+  -> PathContext.t
   -> Location.t
-  -> captured_vars:(Var.t * CapturedVar.capture_mode * Typ.t) list
-  -> actual_closure:AbstractValue.t * ValueHistory.t
+  -> captured_formals:(Var.t * CapturedVar.capture_mode * Typ.t) list
+  -> call_kind:call_kind
+  -> actuals:((AbstractValue.t * ValueHistory.t) * Typ.t) list
   -> t
-  -> (t * (Var.t * ((AbstractValue.t * ValueHistory.t) * Typ.t)) list) AccessResult.t
+  -> (t * ((AbstractValue.t * ValueHistory.t) * Typ.t) list) AccessResult.t SatUnsat.t
+
+val check_used_as_branch_cond :
+     AbstractValue.t * ValueHistory.t
+  -> pname_using_config:Procname.t
+  -> branch_location:Location.t
+  -> location:Location.t
+  -> Trace.t
+  -> AbductiveDomain.t
+  -> AbductiveDomain.t AccessResult.t
+(** Check and report config usage issue on the abstract value that is used as branch condition. If
+    it is not certain that tha abstract value is a config, it adds [UsedAsBranchCond] attribute. *)

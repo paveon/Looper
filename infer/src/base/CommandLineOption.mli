@@ -75,6 +75,12 @@ val mk_int : default:int -> ?default_to_string:(int -> string) -> ?f:(int -> int
 val mk_int_opt :
   ?default:int -> ?default_to_string:(int option -> string) -> ?f:(int -> int) -> int option ref t
 
+val mk_int64_opt :
+     ?default:Int64.t
+  -> ?default_to_string:(Int64.t option -> string)
+  -> ?f:(Int64.t -> Int64.t)
+  -> Int64.t option ref t
+
 val mk_float_opt :
   ?default:float -> ?default_to_string:(float option -> string) -> float option ref t
 
@@ -138,7 +144,7 @@ val mk_symbol_seq :
 val mk_json : Yojson.Basic.t ref t
 
 val mk_anon : unit -> string RevList.t ref
-  [@@warning "-32"]
+  [@@warning "-unused-value-declaration"]
 (** [mk_anon ()] defines a [string list ref] of the anonymous command line arguments, in the reverse
     order they appeared on the command line. *)
 
@@ -178,8 +184,9 @@ val mk_command_doc :
   -> string
   -> command_doc
 (** [mk_command_doc ~title ~section ~version ~short_description ~synopsis ~description ~see_also
-    command_exe] records information about a command that is used to create its man page. A lot of
-    the concepts are taken from man-pages(7).
+    command_exe]
+    records information about a command that is used to create its man page. A lot of the concepts
+    are taken from man-pages(7).
 
     - [command_exe] is the name of the command, preferably an executable that selects the command
     - [title] will be the title of the manual
@@ -260,3 +267,6 @@ val show_manual :
     default values for options. *)
 
 val keep_args_file : bool ref
+
+val inferconfig_path_arg : string
+(** name of argument for choosing path to inferconfig *)

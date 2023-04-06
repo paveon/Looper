@@ -9,7 +9,7 @@ open! IStd
 
 type init = Procname.t * Procdesc.t
 
-let equal_class_opt = [%compare.equal: string option]
+let equal_class_opt = [%equal: string option]
 
 let final_typestates initializers_current_class tenv typecheck_proc =
   (* Get the private methods, from the same class, directly called by the initializers. *)
@@ -105,9 +105,7 @@ let get_class pn =
 
 let is_annotated_initializer tenv proc_name =
   PatternMatch.lookup_attributes tenv proc_name
-  |> Option.value_map
-       ~f:(fun ProcAttributes.{method_annotation= {return}} -> Annotations.ia_is_initializer return)
-       ~default:false
+  |> Option.exists ~f:(fun ProcAttributes.{ret_annots} -> Annotations.ia_is_initializer ret_annots)
 
 
 let is_annotated_initializer_in_chain tenv proc_name =

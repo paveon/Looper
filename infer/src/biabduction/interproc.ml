@@ -630,6 +630,8 @@ let prop_init_formals_seed tenv new_formals (prop : 'a Prop.t) : Prop.exposed Pr
             Exp.Sizeof {typ; nbytes= None; dynamic_length= None; subtype= Subtype.subtypes}
         | Erlang ->
             L.die InternalError "Erlang not supported"
+        | Hack ->
+            L.die InternalError "Hack not supported"
       in
       Prop.mk_ptsto_lvar tenv Prop.Fld_init Predicates.inst_formal (pv, texp, None)
     in
@@ -648,7 +650,7 @@ let prop_init_formals_seed tenv new_formals (prop : 'a Prop.t) : Prop.exposed Pr
 (** Construct an initial prop by extending [prop] with locals, and formals if [add_formals] is true
     as well as seed variables *)
 let initial_prop tenv (curr_f : Procdesc.t) (prop : 'a Prop.t) ~add_formals : Prop.normal Prop.t =
-  let construct_decl (x, typ) = (Pvar.mk x (Procdesc.get_proc_name curr_f), typ) in
+  let construct_decl (x, typ, _) = (Pvar.mk x (Procdesc.get_proc_name curr_f), typ) in
   let new_formals =
     if add_formals then List.map ~f:construct_decl (Procdesc.get_formals curr_f) else []
     (* no new formals added *)
@@ -840,11 +842,9 @@ let set_current_language proc_desc =
 
 (** reset global values before analysing a procedure *)
 let reset_global_values proc_desc =
-  BiabductionConfig.reset_abs_val () ;
   Ident.NameGenerator.reset () ;
   SymOp.reset_total () ;
   reset_prop_metrics () ;
-  Abs.reset_current_rules () ;
   set_current_language proc_desc
 
 

@@ -67,6 +67,8 @@ let if_platform_env_and_not_byte_mode s =
       ""
 
 
+let verbose = match Sys.getenv_opt "VERBOSE" with Some "1" -> "-verbose" | _ -> ""
+
 let infer_exe_stanza =
   Printf.sprintf
     {|(executable
@@ -74,17 +76,17 @@ let infer_exe_stanza =
  (modes byte_complete exe)
  (modules Infer)
  (flags (:standard
-     -open Core -open IStdlib -open IStd -open IBase -open IR -open Backend -open Integration
+     -open Core -open IStdlib -open IStd -open IBase -open IR -open Textuallib -open Backend -open Integration
      -open Biabduction -open TestDeterminators -open ClangFrontend
-     -open ASTLanguage %s -open JavaFrontend %s))
- (libraries %s core IStdlib IBase IR Backend Integration Biabduction TestDeterminators ClangFrontend ASTLanguage)
+     %s -open JavaFrontend %s %s))
+ (libraries %s core IStdlib IBase IR Textuallib Backend Integration Biabduction TestDeterminators ClangFrontend)
  (link_flags %s)
  (preprocess (pps ppx_compare))
  (promote (until-clean) (into ../bin))
      )|}
     (if clang then "" else "-open ClangFrontendStubs")
     (if java then "" else "-open JavaFrontendStubs")
-    extlib_if_java
+    verbose extlib_if_java
     (if_platform_env_and_not_byte_mode "(:include linking-flags.sexp)")
 
 
@@ -95,15 +97,15 @@ let inferunit_stanza =
  (modes byte_complete exe)
  (modules Inferunit)
  (flags (:standard
-     -open Core -open IStdlib -open IStd -open IBase -open Backend -open Integration
-     -open UnitTests -open NullsafeUnitTests -open ClangFrontend %s))
- (libraries %s oUnit core IStdlib IBase Backend Integration UnitTests NullsafeUnitTests %s)
+     -open Core -open IStdlib -open IStd -open IBase -open Backend -open Integration -open Textuallib
+     -open UnitTests -open NullsafeUnitTests -open ClangFrontend %s %s))
+ (libraries %s oUnit core IStdlib IBase Backend Integration UnitTests NullsafeUnitTests Textuallib %s)
  (link_flags %s)
  (preprocess (pps ppx_compare))
  (promote (until-clean) (into ../bin))
      )|}
     (if clang then "-open ClangUnitTests" else "-open ClangFrontendStubs")
-    extlib_if_java
+    verbose extlib_if_java
     (if clang then "ClangUnitTests" else "")
     (if_platform_env_and_not_byte_mode "(:include linking-flags.sexp)")
 
@@ -114,35 +116,17 @@ let infertop_stanza =
  (name infertop)
  (modes byte_complete)
  (modules Infertop)
- (flags (:standard -open Core -open IStdlib -open IStd))
- (libraries %s utop Absint ASTLanguage ATDGenerated Backend IBase Biabduction BO Checkers Concurrency Costlib Looper CStubs IR IStdlib Labs Dotnet Nullsafe Pulselib Quandary Integration TestDeterminators Topllib UnitTests)
+ (flags (:standard -open Core -open IStdlib -open IStd -open Textuallib %s))
+ (libraries %s utop Absint ATDGenerated Backend IBase Biabduction BO Checkers Concurrency Costlib Looper CStubs IR Textuallib IStdlib Labs Nullsafe Pulselib PythonFrontend Quandary Integration TestDeterminators Topllib UnitTests)
  (link_flags (-linkall -warn-error -31))
  (preprocess (pps ppx_compare))
  (promote (until-clean) (into ../bin))
      )|}
-    extlib_if_java
-
-
-let inferCreateTraceViewLinks_stanza =
-  Format.sprintf
-    {|(executable
- (name InferCreateTraceViewLinks)
- (modes byte_complete exe)
- (modules InferCreateTraceViewLinks)
- (flags (:standard -open Core -open IStdlib -open IStd -open ATDGenerated -open IBase))
- (libraries core async IStdlib ATDGenerated IBase)
- (link_flags %s)
- (preprocess (pps ppx_compare))
- (promote (until-clean) (into ../bin))
-   )|}
-    (if_platform_env_and_not_byte_mode "(:include linking-flags-tv.sexp)")
+    verbose extlib_if_java
 
 
 (** The build stanzas to be passed to dune *)
-let stanzas =
-  [env_stanza; infer_exe_stanza; inferunit_stanza; infertop_stanza]
-  @ if facebook then [inferCreateTraceViewLinks_stanza] else []
-
-
+let stanzas = [env_stanza; infer_exe_stanza; inferunit_stanza; infertop_stanza]
 ;;
+
 Jbuild_plugin.V1.send (String.concat "\n" stanzas)

@@ -55,8 +55,8 @@ jobs:
         os:
           - macOS-latest
           - ubuntu-latest
-        ocaml-version:
-          - 4.12.0
+        ocaml-compiler:
+          - ocaml-variants.4.14.0+options,ocaml-option-flambda
     runs-on: ${{ matrix.os }}
 
     steps:
@@ -65,13 +65,31 @@ jobs:
 
       - name: Install Required Apt Packages for Ubuntu
         run: |
-          sudo apt install libmpfr-dev libsqlite3-dev ninja-build
+          sudo apt install clang libmpfr-dev libsqlite3-dev ninja-build
           sudo apt clean
         if: runner.os == 'Linux'
 
       - name: Install Required Brew Packages for MacOS
-        run: brew install automake jq ninja pkg-config lzlib
+        run: brew install automake jq ninja pkg-config lzlib zlib coreutils
         if: runner.os == 'macOS'
+
+      - name: Setup Java SDK
+        uses: actions/setup-java@v3
+        with:
+          distribution: 'temurin'
+          java-version: '8'
+
+      - name: Get OS version
+        uses: sersoft-gmbh/os-version-action@v1
+        id: os-version
+
+      - name: Force the use of test dependencies
+        run: cp opam/infer-tests.opam.locked opam/infer.opam.locked
+
+      - name: Use OCaml ${{ matrix.ocaml-compiler }}
+        uses: ocaml/setup-ocaml@v2
+        with:
+          ocaml-compiler: ${{ matrix.ocaml-compiler }}
 
       - name: Compute hash of clang installation
         id: clang-hash
@@ -93,83 +111,28 @@ jobs:
         if: steps.cache-clang.outputs.cache-hit != 'true'
         run: |
           ./facebook-clang-plugins/clang/src/prepare_clang_src.sh
-          ./facebook-clang-plugins/clang/setup.sh --ninja --sequential-link
+          CC=clang CXX=clang++ ./facebook-clang-plugins/clang/setup.sh --ninja --sequential-link
 
-      - name: Attempt to get opam tree from the cache
-        uses: actions/cache@v2
-        with:
-          path: ~/.opam
-          key: opam-${{ runner.os }}-${{ hashFiles('opam/infer.opam.locked') }}
-
-      - name: Use OCaml ${{ matrix.ocaml-version }}
-        uses: avsm/setup-ocaml@v1
-        with:
-          ocaml-version: ${{ matrix.ocaml-version }}
-
-      - run: ./build-infer.sh --yes all
+      - run: ./build-infer.sh --yes --user-opam-switch all
 
       - run: make install BUILD_MODE=opt
         if: runner.os == 'macOS'
+
+      - name: Install ocamlformat
+        run: |
+          opam pin $(cat opam/ocamlformat) --no-action
+          opam install --deps-only --locked opam/ocamlformat.opam.locked
+          opam install ocamlformat
+          opam exec -- ocamlformat --version
+
+      - name: Test infer
+        run: make test -k NDKBUILD=no
 
       - run: |
           sudo make install BUILD_MODE=opt
           # restore permissions after root build
           sudo chown $USER: -R .
         if: runner.os == 'Linux'
-
-      - name: Test infer
-        run: |
-          eval $(opam env)
-
-          {
-            echo 'class FailingTest {'
-            echo '  String mayReturnNull(int i) {'
-            echo '    if (i > 0) {'
-            echo '      return "Hello, Infer!";'
-            echo '    }'
-            echo '    return null;'
-            echo '  }'
-            echo '  int mayCauseNPE() {'
-            echo '    String s = mayReturnNull(0);'
-            echo '    return s.length();'
-            echo '  }'
-            echo '}'
-          } > FailingTest.java
-
-          {
-            echo "  class PassingTest {"
-            echo "    String mayReturnNull(int i) {"
-            echo "      if (i > 0) {"
-            echo '        return "Hello, Infer!";'
-            echo "      }"
-            echo "      return null;"
-            echo "    }"
-            echo "    int mayCauseNPE() {"
-            echo "      String s = mayReturnNull(0);"
-            echo "      return s == null ? 0 : s.length();"
-            echo "    }"
-            echo "  }"
-          } > PassingTest.java
-
-          # first command should exit with status 2
-          infer --fail-on-issue -P -- javac FailingTest.java || if [[ $? -ne 2 ]]; then exit 1; fi
-          infer --fail-on-issue -P -- javac PassingTest.java
-
-          {
-            echo "#include <stdio.h>"
-            echo "int main()"
-            echo "{ int *s = NULL; *s = 42; return 0; } "
-          } > FailingTest.c
-
-          {
-            echo "#include <stdio.h>"
-            echo "int main()"
-            echo "{ int *s = NULL; if (s != NULL) { *s = 42; } return 0; }"
-          } > PassingTest.c
-
-          # first command should exit with status 2
-          infer --fail-on-issue -P -- clang -c FailingTest.c || if [[ $? -ne 2 ]]; then exit 1; fi
-          infer --fail-on-issue -P -- clang -c PassingTest.c
 
       - name: Build release tarball
         id: build-release

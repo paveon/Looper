@@ -9,16 +9,22 @@
 
 open! IStd
 
-type attributes_kind
-
-val deserialize_attributes_kind : Sqlite3.Data.t -> attributes_kind
-
-val store : proc_desc:Procdesc.t option -> ProcAttributes.t -> unit
+val store : proc_desc:Procdesc.t option -> ProcAttributes.t -> analysis:bool -> unit
 (** Save .attr file for the procedure into the attributes database. *)
+
+val load_from_uid : string -> ProcAttributes.t option
+(** Load the attributes for the unique procedure id from the attributes database. *)
 
 val load : Procname.t -> ProcAttributes.t option
 (** Load the attributes for the procedure from the attributes database. *)
 
+val load_exn : Procname.t -> ProcAttributes.t
+(** like [load], but raises an exception if no attributes are found. *)
+
 val is_no_return : Procname.t -> bool
 
-val pp_attributes_kind : Format.formatter -> attributes_kind -> unit
+val load_formal_types : Procname.t -> Typ.t list
+(** Returns all the formal types of a given procedure. *)
+
+val clear_cache : unit -> unit
+(** clear attribute cache *)

@@ -479,6 +479,8 @@ let mk_ptsto_exp_footprint analysis_data pname tenv orig_prop (lexp, typ) max_st
         Subtype.subtypes
     | Erlang ->
         L.die InternalError "Erlang not supported"
+    | Hack ->
+        L.die InternalError "Hack not supported"
   in
   let create_ptsto footprint_part off0 =
     match (root, off0, typ.Typ.desc) with
@@ -1106,15 +1108,13 @@ let rec iter_rearrange analysis_data pname tenv lexp typ_from_instr prop iter in
 
 let param_has_annot predicate pvar params_with_annotations =
   List.exists
-    ~f:(function
-      | (mangled, _), param_annotation_deprecated ->
-          Mangled.equal mangled (Pvar.get_name pvar) && predicate param_annotation_deprecated )
+    ~f:(fun (mangled, _, param_annotation_deprecated) ->
+      Mangled.equal mangled (Pvar.get_name pvar) && predicate param_annotation_deprecated )
     params_with_annotations
 
 
 let var_has_annotation pdesc is_annotation pvar =
-  Procdesc.get_attributes pdesc |> ProcAttributes.get_annotated_formals
-  |> param_has_annot is_annotation pvar
+  Procdesc.get_formals pdesc |> param_has_annot is_annotation pvar
 
 
 let attr_has_annot is_annotation tenv prop exp =
@@ -1219,24 +1219,20 @@ let check_dereference_error tenv pdesc (prop : Prop.normal Prop.t) lexp loc =
         get_relevant_attributes root_no_offset
   in
   ( if Prover.check_zero tenv (Exp.root_of_lexp root) || Option.is_some nullable_var_opt then
-    let deref_str =
-      match nullable_var_opt with
-      | Some str ->
-          Localise.deref_str_nullable None str
-      | None ->
-          Localise.deref_str_null None
-    in
-    let err_desc =
-      Errdesc.explain_dereference pname tenv ~use_buckets:true
-        ~is_nullable:(Option.is_some nullable_var_opt) deref_str prop loc
-    in
-    if Localise.is_parameter_not_null_checked_desc err_desc then
-      raise (Exceptions.Parameter_not_null_checked (err_desc, __POS__))
-    else if Localise.is_field_not_null_checked_desc err_desc then
-      raise (Exceptions.Field_not_null_checked (err_desc, __POS__))
-    else if Localise.is_empty_vector_access_desc err_desc then
-      raise (Exceptions.Empty_vector_access (err_desc, __POS__))
-    else raise (Exceptions.Null_dereference (err_desc, __POS__)) ) ;
+      let deref_str =
+        match nullable_var_opt with
+        | Some str ->
+            Localise.deref_str_nullable None str
+        | None ->
+            Localise.deref_str_null None
+      in
+      let err_desc =
+        Errdesc.explain_dereference pname tenv ~use_buckets:true
+          ~is_nullable:(Option.is_some nullable_var_opt) deref_str prop loc
+      in
+      if Localise.is_empty_vector_access_desc err_desc then
+        raise (Exceptions.Empty_vector_access (err_desc, __POS__))
+      else raise (Exceptions.Null_dereference (err_desc, __POS__)) ) ;
   match attribute_opt with
   | Some (Apred (Adangling dk, _)) ->
       let deref_str = Localise.deref_str_dangling (Some dk) in
@@ -1251,100 +1247,6 @@ let check_dereference_error tenv pdesc (prop : Prop.normal Prop.t) lexp loc =
         let deref_str = Localise.deref_str_dangling None in
         let err_desc = Errdesc.explain_dereference pname tenv deref_str prop loc in
         raise (Exceptions.Dangling_pointer_dereference (false, err_desc, __POS__))
-
-
-(* Check that an expression representin an objc block can be null and raise a [B1] null exception.*)
-(* It's used to check that we don't call possibly null blocks *)
-let check_call_to_objc_block_error tenv pdesc prop fun_exp loc =
-  let pname = Procdesc.get_proc_name pdesc in
-  let is_this = function
-    | Exp.Lvar pvar -> (
-        let {ProcAttributes.clang_method_kind} = Procdesc.get_attributes pdesc in
-        match clang_method_kind with
-        | ClangMethodKind.OBJC_INSTANCE ->
-            Pvar.is_self pvar
-        | ClangMethodKind.CPP_INSTANCE ->
-            Pvar.is_this pvar
-        | _ ->
-            false )
-    | _ ->
-        false
-  in
-  let fun_exp_may_be_null () =
-    (* may be null if we don't know if it is definitely not null *)
-    not (Prover.check_disequal tenv prop (Exp.root_of_lexp fun_exp) Exp.zero)
-  in
-  let try_explaining_exp e =
-    (* when e is a temp var, try to find the pvar defining e*)
-    match e with
-    | Exp.Var id -> (
-      match Errdesc.find_ident_assignment (AnalysisState.get_node_exn ()) id with
-      | Some (_, e') ->
-          e'
-      | None ->
-          e )
-    | _ ->
-        e
-  in
-  let get_exp_called () =
-    (* Exp called in the block's function call*)
-    match AnalysisState.get_instr () with
-    | Some (Sil.Call (_, Var id, _, _, _)) ->
-        Errdesc.find_ident_assignment (AnalysisState.get_node_exn ()) id
-    | _ ->
-        None
-  in
-  let is_fun_exp_captured_var () =
-    (* Called expression is a captured variable of the block *)
-    match get_exp_called () with
-    | Some (_, Exp.Lvar pvar) ->
-        (* pvar is the block *)
-        let name = Pvar.get_name pvar in
-        List.exists
-          ~f:(fun {CapturedVar.name= cn} -> Mangled.equal name cn)
-          (Procdesc.get_captured pdesc)
-    | _ ->
-        false
-  in
-  let is_field_deref () =
-    (*Called expression is a field *)
-    match get_exp_called () with
-    | Some (_, Exp.Lfield (e', fn, t)) ->
-        let e'' = try_explaining_exp e' in
-        (Some (Exp.Lfield (e'', fn, t)), true)
-        (* the block dereferences is a field of an object*)
-    | Some (_, e) ->
-        (Some e, false)
-    | _ ->
-        (None, false)
-  in
-  if Language.curr_language_is Clang && fun_exp_may_be_null () && not (is_fun_exp_captured_var ())
-  then
-    let deref_str = Localise.deref_str_null None in
-    let err_desc_nobuckets =
-      Errdesc.explain_dereference pname tenv ~is_nullable:true deref_str prop loc
-    in
-    match fun_exp with
-    | Exp.Var id when Ident.is_footprint id -> (
-        let e_opt, is_field_deref = is_field_deref () in
-        let warn err_desc =
-          let err_desc = Localise.error_desc_set_bucket err_desc Localise.BucketLevel.b1 in
-          if is_field_deref then raise (Exceptions.Field_not_null_checked (err_desc, __POS__))
-          else raise (Exceptions.Parameter_not_null_checked (err_desc, __POS__))
-        in
-        match e_opt with
-        | Some e when is_this e ->
-            (* don't warn that this/self can be null *)
-            ()
-        | Some e ->
-            warn (Localise.parameter_field_not_null_checked_desc err_desc_nobuckets e)
-        | _ ->
-            warn err_desc_nobuckets )
-    | _ ->
-        (* HP: fun_exp is not a footprint therefore,
-           either is a local or it's a modified param *)
-        let err_desc = Localise.error_desc_set_bucket err_desc_nobuckets Localise.BucketLevel.b1 in
-        raise (Exceptions.Null_dereference (err_desc, __POS__))
 
 
 (** [rearrange lexp prop] rearranges [prop] into the form [prop' * lexp|->strexp:typ]. It returns an

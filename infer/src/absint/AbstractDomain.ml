@@ -28,6 +28,14 @@ module type Disjunct = sig
   include Comparable
 
   val equal_fast : t -> t -> bool
+
+  val is_normal : t -> bool
+
+  val is_exceptional : t -> bool
+
+  val is_executable : t -> bool
+
+  val exceptional_to_normal : t -> t
 end
 
 module type S = sig
@@ -40,7 +48,21 @@ module type S = sig
   val widen : prev:t -> next:t -> num_iters:int -> t
 end
 
-module Empty : S with type t = unit = struct
+type empty = |
+
+module Empty : S with type t = empty = struct
+  type t = empty
+
+  let leq ~(lhs : t) ~rhs:_ = match lhs with _ -> .
+
+  let pp _fmt (x : t) = match x with _ -> .
+
+  let join (x : t) _ = match x with _ -> .
+
+  let widen ~(prev : t) ~next:_ = match prev with _ -> .
+end
+
+module Unit : S with type t = unit = struct
   type t = unit
 
   let leq ~lhs:() ~rhs:() = true
@@ -62,6 +84,18 @@ end
 
 module type WithTop = sig
   include S
+
+  val top : t
+
+  val is_top : t -> bool
+end
+
+module type WithBottomTop = sig
+  include S
+
+  val bottom : t
+
+  val is_bottom : t -> bool
 
   val top : t
 
@@ -183,6 +217,68 @@ module TopLifted (Domain : S) = struct
   let pp = TopLiftedUtils.pp ~pp:Domain.pp
 end
 
+module BottomTopLifted (Domain : S) = struct
+  type elt = Domain.t
+
+  type t = Bottom | V of elt | Top
+
+  let bottom = Bottom
+
+  let top = Top
+
+  let is_bottom = function Bottom -> true | _ -> false
+
+  let is_top = function Top -> true | _ -> false
+
+  let leq ~lhs ~rhs =
+    if phys_equal lhs rhs then true
+    else
+      match (lhs, rhs) with
+      | _, Top ->
+          true
+      | Top, _ ->
+          false
+      | Bottom, _ ->
+          true
+      | _, Bottom ->
+          false
+      | V lhs, V rhs ->
+          Domain.leq ~lhs ~rhs
+
+
+  let join astate1 astate2 =
+    if phys_equal astate1 astate2 then astate1
+    else
+      match (astate1, astate2) with
+      | Top, _ | _, Top ->
+          Top
+      | Bottom, astate | astate, Bottom ->
+          astate
+      | V a1, V a2 ->
+          PhysEqual.optim2 ~res:(V (Domain.join a1 a2)) astate1 astate2
+
+
+  let widen ~prev:prev0 ~next:next0 ~num_iters =
+    if phys_equal prev0 next0 then prev0
+    else
+      match (prev0, next0) with
+      | Top, _ | _, Top ->
+          Top
+      | Bottom, astate | astate, Bottom ->
+          astate
+      | V prev, V next ->
+          PhysEqual.optim2 ~res:(V (Domain.widen ~prev ~next ~num_iters)) prev0 next0
+
+
+  let pp f = function
+    | Bottom ->
+        BottomLiftedUtils.pp_bottom f
+    | V astate ->
+        Domain.pp f astate
+    | Top ->
+        TopLiftedUtils.pp_top f
+end
+
 module PairBase (Domain1 : Comparable) (Domain2 : Comparable) = struct
   type t = Domain1.t * Domain2.t
 
@@ -198,6 +294,15 @@ module PairDisjunct (Domain1 : Disjunct) (Domain2 : Disjunct) = struct
   include PairBase (Domain1) (Domain2)
 
   let equal_fast (x1, x2) (y1, y2) = Domain1.equal_fast x1 y1 && Domain2.equal_fast x2 y2
+
+  let is_normal (x1, x2) = Domain1.is_normal x1 && Domain2.is_normal x2
+
+  let is_exceptional (x1, x2) = Domain1.is_exceptional x1 && Domain2.is_exceptional x2
+
+  let is_executable (x1, x2) = Domain1.is_executable x1 && Domain2.is_executable x2
+
+  let exceptional_to_normal (x1, x2) =
+    (Domain1.exceptional_to_normal x1, Domain2.exceptional_to_normal x2)
 end
 
 module Pair (Domain1 : S) (Domain2 : S) = struct
@@ -219,6 +324,22 @@ module Pair (Domain1 : S) (Domain2 : S) = struct
           ( Domain1.widen ~prev:(fst prev) ~next:(fst next) ~num_iters
           , Domain2.widen ~prev:(snd prev) ~next:(snd next) ~num_iters )
         prev next
+end
+
+module PairWithBottom (Domain1 : WithBottom) (Domain2 : WithBottom) = struct
+  include Pair (Domain1) (Domain2)
+
+  let bottom = (Domain1.bottom, Domain2.bottom)
+
+  let is_bottom (x1, x2) = Domain1.is_bottom x1 && Domain2.is_bottom x2
+end
+
+module PairWithTop (Domain1 : WithTop) (Domain2 : WithTop) = struct
+  include Pair (Domain1) (Domain2)
+
+  let top = (Domain1.top, Domain2.top)
+
+  let is_top (x1, x2) = Domain1.is_top x1 && Domain2.is_top x2
 end
 
 module Flat (V : PrettyPrintable.PrintableEquatableType) = struct
@@ -757,6 +878,8 @@ struct
 
   let mem k m = M.mem k m
 
+  let exists f m = M.exists (fun key values -> S.exists (fun value -> f key value) values) m
+
   let fold f (m : t) acc =
     M.fold (fun key values acc -> S.fold (fun v acc -> f key v acc) values acc) m acc
 
@@ -783,6 +906,8 @@ struct
   let remove_all k m = M.remove k m
 
   let get_all k m = match M.find_opt k m with None -> [] | Some vs -> S.elements vs
+
+  let get_all_keys m = M.fold (fun key _ acc -> key :: acc) m [] |> List.rev
 end
 
 module BooleanAnd = struct

@@ -11,6 +11,8 @@ include Stdlib.Int
 
 module T = struct
   type t = int [@@deriving compare, equal, sexp]
+
+  let hash = hash
 end
 
 include T
@@ -47,5 +49,11 @@ let sign = Sign.of_int
 let incr = incr
 let decr = decr
 
+let post_incr x =
+  let res = !x in
+  incr x ;
+  res
+
 module Set = NSSet.Make (T)
 module Map = NSMap.Make (T)
+module Tbl = HashTable.Make (T)

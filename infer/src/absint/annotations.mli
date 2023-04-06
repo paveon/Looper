@@ -25,17 +25,15 @@ val no_allocation : string
 
 val nullable : string
 
-val nullsafe : string
-
 val nonnull : string
 
 val performance_critical : string
 
 val prop : string
 
-val for_non_ui_thread : string [@@warning "-32"]
+val for_non_ui_thread : string [@@warning "-unused-value-declaration"]
 
-val for_ui_thread : string [@@warning "-32"]
+val for_ui_thread : string [@@warning "-unused-value-declaration"]
 
 val guarded_by : string
 
@@ -127,7 +125,7 @@ val pname_has_return_annot : Procname.t -> (Annot.Item.t -> bool) -> bool
 val attrs_return_annot_ends_with : ProcAttributes.t -> string -> bool
 (** return true if return value in [attrs] is annotated with a value ending with the given string *)
 
-val ma_has_annotation_with : Annot.Method.t -> (Annot.t -> bool) -> bool
+val method_has_annotation_with : Annot.Item.t -> Annot.Item.t list -> (Annot.t -> bool) -> bool
 
 val field_has_annot : Fieldname.t -> Struct.t -> (Annot.Item.t -> bool) -> bool
 

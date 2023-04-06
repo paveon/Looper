@@ -27,7 +27,7 @@ module T = struct
     let vars =
       Environment.vars box.box1_env |> fun (i, r) -> Array.append i r
     in
-    Array.combine_exn vars box.interval_array
+    Array.combine vars box.interval_array
 
   let sexp_of_t (itv : t) =
     let sexps =
@@ -77,7 +77,7 @@ let rec apron_typ_of_llair_typ : Llair.Typ.t -> Texpr1.typ option = function
 
 let rec apron_texpr_of_llair_exp exp q =
   match (exp : Llair.Exp.t) with
-  | Reg {name} | Global {name} | Function {name} ->
+  | Reg {name} | Global {name} | FuncName {name} ->
       Some (Texpr1.Var (apron_var_of_name name))
   | Integer {data} -> Some (Texpr1.Cst (Coeff.s_of_int (Z.to_int data)))
   | Float {data} -> (
@@ -144,7 +144,7 @@ let rec apron_texpr_of_llair_exp exp q =
       None
 
 let assign reg exp q =
-  [%Trace.call fun {pf} ->
+  [%Dbg.call fun {pf} ->
     pf "@ {%a}@\n%a := %a" pp q Llair.Reg.pp reg Llair.Exp.pp exp]
   ;
   let lval = apron_var_of_reg reg in
@@ -165,8 +165,9 @@ let assign reg exp q =
       Abstract1.assign_texpr man q lval (Texpr1.of_expr new_env e) None
   | _ -> q )
   |>
-  [%Trace.retn fun {pf} r -> pf "{%a}" pp r]
+  [%Dbg.retn fun {pf} r -> pf "{%a}" pp r]
 
+let is_unsat _ = false
 let resolve_int _ _ _ = []
 
 (** block if [e] is known to be false; skip otherwise *)
@@ -208,19 +209,10 @@ let exec_inst tid i q =
   | Load {reg; ptr; len= _; loc= _} -> Ok (assign reg ptr q)
   | Nondet {reg= Some reg; msg= _; loc= _} -> Ok (exec_kill tid reg q)
   | Nondet {reg= None; msg= _; loc= _} | Alloc _ | Free _ -> Ok q
-  | AtomicRMW {reg; _}
-   |AtomicCmpXchg {reg; _}
-   |Intrinsic {reg= Some reg; _} ->
+  | AtomicRMW {reg; _} | AtomicCmpXchg {reg; _} | Builtin {reg= Some reg; _}
+    ->
       Ok (exec_kill tid reg q)
-  | Intrinsic {reg= None; _} -> Ok q
-  | Abort {loc} ->
-      Error
-        { Alarm.kind= Abort
-        ; loc
-        ; pp_action= Fun.flip Llair.Inst.pp i
-        ; pp_state= Fun.flip pp q }
-
-let enter_scope _ _ q = q
+  | Builtin {reg= None; _} -> Ok q
 
 type from_call = {areturn: Llair.Reg.t option; caller_q: t}
 [@@deriving sexp_of]
@@ -262,19 +254,24 @@ let retn tid _ freturn {areturn; caller_q} callee_q =
   | Some aret, None -> exec_kill tid aret caller_q
   | None, _ -> caller_q
 
+type term_code = unit [@@deriving compare, sexp_of]
+
+let term _ _ _ _ = ()
+let move_term_code _ _ () q = q
+
 (** map actuals to formals (via temporary registers), stash constraints on
     caller-local variables. Note that this exploits the non-relational-ness
     of Box to ignore all variables other than the formal/actual params/
     returns; this will not be possible if extended to a relational domain *)
-let call ~summaries _ ~globals:_ ~actuals ~areturn ~formals ~freturn:_
-    ~locals:_ q =
+let call ~summaries _ ?child:_ ~globals:_ ~actuals ~areturn ~formals
+    ~freturn:_ ~locals:_ q =
   if summaries then
     todo "Summaries not yet implemented for interval analysis" ()
   else
     let mangle r =
       Llair.Reg.mk (Llair.Reg.typ r) 0 ("__tmp__" ^ Llair.Reg.name r)
     in
-    let args = IArray.combine_exn formals actuals in
+    let args = IArray.combine formals actuals in
     let q' =
       IArray.fold ~f:(fun (f, a) q -> assign (mangle f) a q) args q
     in
@@ -298,7 +295,7 @@ let call ~summaries _ ~globals:_ ~actuals ~areturn ~formals ~freturn:_
     in
     (q''', {areturn; caller_q= q})
 
-let dnf q = Set.of_ q
+let dnf q = Iter.singleton q
 let resolve_callee _ _ _ _ = []
 
 type summary = t

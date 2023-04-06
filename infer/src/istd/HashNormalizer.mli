@@ -19,12 +19,15 @@ module type S = sig
 
   val normalize : t -> t
   (** return equal normalized representative *)
-
-  val reset : unit -> unit
-  (** reset underlying hashtable *)
 end
 
 module Make (T : NormalizedT) : S with type t = T.t
 
 (** normalizer for strings *)
 module StringNormalizer : S with type t = string
+
+(** recursive normalizer for string lists *)
+module StringListNormalizer : S with type t = string list
+
+val reset_all_normalizers : unit -> unit
+(** reset hashtables in all normalizers made with [Make] *)

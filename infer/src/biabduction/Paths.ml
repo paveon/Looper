@@ -466,7 +466,13 @@ end = struct
           trace := Errlog.make_trace_element level curr_loc descr node_tags :: !trace ;
           Option.iter
             ~f:(fun loc ->
-              if Procname.is_java pname && not (SourceFile.is_invalid loc.Location.file) then
+              if
+                Procname.is_java pname
+                && (not (SourceFile.is_invalid loc.Location.file))
+                && not
+                     ( Attributes.load pname
+                     |> Option.exists ~f:(fun attrs -> attrs.ProcAttributes.is_biabduction_model) )
+              then
                 let definition_descr =
                   Format.asprintf "Definition of %a"
                     (Procname.pp_simplified_string ~withclass:false)
@@ -544,7 +550,7 @@ end = struct
     in
     iter_shortest_sequence g pos_opt path ;
     let equal lt1 lt2 =
-      [%compare.equal: int * Location.t]
+      [%equal: int * Location.t]
         (lt1.Errlog.lt_level, lt1.Errlog.lt_loc)
         (lt2.Errlog.lt_level, lt2.Errlog.lt_loc)
     in
@@ -705,7 +711,7 @@ end = struct
     !res
 
 
-  let[@warning "-32"] pp pe fmt ps =
+  let[@warning "-unused-value-declaration"] pp pe fmt ps =
     let count = ref 0 in
     let pp_path fmt path = F.fprintf fmt "[path: %a@\n%a]" Path.pp_stats path Path.pp path in
     let f prop path =

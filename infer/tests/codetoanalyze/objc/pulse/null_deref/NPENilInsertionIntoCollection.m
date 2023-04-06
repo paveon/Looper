@@ -84,6 +84,23 @@ void dictionaryRemoveObjectForKeyIfKeyExistsNotNilOK(
   dictionaryRemoveObjectForKeyIfKeyExists(mDict, @"somestring");
 }
 
+void dictionaryRemoveObjectForKeyIfSubscriptExists(NSMutableDictionary* mDict,
+                                                   id key) {
+  id value = mDict[key];
+  if (value) {
+    [mDict removeObjectForKey:key];
+  }
+}
+
+void dictionaryRemoveObjectForKeyIfSubscriptExistsNilOK(
+    NSMutableDictionary* mDict) {
+  dictionaryRemoveObjectForKeyIfSubscriptExists(mDict, nil);
+}
+
+void dictionaryRemoveObjectForKeyIfSubscriptExistsNotNilOK(
+    NSMutableDictionary* mDict) {
+  dictionaryRemoveObjectForKeyIfSubscriptExists(mDict, @"somestring");
+}
 void testNilMessagingForModelNilNilOK_FP() { addObjectInDict(nil, nil); }
 
 void testNilMessagingForModelNilStringOK() {
@@ -259,6 +276,21 @@ void dictionaryWithObjectsForKeysIfKeyExistsNotNilOK(NSDictionary* dict) {
   dictionaryWithObjectsForKeysIfKeyExists(dict, @"somestring");
 }
 
+void dictionaryWithObjectsForKeysIfSubcriptExists(NSDictionary* dict, id key) {
+  id value = dict[key];
+  if (value) {
+    dict = [NSDictionary dictionaryWithObjects:@[ value ] forKeys:@[ key ]];
+  }
+}
+
+void dictionaryWithObjectsForKeysIfSubscriptExistsNilOK(NSDictionary* dict) {
+  dictionaryWithObjectsForKeysIfSubscriptExists(dict, nil);
+}
+
+void dictionaryWithObjectsForKeysIfSubscriptExistsNotNilOK(NSDictionary* dict) {
+  dictionaryWithObjectsForKeysIfSubscriptExists(dict, @"somestring");
+}
+
 void setWithObject(id object) { NSSet* set = [NSSet setWithObject:object]; }
 
 void setWithObjectOk() { setWithObject(@"obj"); }
@@ -343,4 +375,29 @@ id stringConstValueOK(NSMutableDictionary* dict, NSString* key) {
     [dict setObject:subDict forKey:key];
   }
   return value;
+}
+
+NSString* get_object_from_array(NSArray<NSString*>* array) {
+  if (array.count == 0) {
+    return nil;
+  }
+
+  return [array objectAtIndex:0];
+}
+
+// missing models for collections
+void pass_non_empty_array_ok_FP(NSMutableArray<NSString*>* mArray) {
+  NSString* object = get_object_from_array(@[ @"element" ]);
+  [mArray addObject:object];
+}
+
+void dictionaryInsertZeroNilBad(NSString* s) {
+  NSDictionary* dict = @{
+    @"key" : s ?: 0
+  }; // 0 here is equivalent to nil (id(0)) as we expect an object to be
+     // inserted into collection
+}
+
+void dictionaryInsertZeroLiteralOk(NSString* s) {
+  NSDictionary* dict = @{@"key" : s ?: @0};
 }

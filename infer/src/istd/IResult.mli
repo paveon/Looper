@@ -7,6 +7,8 @@
 
 open! IStd
 
+[@@@warning "-unused-value-declaration"]
+
 module Let_syntax : sig
   include module type of Result.Monad_infix
 

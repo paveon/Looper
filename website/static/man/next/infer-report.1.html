@@ -24,6 +24,7 @@
 <a href="#DESCRIPTION">DESCRIPTION</a><br>
 <a href="#OPTIONS">OPTIONS</a><br>
 <a href="#HOISTING OPTIONS">HOISTING OPTIONS</a><br>
+<a href="#PULSE CHECKER OPTIONS">PULSE CHECKER OPTIONS</a><br>
 <a href="#ENVIRONMENT">ENVIRONMENT</a><br>
 <a href="#FILES">FILES</a><br>
 <a href="#SEE ALSO">SEE ALSO</a><br>
@@ -45,7 +46,8 @@ compute and manipulate infer reports</p>
 
 
 <p style="margin-left:11%; margin-top: 1em"><b>infer report
---issues-tests <br>
+<br>
+infer report --issues-tests <br>
 infer report --cost-issues-tests <br>
 infer report --config-impact-issues-tests <br>
 infer report --merge-report</b> <i>dir1 ...</i>
@@ -56,9 +58,11 @@ infer report --merge-report</b> <i>dir1 ...</i>
 </h2>
 
 
-<p style="margin-left:11%; margin-top: 1em">Write out
-issues in a format suitable for tests, or merge multiple
-JSON reports in one with <b>--merge-report</b>.</p>
+<p style="margin-left:11%; margin-top: 1em">When used
+without parameters, generate report output in Json. With a
+<b>--tests</b> parameter, write out issues in a format
+suitable for tests. With <b>--merge-report</b>, merge
+multiple JSON reports in one.</p>
 
 <h2>OPTIONS
 <a name="OPTIONS"></a>
@@ -151,8 +155,7 @@ sets <b>--debug-level 2</b>, <b>--developer-mode</b>,
 <p style="margin-left:17%;">Debug level (sets
 <b>--bo-debug</b> <i>level</i>,
 <b>--debug-level-analysis</b> <i>level</i>,
-<b>--debug-level-capture</b> <i>level</i>,
-<b>--debug-level-linters</b> <i>level</i>):</p>
+<b>--debug-level-capture</b> <i>level</i>):</p>
 
 <p style="margin-left:11%;">- 0: only basic debugging
 enabled <br>
@@ -167,12 +170,6 @@ See <b>--debug-level</b> for accepted values.</p>
 <i>int</i></p>
 
 <p style="margin-left:17%;">Debug level for the capture.
-See <b>--debug-level</b> for accepted values.</p>
-
-<p style="margin-left:11%;"><b>--debug-level-linters</b>
-<i>int</i></p>
-
-<p style="margin-left:17%;">Debug level for the linters.
 See <b>--debug-level</b> for accepted values.</p>
 
 <p style="margin-left:11%;"><b>--no-deduplicate</b></p>
@@ -207,7 +204,6 @@ ARBITRARY_CODE_EXECUTION_UNDER_LOCK (enabled by default),
 ARRAY_OUT_OF_BOUNDS_L1 (disabled by default), <br>
 ARRAY_OUT_OF_BOUNDS_L2 (disabled by default), <br>
 ARRAY_OUT_OF_BOUNDS_L3 (disabled by default), <br>
-ASSIGN_POINTER_WARNING (enabled by default), <br>
 AUTORELEASEPOOL_SIZE_COMPLEXITY_INCREASE (enabled by
 default), <br>
 AUTORELEASEPOOL_SIZE_COMPLEXITY_INCREASE_UI_THREAD (enabled
@@ -218,12 +214,20 @@ default), <br>
 Abduction_case_not_implemented (enabled by default), <br>
 Array_of_pointsto (enabled by default), <br>
 Assert_failure (enabled by default), <br>
+BAD_ARG (enabled by default), <br>
+BAD_ARG_LATENT (disabled by default), <br>
 BAD_KEY (enabled by default), <br>
+BAD_KEY_LATENT (disabled by default), <br>
 BAD_MAP (enabled by default), <br>
-BAD_POINTER_COMPARISON (enabled by default), <br>
+BAD_MAP_LATENT (disabled by default), <br>
 BAD_RECORD (enabled by default), <br>
+BAD_RECORD_LATENT (disabled by default), <br>
+BAD_RETURN (enabled by default), <br>
+BAD_RETURN_LATENT (disabled by default), <br>
 BIABDUCTION_ANALYSIS_STOPS (disabled by default), <br>
 BIABDUCTION_MEMORY_LEAK (disabled by default), <br>
+BIABDUCTION_RETAIN_CYCLE (enabled by default), <br>
+BLOCK_PARAMETER_NOT_NULL_CHECKED (enabled by default), <br>
 BUFFER_OVERRUN_L1 (enabled by default), <br>
 BUFFER_OVERRUN_L2 (enabled by default), <br>
 BUFFER_OVERRUN_L3 (enabled by default), <br>
@@ -243,29 +247,26 @@ CHECKERS_FRAGMENT_RETAINS_VIEW (enabled by default), <br>
 CHECKERS_IMMUTABLE_CAST (enabled by default), <br>
 CHECKERS_PRINTF_ARGS (enabled by default), <br>
 CLASS_CAST_EXCEPTION (disabled by default), <br>
-COMPONENT_WITH_MULTIPLE_FACTORY_METHODS (enabled by
-default), <br>
 CONDITION_ALWAYS_FALSE (disabled by default), <br>
 CONDITION_ALWAYS_TRUE (disabled by default), <br>
-CONFIG_CHECKS_BETWEEN_MARKERS (disabled by default), <br>
 CONFIG_IMPACT (disabled by default), <br>
 CONFIG_IMPACT_STRICT (disabled by default), <br>
+CONFIG_IMPACT_STRICT_BETA (disabled by default), <br>
+CONFIG_USAGE (disabled by default), <br>
 CONSTANT_ADDRESS_DEREFERENCE (disabled by default), <br>
+CONSTANT_ADDRESS_DEREFERENCE_LATENT (disabled by default),
+<br>
 CREATE_INTENT_FROM_URI (enabled by default), <br>
 CROSS_SITE_SCRIPTING (enabled by default), <br>
-CXX_REFERENCE_CAPTURED_IN_OBJC_BLOCK (enabled by default),
-<br>
 Cannot_star (enabled by default), <br>
 DANGLING_POINTER_DEREFERENCE (disabled by default), <br>
 DANGLING_POINTER_DEREFERENCE_MAYBE (disabled by default),
 <br>
+DATALOG_FACT (enabled by default), <br>
+DATA_FLOW_TO_SINK (disabled by default), <br>
 DEADLOCK (enabled by default), <br>
 DEAD_STORE (enabled by default), <br>
-DIRECT_ATOMIC_PROPERTY_ACCESS (enabled by default), <br>
-DISCOURAGED_WEAK_PROPERTY_CUSTOM_SETTER (enabled by
-default), <br>
 DIVIDE_BY_ZERO (disabled by default), <br>
-DOTNET_RESOURCE_LEAK (enabled by default), <br>
 DO_NOT_REPORT (enabled by default), <br>
 EMPTY_VECTOR_ACCESS (enabled by default), <br>
 ERADICATE_ANNOTATION_GRAPH (enabled by default), <br>
@@ -308,11 +309,7 @@ EXPENSIVE_EXECUTION_TIME (disabled by default), <br>
 EXPENSIVE_LOOP_INVARIANT_CALL (enabled by default), <br>
 EXPOSED_INSECURE_INTENT_HANDLING (enabled by default), <br>
 Failure_exe (enabled by default), <br>
-GLOBAL_VARIABLE_INITIALIZED_WITH_FUNCTION_OR_METHOD_CALL
-<br>
-(disabled by default), <br>
 GUARDEDBY_VIOLATION (enabled by default), <br>
-GUARDEDBY_VIOLATION_NULLSAFE (enabled by default), <br>
 IMPURE_FUNCTION (enabled by default), <br>
 INEFFICIENT_KEYSET_ITERATOR (enabled by default), <br>
 INFERBO_ALLOC_IS_BIG (enabled by default), <br>
@@ -331,7 +328,6 @@ INTEGER_OVERFLOW_U5 (disabled by default), <br>
 INTERFACE_NOT_THREAD_SAFE (enabled by default), <br>
 INVARIANT_CALL (disabled by default), <br>
 IPC_ON_UI_THREAD (enabled by default), <br>
-IVAR_NOT_NULL_CHECKED (enabled by default), <br>
 Internal_error (enabled by default), <br>
 JAVASCRIPT_INJECTION (enabled by default), <br>
 LAB_RESOURCE_LEAK (enabled by default), <br>
@@ -341,36 +337,69 @@ LOGGING_PRIVATE_DATA (enabled by default), <br>
 Leak_after_array_abstraction (enabled by default), <br>
 Leak_in_footprint (enabled by default), <br>
 Leak_unknown_origin (disabled by default), <br>
-MEMORY_LEAK (enabled by default), <br>
+MEMORY_LEAK_C (enabled by default), <br>
+MEMORY_LEAK_CPP (disabled by default), <br>
 MISSING_REQUIRED_PROP (enabled by default), <br>
 MIXED_SELF_WEAKSELF (enabled by default), <br>
 MODIFIES_IMMUTABLE (enabled by default), <br>
 MULTIPLE_WEAKSELF (enabled by default), <br>
-MUTABLE_LOCAL_VARIABLE_IN_COMPONENT_FILE (enabled by
-default), <br>
 Missing_fld (enabled by default), <br>
 NIL_BLOCK_CALL (enabled by default), <br>
+NIL_BLOCK_CALL_LATENT (disabled by default), <br>
 NIL_INSERTION_INTO_COLLECTION (enabled by default), <br>
+NIL_INSERTION_INTO_COLLECTION_LATENT (disabled by default),
+<br>
 NIL_MESSAGING_TO_NON_POD (enabled by default), <br>
+NIL_MESSAGING_TO_NON_POD_LATENT (disabled by default), <br>
 NO_MATCHING_BRANCH_IN_TRY (enabled by default), <br>
+NO_MATCHING_BRANCH_IN_TRY_LATENT (disabled by default), <br>
 NO_MATCHING_CASE_CLAUSE (enabled by default), <br>
+NO_MATCHING_CASE_CLAUSE_LATENT (disabled by default), <br>
 NO_MATCHING_FUNCTION_CLAUSE (enabled by default), <br>
+NO_MATCHING_FUNCTION_CLAUSE_LATENT (disabled by default),
+<br>
 NO_MATCH_OF_RHS (enabled by default), <br>
+NO_MATCH_OF_RHS_LATENT (disabled by default), <br>
 NO_TRUE_BRANCH_IN_IF (enabled by default), <br>
+NO_TRUE_BRANCH_IN_IF_LATENT (disabled by default), <br>
 NULLPTR_DEREFERENCE (enabled by default), <br>
+NULLPTR_DEREFERENCE_LATENT (disabled by default), <br>
+NULL_ARGUMENT (enabled by default), <br>
+NULL_ARGUMENT_LATENT (disabled by default), <br>
 NULL_DEREFERENCE (enabled by default), <br>
 OPTIONAL_EMPTY_ACCESS (enabled by default), <br>
-PARAMETER_NOT_NULL_CHECKED (enabled by default), <br>
-POINTER_TO_CONST_OBJC_CLASS (enabled by default), <br>
+OPTIONAL_EMPTY_ACCESS_LATENT (disabled by default), <br>
 PRECONDITION_NOT_FOUND (enabled by default), <br>
 PRECONDITION_NOT_MET (enabled by default), <br>
 PREMATURE_NIL_TERMINATION_ARGUMENT (enabled by default),
 <br>
+PULSE_CONST_REFABLE (disabled by default), <br>
+PULSE_READONLY_SHARED_PTR_PARAM (enabled by default), <br>
+PULSE_RESOURCE_LEAK (enabled by default), <br>
 PULSE_UNINITIALIZED_VALUE (enabled by default), <br>
+PULSE_UNINITIALIZED_VALUE_LATENT (disabled by default), <br>
+PULSE_UNNECESSARY_COPY (enabled by default), <br>
+PULSE_UNNECESSARY_COPY_ASSIGNMENT (enabled by default), <br>
+PULSE_UNNECESSARY_COPY_ASSIGNMENT_CONST (disabled by
+default), <br>
+PULSE_UNNECESSARY_COPY_ASSIGNMENT_MOVABLE (enabled by
+default), <br>
+PULSE_UNNECESSARY_COPY_INTERMEDIATE (disabled by default),
+<br>
+PULSE_UNNECESSARY_COPY_INTERMEDIATE_CONST (disabled by <br>
+default), <br>
+PULSE_UNNECESSARY_COPY_MOVABLE (enabled by default), <br>
+PULSE_UNNECESSARY_COPY_OPTIONAL (disabled by default), <br>
+PULSE_UNNECESSARY_COPY_OPTIONAL_CONST (disabled by default),
+<br>
+PULSE_UNNECESSARY_COPY_RETURN (disabled by default), <br>
 PURE_FUNCTION (enabled by default), <br>
 QUANDARY_TAINT_ERROR (enabled by default), <br>
+REGEX_OP_ON_UI_THREAD (enabled by default), <br>
 RESOURCE_LEAK (enabled by default), <br>
-RETAIN_CYCLE (enabled by default), <br>
+RETAIN_CYCLE (disabled by default), <br>
+SCOPE_LEAKAGE (enabled by default), <br>
+SENSITIVE_DATA_FLOW (disabled by default), <br>
 SHELL_INJECTION (enabled by default), <br>
 SHELL_INJECTION_RISK (enabled by default), <br>
 SKIP_FUNCTION (disabled by default), <br>
@@ -381,11 +410,10 @@ STARVATION (enabled by default), <br>
 STATIC_INITIALIZATION_ORDER_FIASCO (enabled by default),
 <br>
 STRICT_MODE_VIOLATION (enabled by default), <br>
-STRONG_DELEGATE_WARNING (enabled by default), <br>
 STRONG_SELF_NOT_CHECKED (enabled by default), <br>
 Symexec_memory_error (enabled by default), <br>
+TAINT_ERROR (enabled by default), <br>
 THREAD_SAFETY_VIOLATION (enabled by default), <br>
-THREAD_SAFETY_VIOLATION_NULLSAFE (enabled by default), <br>
 TOPL_ERROR (enabled by default), <br>
 UNINITIALIZED_VALUE (enabled by default), <br>
 UNREACHABLE_CODE (enabled by default), <br>
@@ -401,9 +429,13 @@ UNTRUSTED_URL_RISK (enabled by default), <br>
 UNTRUSTED_VARIABLE_LENGTH_ARRAY (enabled by default), <br>
 USER_CONTROLLED_SQL_RISK (enabled by default), <br>
 USE_AFTER_DELETE (enabled by default), <br>
+USE_AFTER_DELETE_LATENT (disabled by default), <br>
 USE_AFTER_FREE (enabled by default), <br>
+USE_AFTER_FREE_LATENT (disabled by default), <br>
 USE_AFTER_LIFETIME (enabled by default), <br>
+USE_AFTER_LIFETIME_LATENT (disabled by default), <br>
 VECTOR_INVALIDATION (enabled by default), <br>
+VECTOR_INVALIDATION_LATENT (disabled by default), <br>
 WEAK_SELF_IN_NO_ESCAPE_BLOCK (enabled by default), <br>
 Wrong_argument_number (enabled by default). <b><br>
 --enable-issue-type</b> <i>+issue_type</i></p>
@@ -484,6 +516,15 @@ qualifier_contains_potential_exception_note | nullsafe_extra
 directory. The reports stored in JSON files in all specified
 results directories will be merged together and deduplicated
 before being stored in the main results directory.</p>
+
+
+<p style="margin-left:11%;"><b>--merge-report-summaries</b>
+<i>+string</i></p>
+
+<p style="margin-left:17%;">Specifies an Infer results
+directory. The report summaries in all specified results
+directories will be merged together and deduplicated before
+reporting is done.</p>
 
 <p style="margin-left:11%;"><b>--print-logs</b></p>
 
@@ -574,6 +615,25 @@ files in the specified directory</p>
 loop-invariant calls only when the function is expensive,
 i.e. at least linear (Conversely:
 <b>--hoisting-report-only-expensive</b>)</p>
+
+<h2>PULSE CHECKER OPTIONS
+<a name="PULSE CHECKER OPTIONS"></a>
+</h2>
+
+
+
+<p style="margin-left:11%; margin-top: 1em"><b>--pulse-report-flows-from-taint-source</b>
+<i>procname</i></p>
+
+<p style="margin-left:17%;">Report data flows which
+originate at taint source <b>procname</b></p>
+
+
+<p style="margin-left:11%;"><b>--pulse-report-flows-to-taint-sink</b>
+<i>procname</i></p>
+
+<p style="margin-left:17%;">Report data flows which pass
+through taint sink <b>procname</b></p>
 
 <h2>ENVIRONMENT
 <a name="ENVIRONMENT"></a>

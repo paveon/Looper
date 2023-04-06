@@ -16,7 +16,7 @@ module Access : sig
     | Dereference
   [@@deriving compare, equal, yojson_of]
 
-  type 'array_index t = (Fieldname.t, 'array_index) t_ [@@deriving compare, yojson_of]
+  type 'array_index t = (Fieldname.t, 'array_index) t_ [@@deriving compare, equal, yojson_of]
 
   val loose_compare :
     ('array_index -> 'array_index -> int) -> 'array_index t -> 'array_index t -> int
@@ -48,10 +48,10 @@ and access_expression = private
   | ArrayOffset of access_expression * Typ.t * t option  (** array access *)
   | AddressOf of access_expression  (** "address of" operator [&] *)
   | Dereference of access_expression  (** "dereference" operator [*] *)
-[@@deriving compare]
+[@@deriving compare, equal]
 
 module AccessExpression : sig
-  val of_id : Ident.t -> Typ.t -> access_expression [@@warning "-32"]
+  val of_id : Ident.t -> Typ.t -> access_expression [@@warning "-unused-value-declaration"]
 
   val base : AccessPath.base -> access_expression
 
@@ -63,10 +63,10 @@ module AccessExpression : sig
   (** guarantees that we never build [Dereference (AddressOf t)] expressions: these become [t] *)
 
   val address_of : access_expression -> access_expression option
-    [@@warning "-32"]
+    [@@warning "-unused-value-declaration"]
   (** address_of doesn't always make sense, eg [address_of (Dereference t)] is [None] *)
 
-  val address_of_base : AccessPath.base -> access_expression [@@warning "-32"]
+  val address_of_base : AccessPath.base -> access_expression [@@warning "-unused-value-declaration"]
 
   val to_access_path : access_expression -> AccessPath.t
 

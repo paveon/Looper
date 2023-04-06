@@ -110,8 +110,6 @@ let object_type_to_string ot =
       array_type_to_string vt
 
 
-let package_to_string = function [] -> None | p -> Some (String.concat ~sep:"." p)
-
 let method_signature_names ms =
   let method_name = JBasics.ms_name ms in
   let return_type_name =
@@ -141,9 +139,9 @@ let create_sil_class_field cn {Javalib.cf_signature; cf_annotations; cf_kind} =
     (* translate modifiers like "volatile" as annotations *)
     match cf_kind with
     | Javalib.Volatile ->
-        (Annot.volatile, true) :: real_annotations
+        Annot.volatile :: real_annotations
     | Javalib.Final ->
-        (Annot.final, true) :: real_annotations
+        Annot.final :: real_annotations
     | Javalib.NotFinal ->
         real_annotations
   in

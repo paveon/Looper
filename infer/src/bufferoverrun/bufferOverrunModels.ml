@@ -115,7 +115,8 @@ let fgets str_exp num_exp =
 
 
 let malloc ~can_be_zero size_exp =
-  let exec ({pname; node_hash; location; tenv; integer_type_widths} as model_env) ~ret:(id, _) mem =
+  let exec ({pname; caller_pname; node_hash; location; tenv; integer_type_widths} as model_env)
+      ~ret:(id, _) mem =
     let size_exp = Prop.exp_normalize_noabs tenv Predicates.sub_empty size_exp in
     let typ, stride, length0, dyn_length = get_malloc_info size_exp in
     let length = Sem.eval integer_type_widths length0 mem in
@@ -127,12 +128,32 @@ let malloc ~can_be_zero size_exp =
     let offset, size = (Itv.zero, Dom.Val.get_itv length) in
     let represents_multiple_values = not (Itv.is_one size) in
     let allocsite =
-      Allocsite.make pname ~node_hash ~inst_num:0 ~dimension:1 ~path ~represents_multiple_values
+      Allocsite.make pname ~caller_pname ~node_hash ~inst_num:0 ~dimension:1 ~path
+        ~represents_multiple_values
+    in
+    let mem =
+      if Config.bo_bottom_as_default then mem
+      else
+        let loc = Loc.of_allocsite allocsite in
+        match Dom.Mem.find_opt loc mem with
+        | None ->
+            (* If the allocsite is not present in the abstract state, write bot as a value of
+               allocsite. This effectively means that the first update of allocsite is strong
+               (the new value will be joined with bot).
+               That is, it relies on the assumption that an allocsite is fully initialized before
+               being read (e.g., all elements of an array are initialized before the array is read).*)
+            Dom.Mem.strong_update (PowLoc.singleton (Loc.of_allocsite allocsite)) Dom.Val.bot mem
+        | _ ->
+            (* If the allocsite is already in the abstract state, it means that we are in a loop.
+               The abstract allocsite represents multiple concrete allocsites and we need to retain
+               values already in the abstract state. The subsequent update of the allocsite will be
+               weak (the new value will be joined with the value in the abstract state). *)
+            mem
     in
     if Language.curr_language_is Java then
       let internal_arr =
         let allocsite =
-          Allocsite.make pname ~node_hash ~inst_num:1 ~dimension:1 ~path:None
+          Allocsite.make pname ~caller_pname ~node_hash ~inst_num:1 ~dimension:1 ~path:None
             ~represents_multiple_values
         in
         Dom.Val.of_java_array_alloc allocsite ~length:size ~traces
@@ -280,7 +301,7 @@ let placement_new size_exp {exp= src_exp1; typ= t1} src_arg2_opt =
   | Tint _, None | Tint _, Some {typ= {Typ.desc= Tint _}} ->
       malloc ~can_be_zero:true (Exp.BinOp (Binop.PlusA (Some Typ.size_t), size_exp, src_exp1))
   | Tstruct (CppClass {name}), None
-    when [%compare.equal: string list] (QualifiedCppName.to_list name) ["std"; "nothrow_t"] ->
+    when [%equal: string list] (QualifiedCppName.to_list name) ["std"; "nothrow_t"] ->
       malloc ~can_be_zero:true size_exp
   | _, _ ->
       let exec {integer_type_widths} ~ret:(id, _) mem =
@@ -303,15 +324,15 @@ let placement_new size_exp {exp= src_exp1; typ= t1} src_arg2_opt =
 
 
 let strndup src_exp length_exp =
-  let exec ({pname; node_hash; location; integer_type_widths} as model_env) ~ret:((id, _) as ret)
-      mem =
+  let exec ({pname; caller_pname; node_hash; location; integer_type_widths} as model_env)
+      ~ret:((id, _) as ret) mem =
     let v =
       let src_strlen = Dom.Mem.get_c_strlen (Sem.eval_locs src_exp mem) mem in
       let length = Sem.eval integer_type_widths length_exp mem in
       let size = Itv.incr (Itv.min_sem (Dom.Val.get_itv src_strlen) (Dom.Val.get_itv length)) in
       let allocsite =
         let represents_multiple_values = not (Itv.is_one size) in
-        Allocsite.make pname ~node_hash ~inst_num:0 ~dimension:1 ~path:None
+        Allocsite.make pname ~caller_pname ~node_hash ~inst_num:0 ~dimension:1 ~path:None
           ~represents_multiple_values
       in
       let traces =
@@ -395,7 +416,7 @@ let get_array_length array_exp =
 
 (* Clang only *)
 let set_array_length {exp; typ} length_exp =
-  let exec {pname; node_hash; location; integer_type_widths} ~ret:_ mem =
+  let exec {pname; caller_pname; node_hash; location; integer_type_widths} ~ret:_ mem =
     match (exp, typ) with
     | Exp.Lvar array_pvar, {Typ.desc= Typ.Tarray {stride}} ->
         let length = Sem.eval integer_type_widths length_exp mem in
@@ -405,7 +426,8 @@ let set_array_length {exp; typ} length_exp =
         let size = Dom.Val.get_itv length in
         let allocsite =
           let represents_multiple_values = not (Itv.is_one size) in
-          Allocsite.make pname ~node_hash ~inst_num:0 ~dimension:1 ~path ~represents_multiple_values
+          Allocsite.make pname ~caller_pname ~node_hash ~inst_num:0 ~dimension:1 ~path
+            ~represents_multiple_values
         in
         let v = Dom.Val.of_c_array_alloc allocsite ~stride ~offset:Itv.zero ~size ~traces in
         Dom.Mem.add_stack (Loc.of_pvar array_pvar) v mem
@@ -479,12 +501,27 @@ module StdArray = struct
 end
 
 module Iterator = struct
+  (* This is used in C++11 where there is an intermediate step for linking iterator to a temp *)
   let new_ beg_exp temp_exp =
     let exec _ ~ret:_ mem =
       let locs_b = Sem.eval_locs beg_exp mem in
       let locs_t = Sem.eval_locs temp_exp mem in
       let v = Dom.Mem.find_set locs_t mem |> Dom.Val.get_itv |> Dom.Val.of_itv in
-      Dom.Mem.update_mem locs_b v mem
+      let mem = Dom.Mem.update_mem locs_b v mem in
+      match (beg_exp, temp_exp) with
+      | Exp.Lvar new_pvar, Exp.Lvar existing_pvar ->
+          Dom.Mem.propagate_cpp_iter_begin_or_end_alias ~new_pvar ~existing_pvar mem
+      | _ ->
+          mem
+    in
+    {exec; check= no_check}
+
+
+  let copy dest src =
+    let exec _ ~ret:_ mem =
+      let dest_loc = Sem.eval_locs dest mem in
+      let v = Dom.Mem.find_set (Sem.eval_locs src mem) mem in
+      Dom.Mem.update_mem dest_loc v mem
     in
     {exec; check= no_check}
 
@@ -492,7 +529,8 @@ module Iterator = struct
   let begin_ exp =
     let exec _ ~ret:_ mem =
       let locs = Sem.eval_locs exp mem in
-      Dom.Mem.update_mem locs Dom.Val.Itv.zero mem
+      let mem = Dom.Mem.update_mem locs Dom.Val.Itv.zero mem in
+      match exp with Exp.Lvar pvar -> Dom.Mem.add_cpp_iter_begin_alias pvar mem | _ -> mem
     in
     {exec; check= no_check}
 
@@ -502,7 +540,8 @@ module Iterator = struct
       let mem = size_exec model_env ~ret mem in
       let locs = Sem.eval_locs temp_exp mem in
       let v = Dom.Mem.find (Loc.of_id ret_id) mem in
-      Dom.Mem.update_mem locs v mem
+      let mem = Dom.Mem.update_mem locs v mem in
+      match temp_exp with Exp.Lvar pvar -> Dom.Mem.add_cpp_iter_end_alias pvar mem | _ -> mem
     in
     {exec; check= no_check}
 
@@ -512,9 +551,8 @@ module Iterator = struct
       let v = Sem.eval integer_type_widths (Exp.BinOp (Binop.Ne, lhs_exp, rhs_exp)) mem in
       let mem =
         match (lhs_exp, rhs_exp) with
-        | Exp.Lvar iter, Exp.Lvar iter_end ->
-            (* NOTE: We heuristically select LHS as an iterator and RHS as the end of vector. *)
-            Dom.Mem.add_cpp_iterator_cmp_alias ret_id iter iter_end mem
+        | Exp.Lvar iter_lhs, Exp.Lvar iter_rhs ->
+            Dom.Mem.add_cpp_iterator_cmp_alias ret_id ~iter_lhs ~iter_rhs mem
         | _, _ ->
             mem
       in
@@ -617,12 +655,12 @@ module StdVector = struct
   (* The (3) constructor in https://en.cppreference.com/w/cpp/container/vector/vector *)
   let constructor_size elt_typ {exp= vec_exp; typ= vec_typ} size_exp =
     let {exec= malloc_exec; check} = malloc ~can_be_zero:true size_exp in
-    let exec ({pname; node_hash; integer_type_widths; location} as model_env) ~ret:((id, _) as ret)
-        mem =
+    let exec ({pname; caller_pname; node_hash; integer_type_widths; location} as model_env)
+        ~ret:((id, _) as ret) mem =
       let mem = malloc_exec model_env ~ret mem in
       let vec_locs = Sem.eval_locs vec_exp mem in
       let deref_of_vec =
-        Allocsite.make pname ~node_hash ~inst_num:1 ~dimension:1 ~path:None
+        Allocsite.make pname ~caller_pname ~node_hash ~inst_num:1 ~dimension:1 ~path:None
           ~represents_multiple_values:false
         |> Loc.of_allocsite
       in
@@ -778,7 +816,7 @@ end
 
 module StdBasicString = struct
   let constructor_from_char_ptr char_typ {exp= tgt_exp; typ= tgt_typ} src ~len_opt =
-    let exec ({pname; node_hash} as model_env) ~ret mem =
+    let exec ({pname; caller_pname; node_hash} as model_env) ~ret mem =
       let mem =
         Option.value_map len_opt ~default:mem ~f:(fun len ->
             let {exec= malloc_exec} = malloc ~can_be_zero:true len in
@@ -787,7 +825,7 @@ module StdBasicString = struct
       let tgt_locs = Sem.eval_locs tgt_exp mem in
       let tgt_deref =
         let allocsite =
-          Allocsite.make pname ~node_hash ~inst_num:1 ~dimension:1 ~path:None
+          Allocsite.make pname ~caller_pname ~node_hash ~inst_num:1 ~dimension:1 ~path:None
             ~represents_multiple_values:false
         in
         PowLoc.singleton (Loc.of_allocsite allocsite)
@@ -839,10 +877,10 @@ module JavaInteger = struct
 
 
   let valueOf exp =
-    let exec {pname; node_hash; location; integer_type_widths} ~ret:(id, _) mem =
+    let exec {pname; caller_pname; node_hash; location; integer_type_widths} ~ret:(id, _) mem =
       let represents_multiple_values = false in
       let int_allocsite =
-        Allocsite.make pname ~node_hash ~inst_num:0 ~dimension:0 ~path:None
+        Allocsite.make pname ~caller_pname ~node_hash ~inst_num:0 ~dimension:0 ~path:None
           ~represents_multiple_values
       in
       let v = Sem.eval integer_type_widths exp mem in
@@ -864,16 +902,16 @@ end
    - each time we add an element, we increase the length of the array
    - each time we delete an element, we decrease the length of the array *)
 module AbstractCollection (Lang : Lang) = struct
-  let create_collection {pname; node_hash; location} ~ret:(id, _) mem ~length =
+  let create_collection {pname; caller_pname; node_hash; location} ~ret:(id, _) mem ~length =
     let represents_multiple_values = true in
     let traces = Trace.(Set.singleton location ArrayDeclaration) in
     let coll_allocsite =
-      Allocsite.make pname ~node_hash ~inst_num:0 ~dimension:1 ~path:None
+      Allocsite.make pname ~caller_pname ~node_hash ~inst_num:0 ~dimension:1 ~path:None
         ~represents_multiple_values
     in
     let internal_array =
       let allocsite =
-        Allocsite.make pname ~node_hash ~inst_num:1 ~dimension:1 ~path:None
+        Allocsite.make pname ~caller_pname ~node_hash ~inst_num:1 ~dimension:1 ~path:None
           ~represents_multiple_values
       in
       Dom.Val.of_java_array_alloc allocsite ~length ~traces
@@ -1086,7 +1124,7 @@ module AbstractCollection (Lang : Lang) = struct
 
 
   let remove_at_index coll_id index_exp =
-    { exec= change_size_by ~size_f:Itv.decr coll_id
+    { exec= change_size_by ~size_f:Itv.decr_length coll_id
     ; check= check_index ~last_included:false coll_id index_exp }
 
 
@@ -1135,12 +1173,12 @@ module Container = struct
 
 
   let constructor_size {exp= vec_exp} size_exp =
-    let exec ({pname; node_hash; integer_type_widths; location} as model_env) ~ret:((id, _) as ret)
-        mem =
+    let exec ({pname; caller_pname; node_hash; integer_type_widths; location} as model_env)
+        ~ret:((id, _) as ret) mem =
       let mem = (malloc ~can_be_zero:true size_exp).exec model_env ~ret mem in
       let vec_locs = Sem.eval_locs vec_exp mem in
       let deref_of_vec =
-        Allocsite.make pname ~node_hash ~inst_num:0 ~dimension:1 ~path:None
+        Allocsite.make pname ~caller_pname ~node_hash ~inst_num:0 ~dimension:1 ~path:None
           ~represents_multiple_values:false
         |> Loc.of_allocsite
       in
@@ -1170,22 +1208,22 @@ module NSCollection = struct
     let collection_internal_array_field = BufferOverrunField.objc_collection_internal_array
   end)
 
-  let create_collection {pname; node_hash; location; integer_type_widths} ~ret:(coll_id, _) mem
-      ~size_exp =
+  let create_collection {pname; caller_pname; node_hash; location; integer_type_widths}
+      ~ret:(coll_id, _) mem ~size_exp =
     let represents_multiple_values = true in
     let _, stride, length0, _ = get_malloc_info size_exp in
     let length = Sem.eval integer_type_widths length0 mem in
     let traces = Trace.(Set.add_elem location ArrayDeclaration) (Dom.Val.get_traces length) in
     let internal_array =
       let allocsite =
-        Allocsite.make pname ~node_hash ~inst_num:1 ~dimension:1 ~path:None
+        Allocsite.make pname ~caller_pname ~node_hash ~inst_num:1 ~dimension:1 ~path:None
           ~represents_multiple_values
       in
       let offset, size = (Itv.zero, Dom.Val.get_itv length) in
       Dom.Val.of_c_array_alloc allocsite ~stride ~offset ~size ~traces
     in
     let coll_allocsite =
-      Allocsite.make pname ~node_hash ~inst_num:0 ~dimension:1 ~path:None
+      Allocsite.make pname ~caller_pname ~node_hash ~inst_num:0 ~dimension:1 ~path:None
         ~represents_multiple_values
     in
     let coll_loc = Loc.of_allocsite coll_allocsite in
@@ -1238,7 +1276,7 @@ module NSCollection = struct
 
   let get_first coll_id = get_at_index coll_id Exp.zero
 
-  let remove_last coll_id = {exec= change_size_by ~size_f:Itv.decr coll_id; check= no_check}
+  let remove_last coll_id = {exec= change_size_by ~size_f:Itv.decr_length coll_id; check= no_check}
 
   let remove_all coll_id =
     let exec model_env ~ret mem =
@@ -1314,15 +1352,15 @@ module NSURL = struct
 end
 
 module JavaClass = struct
-  let decl_array {pname; node_hash; location} ~ret:(ret_id, _) length mem =
+  let decl_array {pname; caller_pname; node_hash; location} ~ret:(ret_id, _) length mem =
     let loc =
-      Allocsite.make pname ~node_hash ~inst_num:0 ~dimension:1 ~path:None
+      Allocsite.make pname ~caller_pname ~node_hash ~inst_num:0 ~dimension:1 ~path:None
         ~represents_multiple_values:true
       |> Loc.of_allocsite
     in
     let arr_v =
       let allocsite =
-        Allocsite.make pname ~node_hash ~inst_num:1 ~dimension:1 ~path:None
+        Allocsite.make pname ~caller_pname ~node_hash ~inst_num:1 ~dimension:1 ~path:None
           ~represents_multiple_values:true
       in
       let traces = Trace.(Set.singleton location ArrayDeclaration) in
@@ -1428,7 +1466,7 @@ module JavaString = struct
   let get_length model_env exp mem = get_length_and_elem model_env exp mem |> fst
 
   let concat exp1 exp2 =
-    let exec ({pname; node_hash} as model_env) ~ret:(id, _) mem =
+    let exec ({pname; caller_pname; node_hash} as model_env) ~ret:(id, _) mem =
       let length_v, elem =
         let length1, elem1 = get_length_and_elem model_env exp1 mem in
         let length2, elem2 = get_length_and_elem model_env exp2 mem in
@@ -1436,12 +1474,12 @@ module JavaString = struct
       in
       let length, traces = (Dom.Val.get_itv length_v, Dom.Val.get_traces length_v) in
       let arr_loc =
-        Allocsite.make pname ~node_hash ~inst_num:0 ~dimension:1 ~path:None
+        Allocsite.make pname ~caller_pname ~node_hash ~inst_num:0 ~dimension:1 ~path:None
           ~represents_multiple_values:false
         |> Loc.of_allocsite
       in
       let elem_alloc =
-        Allocsite.make pname ~node_hash ~inst_num:1 ~dimension:1 ~path:None
+        Allocsite.make pname ~caller_pname ~node_hash ~inst_num:1 ~dimension:1 ~path:None
           ~represents_multiple_values:true
       in
       Dom.Mem.add_stack (Loc.of_id id) (Dom.Val.of_loc arr_loc) mem
@@ -1539,14 +1577,14 @@ module JavaString = struct
     {exec; check= no_check}
 
 
-  let create_with_length {pname; node_hash; location} ~ret:(id, _) ~length_itv mem =
+  let create_with_length {pname; caller_pname; node_hash; location} ~ret:(id, _) ~length_itv mem =
     let arr_loc =
-      Allocsite.make pname ~node_hash ~inst_num:0 ~dimension:1 ~path:None
+      Allocsite.make pname ~caller_pname ~node_hash ~inst_num:0 ~dimension:1 ~path:None
         ~represents_multiple_values:false
       |> Loc.of_allocsite
     in
     let elem_alloc =
-      Allocsite.make pname ~node_hash ~inst_num:1 ~dimension:1 ~path:None
+      Allocsite.make pname ~caller_pname ~node_hash ~inst_num:1 ~dimension:1 ~path:None
         ~represents_multiple_values:true
     in
     let traces = Trace.(Set.singleton location ArrayDeclaration) in
@@ -1850,7 +1888,7 @@ module Call = struct
         $+...$--> NSCollection.create_from_array
       ; -"CFArrayCreateCopy" <>$ any_arg $+ capt_exp $!--> create_copy_array
       ; -"CFArrayGetCount" <>$ capt_exp $!--> NSCollection.size
-      ; -"CFArrayGetValueAtIndex" <>$ capt_var_exn $+ capt_exp $!--> NSCollection.get_at_index
+      ; -"CFArrayGetValueAtIndex" <>$ capt_var $+ capt_exp $!--> NSCollection.get_at_index
       ; -"CFDictionaryGetCount" <>$ capt_exp $!--> NSCollection.size
       ; -"MCFArrayGetCount" <>$ capt_exp $!--> NSCollection.size
       ; +PatternMatch.ObjectiveC.implements "NSObject" &:: "init" <>$ capt_exp $--> id
@@ -1858,18 +1896,17 @@ module Call = struct
       ; +PatternMatch.ObjectiveC.implements "NSObject" &:: "mutableCopy" <>$ capt_exp $--> id
       ; +PatternMatch.ObjectiveC.implements "NSArray" &:: "array" <>--> NSCollection.new_collection
       ; +PatternMatch.ObjectiveC.implements "NSArray"
-        &:: "firstObject" <>$ capt_var_exn $!--> NSCollection.get_first
+        &:: "firstObject" <>$ capt_var $!--> NSCollection.get_first
       ; +PatternMatch.ObjectiveC.implements "NSDictionary"
-        &:: "initWithDictionary:" <>$ capt_var_exn $+ capt_exp $--> NSCollection.copy
+        &:: "initWithDictionary:" <>$ capt_var $+ capt_exp $--> NSCollection.copy
       ; +PatternMatch.ObjectiveC.implements "NSDictionary"
         &:: "dictionaryWithDictionary:" <>$ capt_exp $--> NSCollection.new_collection_by_init
       ; +PatternMatch.ObjectiveC.implements "NSSet"
-        &:: "initWithArray:" <>$ capt_var_exn $+ capt_exp $--> NSCollection.copy
+        &:: "initWithArray:" <>$ capt_var $+ capt_exp $--> NSCollection.copy
       ; +PatternMatch.ObjectiveC.implements "NSArray"
-        &:: "initWithArray:" <>$ capt_var_exn $+ capt_exp $--> NSCollection.copy
+        &:: "initWithArray:" <>$ capt_var $+ capt_exp $--> NSCollection.copy
       ; +PatternMatch.ObjectiveC.implements "NSArray"
-        &:: "initWithArray:copyItems:" <>$ capt_var_exn $+ capt_exp $+ any_arg
-        $--> NSCollection.copy
+        &:: "initWithArray:copyItems:" <>$ capt_var $+ capt_exp $+ any_arg $--> NSCollection.copy
       ; +PatternMatch.ObjectiveC.implements_collection
         &:: "count" <>$ capt_exp $!--> NSCollection.size
       ; +PatternMatch.ObjectiveC.implements_collection
@@ -1877,7 +1914,7 @@ module Call = struct
       ; +PatternMatch.ObjectiveC.conforms_to ~protocol:"NSFastEnumeration"
         &:: "objectEnumerator" <>$ capt_exp $--> NSCollection.iterator
       ; +PatternMatch.ObjectiveC.implements "NSArray"
-        &:: "objectAtIndexedSubscript:" <>$ capt_var_exn $+ capt_exp $!--> NSCollection.get_at_index
+        &:: "objectAtIndexedSubscript:" <>$ capt_var $+ capt_exp $!--> NSCollection.get_at_index
       ; +PatternMatch.ObjectiveC.implements "NSArray"
         &:: "arrayWithObjects:count:" <>$ capt_exp $+ capt_exp $--> NSCollection.create_from_array
       ; +PatternMatch.ObjectiveC.implements "NSArray"
@@ -1886,37 +1923,36 @@ module Call = struct
         &:: "arrayByAddingObjectsFromArray:" <>$ capt_exp $+ capt_exp
         $--> NSCollection.new_collection_by_add_all
       ; +PatternMatch.ObjectiveC.implements "NSEnumerator"
-        &:: "nextObject" <>$ capt_var_exn $--> NSCollection.next_object
+        &:: "nextObject" <>$ capt_var $--> NSCollection.next_object
       ; +PatternMatch.ObjectiveC.implements "NSFileManager"
         &:: "contentsOfDirectoryAtURL:includingPropertiesForKeys:options:error:"
         &--> NSCollection.new_collection
       ; +PatternMatch.ObjectiveC.implements "NSKeyedUnarchiver"
-        &:: "decodeObjectForKey:" $ capt_var_exn $+...$--> NSCollection.get_any_index
+        &:: "decodeObjectForKey:" $ capt_var $+...$--> NSCollection.get_any_index
       ; +PatternMatch.ObjectiveC.implements "NSMutableArray"
-        &:: "initWithCapacity:" <>$ capt_var_exn $+ capt_exp
-        $--> NSCollection.new_collection_of_size
+        &:: "initWithCapacity:" <>$ capt_var $+ capt_exp $--> NSCollection.new_collection_of_size
       ; +PatternMatch.ObjectiveC.implements "NSMutableArray"
-        &:: "addObject:" <>$ capt_var_exn $+ capt_exp $--> NSCollection.add
+        &:: "addObject:" <>$ capt_var $+ capt_exp $--> NSCollection.add
       ; +PatternMatch.ObjectiveC.implements "NSMutableArray"
-        &:: "removeLastObject" <>$ capt_var_exn $--> NSCollection.remove_last
+        &:: "removeLastObject" <>$ capt_var $--> NSCollection.remove_last
       ; +PatternMatch.ObjectiveC.implements "NSMutableArray"
-        &:: "insertObject:atIndex:" <>$ capt_var_exn $+ any_arg $+ capt_exp
+        &:: "insertObject:atIndex:" <>$ capt_var $+ any_arg $+ capt_exp
         $--> NSCollection.add_at_index
       ; +PatternMatch.ObjectiveC.implements "NSMutableArray"
-        &:: "removeObjectAtIndex:" <>$ capt_var_exn $+ capt_exp $--> NSCollection.remove_at_index
+        &:: "removeObjectAtIndex:" <>$ capt_var $+ capt_exp $--> NSCollection.remove_at_index
       ; +PatternMatch.ObjectiveC.implements "NSMutableArray"
-        &:: "removeAllObjects:" <>$ capt_var_exn $--> NSCollection.remove_all
+        &:: "removeAllObjects:" <>$ capt_var $--> NSCollection.remove_all
       ; +PatternMatch.ObjectiveC.implements "NSMutableArray"
-        &:: "addObjectsFromArray:" <>$ capt_var_exn $+ capt_exp $--> NSCollection.addAll
+        &:: "addObjectsFromArray:" <>$ capt_var $+ capt_exp $--> NSCollection.addAll
       ; +PatternMatch.ObjectiveC.implements "NSDictionary"
         &:: "dictionary" <>--> NSCollection.new_collection
       ; +PatternMatch.ObjectiveC.implements "NSDictionary"
         &:: "dictionaryWithObjects:forKeys:count:" <>$ any_arg $+ capt_exp $+ capt_exp
         $--> NSCollection.create_from_array
       ; +PatternMatch.ObjectiveC.implements "NSDictionary"
-        &:: "objectForKeyedSubscript:" <>$ capt_var_exn $+ capt_exp $--> NSCollection.get_at_index
+        &:: "objectForKeyedSubscript:" <>$ capt_var $+ capt_exp $--> NSCollection.get_at_index
       ; +PatternMatch.ObjectiveC.implements "NSDictionary"
-        &:: "objectForKey:" <>$ capt_var_exn $+ capt_exp $--> NSCollection.get_at_index
+        &:: "objectForKey:" <>$ capt_var $+ capt_exp $--> NSCollection.get_at_index
       ; +PatternMatch.ObjectiveC.implements "NSDictionary"
         &:: "allKeys" <>$ capt_exp $--> create_copy_array
       ; +PatternMatch.ObjectiveC.implements "NSDictionary"
@@ -1996,9 +2032,11 @@ module Call = struct
         (* C++11 -- macosx *)
       ; -"std" &::+ std_iterator_libcpp &::+ std_iterator_libcpp $ capt_exp $+ capt_exp
         $--> Iterator.new_
+      ; -"std" &::+ std_iterator_libcpp &:: "operator=" $ capt_exp $+ capt_exp $--> Iterator.copy
         (* C++11 -- gnu/linux *)
       ; -"__gnu_cxx" &:: "__normal_iterator" &:: "__normal_iterator" $ capt_exp $+ capt_exp
         $--> Iterator.new_
+      ; -"std" &::+ std_iterator_libstdcpp &:: "operator=" $ capt_exp $+ capt_exp $--> Iterator.copy
       ; -"std" &:: "__detail" &::+ std_iterator_libstdcpp_detail &::+ std_iterator_libstdcpp_detail
         $ capt_exp $+ capt_exp $--> Iterator.new_
       ; -"std" &::+ std_iterator_libstdcpp &::+ std_iterator_libstdcpp $ capt_exp $+ capt_exp
@@ -2086,26 +2124,26 @@ module Call = struct
       ; +PatternMatch.Java.implements_arrays &:: "copyOf" <>$ capt_exp $+ capt_exp $+...$--> copyOf
       ; (* model sets and maps as lists *)
         +PatternMatch.Java.implements_collection
-        &:: "<init>" <>$ capt_var_exn
+        &:: "<init>" <>$ capt_var
         $+ capt_exp_of_typ (+PatternMatch.Java.implements_collection)
         $--> Collection.init_with_arg
       ; +PatternMatch.Java.implements_collection
         &:: "<init>" <>$ any_arg $+ capt_exp $--> Collection.init_with_capacity
       ; +PatternMatch.Java.implements_collection
-        &:: "add" <>$ capt_var_exn $+ capt_exp $+ any_arg $--> Collection.add_at_index
+        &:: "add" <>$ capt_var $+ capt_exp $+ any_arg $--> Collection.add_at_index
       ; +PatternMatch.Java.implements_collection
-        &:: "add" <>$ capt_var_exn $+ capt_exp $--> Collection.add
+        &:: "add" <>$ capt_var $+ capt_exp $--> Collection.add
       ; +PatternMatch.Java.implements_collection
-        &:: "addAll" <>$ capt_var_exn $+ capt_exp $+ capt_exp $--> Collection.addAll_at_index
+        &:: "addAll" <>$ capt_var $+ capt_exp $+ capt_exp $--> Collection.addAll_at_index
       ; +PatternMatch.Java.implements_collection
-        &:: "addAll" <>$ capt_var_exn $+ capt_exp $--> Collection.addAll
+        &:: "addAll" <>$ capt_var $+ capt_exp $--> Collection.addAll
       ; +PatternMatch.Java.implements_collection
-        &:: "get" <>$ capt_var_exn $+ capt_exp $--> Collection.get_at_index
+        &:: "get" <>$ capt_var $+ capt_exp $--> Collection.get_at_index
       ; +PatternMatch.Java.implements_map &:: "get" <>$ capt_exp $+ any_arg $--> Collection.get_elem
       ; +PatternMatch.Java.implements_collection
-        &:: "remove" <>$ capt_var_exn $+ capt_exp $--> Collection.remove_at_index
+        &:: "remove" <>$ capt_var $+ capt_exp $--> Collection.remove_at_index
       ; +PatternMatch.Java.implements_collection
-        &:: "set" <>$ capt_var_exn $+ capt_exp $+ capt_exp $--> Collection.set_at_index
+        &:: "set" <>$ capt_var $+ capt_exp $+ capt_exp $--> Collection.set_at_index
       ; +PatternMatch.Java.implements_collection &:: "size" <>$ capt_exp $!--> Collection.size
       ; +PatternMatch.Java.implements_collection
         &:: "toArray" <>$ capt_exp $+...$--> create_copy_array
@@ -2218,9 +2256,9 @@ module Call = struct
         &:: "subList" <>$ any_arg $+ capt_exp $+ capt_exp $--> Collection.subList
       ; +PatternMatch.Java.implements_map &:: "entrySet" <>$ capt_exp $!--> Collection.iterator
       ; +PatternMatch.Java.implements_map &:: "keySet" <>$ capt_exp $!--> Collection.iterator
-      ; +PatternMatch.Java.implements_map &:: "put" <>$ capt_var_exn $+ any_arg $+ capt_exp
+      ; +PatternMatch.Java.implements_map &:: "put" <>$ capt_var $+ any_arg $+ capt_exp
         $--> Collection.put_with_elem
-      ; +PatternMatch.Java.implements_map &:: "putAll" <>$ capt_var_exn $+ capt_exp
+      ; +PatternMatch.Java.implements_map &:: "putAll" <>$ capt_var $+ capt_exp
         $--> Collection.putAll
       ; +PatternMatch.Java.implements_map &:: "size" <>$ capt_exp $!--> Collection.size
       ; +PatternMatch.Java.implements_map &:: "values" <>$ capt_exp $!--> Collection.iterator
@@ -2230,15 +2268,15 @@ module Call = struct
       ; +PatternMatch.Java.implements_nio "channels.FileChannel"
         &:: "read" <>$ any_arg $+ capt_exp $+ any_arg $--> FileChannel.read
       ; +PatternMatch.Java.implements_org_json "JSONArray"
-        &:: "<init>" <>$ capt_var_exn
+        &:: "<init>" <>$ capt_var
         $+ capt_exp_of_typ (+PatternMatch.Java.implements_collection)
         $--> Collection.init_with_arg
       ; +PatternMatch.Java.implements_org_json "JSONArray"
         &:: "length" <>$ capt_exp $!--> Collection.size
       ; +PatternMatch.Java.implements_org_json "JSONArray"
-        &:: "put" <>$ capt_var_exn $+...$--> Collection.put
+        &:: "put" <>$ capt_var $+...$--> Collection.put
       ; +PatternMatch.Java.implements_pseudo_collection
-        &:: "put" <>$ capt_var_exn $+ any_arg $+ any_arg $--> Collection.put
+        &:: "put" <>$ capt_var $+ any_arg $+ any_arg $--> Collection.put
       ; +PatternMatch.Java.implements_pseudo_collection
         &:: "size" <>$ capt_exp $!--> Collection.size
       ; (* Java linked list models *)

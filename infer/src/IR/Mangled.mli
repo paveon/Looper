@@ -11,7 +11,7 @@ open! IStd
 (** Module for Mangled Names *)
 
 (** Type of mangled names *)
-type t [@@deriving compare, yojson_of]
+type t [@@deriving compare, yojson_of, sexp, hash]
 
 val equal : t -> t -> bool
 (** Equality for mangled names *)
@@ -35,7 +35,7 @@ val this : t
 
 val is_this : t -> bool
 
-val self : t [@@warning "-32"]
+val self : t [@@warning "-unused-value-declaration"]
 
 val is_self : t -> bool
 

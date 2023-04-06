@@ -8,7 +8,13 @@
 open! IStd
 
 type log_t =
-  ?ltr:Errlog.loc_trace -> ?extras:Jsonbug_t.extra -> Checker.t -> IssueType.t -> string -> unit
+     ?loc_instantiated:Location.t
+  -> ?ltr:Errlog.loc_trace
+  -> ?extras:Jsonbug_t.extra
+  -> Checker.t
+  -> IssueType.t
+  -> string
+  -> unit
 
 module Suppression = struct
   let does_annotation_suppress_issue (kind : IssueType.t) (annot : Annot.t) =
@@ -38,7 +44,8 @@ module Suppression = struct
 
 
   let is_method_suppressed proc_attributes kind =
-    Annotations.ma_has_annotation_with proc_attributes.ProcAttributes.method_annotation
+    Annotations.method_has_annotation_with proc_attributes.ProcAttributes.ret_annots
+      (List.map proc_attributes.ProcAttributes.formals ~f:trd3)
       (does_annotation_suppress_issue kind)
 
 
@@ -83,15 +90,8 @@ let log_issue_from_errlog ?severity_override err_log ~loc ~node ~session ~ltr ~a
     checker (issue_to_report : IssueToReport.t) =
   let issue_type = issue_to_report.issue_type in
   if (not Config.filtering) (* no-filtering takes priority *) || issue_type.IssueType.enabled then
-    let doc_url = issue_type.doc_url in
-    let linters_def_file = issue_type.linters_def_file in
-    Errlog.log_issue ?severity_override err_log ~loc ~node ~session ~ltr ~linters_def_file ~doc_url
-      ~access ~extras checker issue_to_report
-
-
-let log_frontend_issue errlog ~loc ~node_key ~ltr exn =
-  let node = Errlog.FrontendNode {node_key} in
-  log_issue_from_errlog errlog ~loc ~node ~session:0 ~ltr ~access:None ~extras:None Linters exn
+    Errlog.log_issue ?severity_override err_log ~loc ~node ~session ~ltr ~access ~extras checker
+      issue_to_report
 
 
 let log_issue_from_summary ?severity_override proc_desc err_log ~node ~session ~loc ~ltr ?extras
@@ -118,7 +118,7 @@ let log_issue_from_summary ?severity_override proc_desc err_log ~node ~session ~
     if Config.suppress_lint_ignore_types then
       (* This is for backwards compatibility only!
          We should really honor the issues types specified as params to @SuppressLint *)
-      Annotations.ia_is_suppress_lint proc_attributes.ProcAttributes.method_annotation.return
+      Annotations.ia_is_suppress_lint proc_attributes.ProcAttributes.ret_annots
     else Suppression.is_method_suppressed proc_attributes issue_type
   in
   let should_suppress_lint =
@@ -135,15 +135,24 @@ let mk_issue_to_report issue_type error_message =
   {IssueToReport.issue_type; description= Localise.verbatim_desc error_message; ocaml_pos= None}
 
 
-let log_issue_from_summary_simplified ?severity_override attrs err_log ~loc ?(ltr = []) ?extras
+let log_issue_from_summary_simplified ?severity_override proc_desc err_log ~loc ?(ltr = []) ?extras
     checker issue_type error_message =
   let issue_to_report = mk_issue_to_report issue_type error_message in
-  log_issue_from_summary ?severity_override attrs err_log ~node:Errlog.UnknownNode ~session:0 ~loc
-    ~ltr ?extras checker issue_to_report
+  log_issue_from_summary ?severity_override proc_desc err_log ~node:Errlog.UnknownNode ~session:0
+    ~loc ~ltr ?extras checker issue_to_report
 
 
-let log_issue attrs err_log ~loc ?ltr ?extras checker issue_type error_message =
-  log_issue_from_summary_simplified attrs err_log ~loc ?ltr ?extras checker issue_type error_message
+let log_issue proc_desc err_log ~loc ?loc_instantiated ?ltr ?extras checker issue_type error_message
+    =
+  let ltr =
+    Option.map ltr ~f:(fun default ->
+        Option.value_map ~default loc_instantiated ~f:(fun loc_instantiated ->
+            let depth = 0 in
+            let tags = [] in
+            Errlog.make_trace_element depth loc_instantiated "first instantiated at" tags :: default ) )
+  in
+  log_issue_from_summary_simplified proc_desc err_log ~loc ?ltr ?extras checker issue_type
+    error_message
 
 
 let log_issue_external procname ~issue_log ?severity_override ~loc ~ltr ?access ?extras checker

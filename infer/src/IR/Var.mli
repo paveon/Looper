@@ -9,7 +9,8 @@ open! IStd
 
 (** Single abstraction for all the kinds of variables in SIL *)
 
-type t = private LogicalVar of Ident.t | ProgramVar of Pvar.t [@@deriving compare, yojson_of]
+type t = private LogicalVar of Ident.t | ProgramVar of Pvar.t
+[@@deriving compare, yojson_of, sexp, hash]
 
 val equal : t -> t -> bool
 
@@ -50,6 +51,8 @@ val appears_in_source_code : t -> bool
     frontend-generated ProgramVar) *)
 
 val is_cpp_temporary : t -> bool
+
+val is_cpp_unnamed_param : t -> bool
 
 val get_footprint_index : t -> int option
 

@@ -110,6 +110,19 @@ module Val = struct
     ; traces= TraceSet.bottom }
 
 
+  let unknown : t =
+    { itv= Itv.top
+    ; itv_thresholds= ItvThresholds.empty
+    ; itv_updated_by= ItvUpdatedBy.Top
+    ; modeled_range= ModeledRange.bottom
+    ; powloc= PowLoc.unknown
+    ; arrayblk= ArrayBlk.unknown
+    ; func_ptrs= FuncPtr.Set.empty
+    ; traces= TraceSet.bottom }
+
+
+  let default = if Config.bo_bottom_as_default then bot else unknown
+
   let pp fmt x =
     let itv_thresholds_pp fmt itv_thresholds =
       if Config.bo_debug >= 3 && not (ItvThresholds.is_empty itv_thresholds) then
@@ -138,13 +151,9 @@ module Val = struct
    fun typ ~callee_pname ~location ->
     let is_int = Typ.is_int typ in
     let traces = Trace.(Set.singleton_final location (UnknownFrom callee_pname)) in
-    { itv= Itv.top
-    ; itv_thresholds= ItvThresholds.empty
-    ; itv_updated_by= ItvUpdatedBy.Top
-    ; modeled_range= ModeledRange.bottom
-    ; powloc= (if is_int then PowLoc.bot else PowLoc.unknown)
+    { unknown with
+      powloc= (if is_int then PowLoc.bot else PowLoc.unknown)
     ; arrayblk= (if is_int then ArrayBlk.bottom else ArrayBlk.unknown)
-    ; func_ptrs= FuncPtr.Set.bottom
     ; traces }
 
 
@@ -353,7 +362,15 @@ module Val = struct
 
   let lor_sem : t -> t -> t = lift_cmp_itv Itv.lor_sem Boolean.EqualOrder.top
 
-  let lift_prune1 : (Itv.t -> Itv.t) -> t -> t = fun f x -> {x with itv= f x.itv}
+  let lift_prune1 : (Itv.t -> Itv.t) -> t -> t =
+   fun f x ->
+    let itv = f x.itv in
+    if (not (Itv.is_bottom x.itv)) && Itv.is_bottom itv then
+      (* Prune produced bottom interval, return bottom value in order to detect that prune
+         pairs are not reachable (see PrunePairs.is_reachable). *)
+      {bot with traces= x.traces}
+    else {x with itv}
+
 
   let lift_prune_length1 : (Itv.t -> Itv.t) -> t -> t =
    fun f x -> {x with arrayblk= ArrayBlk.transform_length ~f x.arrayblk}
@@ -524,11 +541,13 @@ module Val = struct
     && FuncPtr.Set.is_bottom x.func_ptrs
 
 
+  let is_unknown v =
+    Itv.is_top v.itv && PowLoc.is_unknown v.powloc && ArrayBlk.is_unknown v.arrayblk
+
+
   let is_mone x = Itv.is_mone (get_itv x)
 
-  let is_incr_of l {itv} =
-    Option.value_map (Loc.get_path l) ~default:false ~f:(fun path -> Itv.is_incr_of path itv)
-
+  let is_incr_of l {itv} = Option.exists (Loc.get_path l) ~f:(fun path -> Itv.is_incr_of path itv)
 
   let cast typ v = {v with powloc= PowLoc.cast typ v.powloc}
 
@@ -683,11 +702,9 @@ module Val = struct
             match typ_of_param_path path with
             | None -> (
               match typ with
-              | Some typ when Loc.is_global l ->
-                  L.d_printfln_escaped "Val.on_demand for %a -> global" Loc.pp l ;
-                  do_on_demand path typ
-              | Some typ when Typ.is_pointer_to_function typ ->
-                  L.d_printfln_escaped "Val.on_demand for %a -> function pointer" Loc.pp l ;
+              | Some typ ->
+                  L.d_printfln_escaped "Val.on_demand for %a -> typ=%a" Loc.pp l (Typ.pp Pp.text)
+                    typ ;
                   do_on_demand path typ
               | _ ->
                   L.d_printfln_escaped "Val.on_demand for %a -> no type" Loc.pp l ;
@@ -827,7 +844,9 @@ module MemPure = struct
           | Some v1, Some v2 ->
               Some (MVal.join v1 v2)
           | Some v1, None | None, Some v1 ->
-              let v2 = MVal.on_demand ~default:Val.bot oenv l in
+              (* Since abstract state doesn't contain complete information, use Val.top
+                      if a location is missing in one state being joined to be sound. *)
+              let v2 = MVal.on_demand ~default:Val.default oenv l in
               Some (MVal.join v1 v2)
           | None, None ->
               None )
@@ -843,17 +862,24 @@ module MemPure = struct
           | Some v1, Some v2 ->
               Some (MVal.widen ~prev:v1 ~next:v2 ~num_iters)
           | Some v1, None ->
-              let v2 = MVal.on_demand ~default:Val.bot oenv l in
+              (* Since abstract state doesn't contain complete information, use Val.top
+                      if a location is missing in one state being widened to be sound. *)
+              let v2 = MVal.on_demand ~default:Val.default oenv l in
               Some (MVal.widen ~prev:v1 ~next:v2 ~num_iters)
           | None, Some v2 ->
-              let v1 = MVal.on_demand ~default:Val.bot oenv l in
+              (* Since abstract state doesn't contain complete information, use Val.top
+                 if a location is missing in one state being widened to be sound. *)
+              let v1 = MVal.on_demand ~default:Val.default oenv l in
               Some (MVal.widen ~prev:v1 ~next:v2 ~num_iters)
           | None, None ->
               None )
         prev next
 
 
-  let is_rep_multi_loc l m = Option.exists (find_opt l m) ~f:MVal.get_rep_multi
+  let is_rep_multi_loc l m =
+    Option.value_map (find_opt l m) ~f:MVal.get_rep_multi
+      ~default:(Loc.represents_multiple_values l)
+
 
   (** Collect the location that was increased by one, i.e., [x -> x+1] *)
   let get_incr_locs m =
@@ -861,6 +887,8 @@ module MemPure = struct
 
 
   let find_opt l m = Option.map (find_opt l m) ~f:MVal.get_val
+
+  let strong_update l v m = add l (Loc.represents_multiple_values l, v) m
 
   let add ?(represents_multiple_values = false) l ({Val.powloc; arrayblk} as v) m =
     let v =
@@ -913,13 +941,11 @@ module AliasTarget = struct
     | IteratorHasNext of {java_tmp: Loc.t option}
     | IteratorNextObject of {objc_tmp: AbsLoc.Loc.t option}
     | Top
-  [@@deriving compare]
+  [@@deriving compare, equal]
 
   let top = Top
 
   let is_top = function Top -> true | _ -> false
-
-  let equal = [%compare.equal: t]
 
   let pp_with_key ~pp_lhs ~pp_rhs =
     let pp_intlit fmt i =
@@ -1397,12 +1423,35 @@ module AliasRet = struct
     pp fmt x
 end
 
+module CppIterBeginOrEndKind = struct
+  type t = Begin | End [@@deriving equal]
+
+  let get_binop = function Begin -> Binop.Gt | End -> Binop.Lt
+
+  let pp f = function Begin -> F.pp_print_string f "begin" | End -> F.pp_print_string f "end"
+end
+
+module CppIterBeginOrEndValue = AbstractDomain.Flat (CppIterBeginOrEndKind)
+
+module PVar = struct
+  include Pvar
+
+  let pp = Pvar.pp Pp.text
+end
+
+module CppIterBeginOrEnd = struct
+  include AbstractDomain.InvertedMap (PVar) (CppIterBeginOrEndValue)
+
+  let pp : F.formatter -> t -> unit = fun fmt x -> F.fprintf fmt "cpp_iter_begin_or_end=%a" pp x
+end
+
 module CppIteratorCmpValue = struct
-  type t = V of {iter: Pvar.t; iter_end: Pvar.t} | Top
+  type t = V of {iter_lhs: Pvar.t; iter_rhs: Pvar.t; begin_or_end: CppIterBeginOrEndKind.t} | Top
 
   let pp f = function
-    | V {iter; iter_end} ->
-        F.fprintf f "{iter:%a, end:%a}" (Pvar.pp Pp.text) iter (Pvar.pp Pp.text) iter_end
+    | V {iter_lhs; iter_rhs; begin_or_end} ->
+        F.fprintf f "{iter_lhs:%a, iter_rhs:%a begin_or_end:%a}" (Pvar.pp Pp.text) iter_lhs
+          (Pvar.pp Pp.text) iter_rhs CppIterBeginOrEndKind.pp begin_or_end
     | Top ->
         F.pp_print_string f "top"
 
@@ -1410,7 +1459,9 @@ module CppIteratorCmpValue = struct
   let leq ~lhs ~rhs =
     match (lhs, rhs) with
     | V lhs, V rhs ->
-        Pvar.equal lhs.iter rhs.iter && Pvar.equal lhs.iter_end rhs.iter_end
+        Pvar.equal lhs.iter_lhs rhs.iter_lhs
+        && Pvar.equal lhs.iter_rhs rhs.iter_rhs
+        && CppIterBeginOrEndKind.equal lhs.begin_or_end rhs.begin_or_end
     | Top, V _ ->
         false
     | (V _ | Top), Top ->
@@ -1420,7 +1471,11 @@ module CppIteratorCmpValue = struct
   let join x y =
     match (x, y) with
     | V x, V y ->
-        if Pvar.equal x.iter y.iter && Pvar.equal x.iter_end y.iter_end then V x else Top
+        if
+          Pvar.equal x.iter_lhs y.iter_lhs && Pvar.equal x.iter_rhs y.iter_rhs
+          && CppIterBeginOrEndKind.equal x.begin_or_end y.begin_or_end
+        then V x
+        else Top
     | _, Top | Top, _ ->
         Top
 
@@ -1435,7 +1490,13 @@ module CppIteratorCmp = struct
 end
 
 module Alias = struct
-  type t = {map: AliasMap.t; ret: AliasRet.t; cpp_iterator_cmp: CppIteratorCmp.t}
+  type t =
+    { map: AliasMap.t
+    ; ret: AliasRet.t
+          (** The list of addresses that were assigned to a return variable of a function. All
+              locations reachable from these addresses need to be kept in the abstract state. *)
+    ; cpp_iterator_cmp: CppIteratorCmp.t
+    ; cpp_iter_begin_or_end: CppIterBeginOrEnd.t }
 
   let leq ~lhs ~rhs =
     if phys_equal lhs rhs then true
@@ -1443,6 +1504,7 @@ module Alias = struct
       AliasMap.leq ~lhs:lhs.map ~rhs:rhs.map
       && AliasRet.leq ~lhs:lhs.ret ~rhs:rhs.ret
       && CppIteratorCmp.leq ~lhs:lhs.cpp_iterator_cmp ~rhs:rhs.cpp_iterator_cmp
+      && CppIterBeginOrEnd.leq ~lhs:lhs.cpp_iter_begin_or_end ~rhs:rhs.cpp_iter_begin_or_end
 
 
   let join x y =
@@ -1450,7 +1512,9 @@ module Alias = struct
     else
       { map= AliasMap.join x.map y.map
       ; ret= AliasRet.join x.ret y.ret
-      ; cpp_iterator_cmp= CppIteratorCmp.join x.cpp_iterator_cmp y.cpp_iterator_cmp }
+      ; cpp_iterator_cmp= CppIteratorCmp.join x.cpp_iterator_cmp y.cpp_iterator_cmp
+      ; cpp_iter_begin_or_end=
+          CppIterBeginOrEnd.join x.cpp_iter_begin_or_end y.cpp_iter_begin_or_end }
 
 
   let widen ~prev ~next ~num_iters =
@@ -1459,16 +1523,25 @@ module Alias = struct
       { map= AliasMap.widen ~prev:prev.map ~next:next.map ~num_iters
       ; ret= AliasRet.widen ~prev:prev.ret ~next:next.ret ~num_iters
       ; cpp_iterator_cmp=
-          CppIteratorCmp.widen ~prev:prev.cpp_iterator_cmp ~next:next.cpp_iterator_cmp ~num_iters }
+          CppIteratorCmp.widen ~prev:prev.cpp_iterator_cmp ~next:next.cpp_iterator_cmp ~num_iters
+      ; cpp_iter_begin_or_end=
+          CppIterBeginOrEnd.widen ~prev:prev.cpp_iter_begin_or_end ~next:next.cpp_iter_begin_or_end
+            ~num_iters }
 
 
   let pp fmt x =
-    F.fprintf fmt "@[<hov 2>{ %a%s%a, %a }@]" AliasMap.pp x.map
+    F.fprintf fmt "@[<hov 2>{ %a%s%a, %a, %a }@]" AliasMap.pp x.map
       (if AliasMap.is_empty x.map then "" else ", ")
-      AliasRet.pp x.ret CppIteratorCmp.pp x.cpp_iterator_cmp
+      AliasRet.pp x.ret CppIteratorCmp.pp x.cpp_iterator_cmp CppIterBeginOrEnd.pp
+      x.cpp_iter_begin_or_end
 
 
-  let init : t = {map= AliasMap.empty; ret= AliasRet.empty; cpp_iterator_cmp= CppIteratorCmp.empty}
+  let init : t =
+    { map= AliasMap.empty
+    ; ret= AliasRet.empty
+    ; cpp_iterator_cmp= CppIteratorCmp.empty
+    ; cpp_iter_begin_or_end= CppIterBeginOrEnd.empty }
+
 
   let lift_map : (AliasMap.t -> AliasMap.t) -> t -> t = fun f a -> {a with map= f a.map}
 
@@ -1560,7 +1633,7 @@ module Alias = struct
    fun ~ret_id ~iterator a -> lift_map (AliasMap.add_iterator_next_object_alias ~ret_id ~iterator) a
 
 
-  let remove_temp : Ident.t -> t -> t = fun temp -> lift_map (AliasMap.remove (KeyLhs.of_id temp))
+  let remove_key : KeyLhs.t -> t -> t = fun key -> lift_map (AliasMap.remove key)
 
   let forget_size_alias arr_locs = lift_map (AliasMap.forget_size_alias arr_locs)
 
@@ -1568,18 +1641,36 @@ module Alias = struct
     lift_map (AliasMap.incr_iterator_simple_alias_on_call eval_sym_trace ~callee_locs)
 
 
-  let add_cpp_iterator_cmp_alias id iter iter_end alias =
+  let add_cpp_iterator_cmp_alias id ~iter_lhs ~iter_rhs begin_or_end alias =
     { alias with
       cpp_iterator_cmp=
-        CppIteratorCmp.add id (CppIteratorCmpValue.V {iter; iter_end}) alias.cpp_iterator_cmp }
+        CppIteratorCmp.add id
+          (CppIteratorCmpValue.V {iter_lhs; iter_rhs; begin_or_end})
+          alias.cpp_iterator_cmp }
 
 
   let find_cpp_iterator_alias id {cpp_iterator_cmp} =
     match CppIteratorCmp.find_opt id cpp_iterator_cmp with
-    | Some (V {iter; iter_end}) ->
-        Some (iter, iter_end)
+    | Some (V {iter_lhs; iter_rhs; begin_or_end}) ->
+        Some (iter_lhs, iter_rhs, CppIterBeginOrEndKind.get_binop begin_or_end)
     | Some Top | None ->
         None
+
+
+  let add_cpp_iter_begin_alias pvar alias =
+    { alias with
+      cpp_iter_begin_or_end=
+        CppIterBeginOrEnd.add pvar CppIterBeginOrEndValue.(v Begin) alias.cpp_iter_begin_or_end }
+
+
+  let add_cpp_iter_end_alias pvar alias =
+    { alias with
+      cpp_iter_begin_or_end=
+        CppIterBeginOrEnd.add pvar CppIterBeginOrEndValue.(v End) alias.cpp_iter_begin_or_end }
+
+
+  let find_cpp_iter_begin_or_end_alias pvar {cpp_iter_begin_or_end} =
+    CppIterBeginOrEnd.find_opt pvar cpp_iter_begin_or_end
 end
 
 module CoreVal = struct
@@ -1856,7 +1947,28 @@ module LatestPrune = struct
         Top
 
 
-  let widen ~prev ~next ~num_iters:_ = join prev next
+  let widen ~prev ~next ~num_iters =
+    match (prev, next) with
+    | Latest prev, Latest next ->
+        Latest (PrunePairs.widen ~prev ~next ~num_iters)
+    | TrueBranch (pvar, prev), TrueBranch (pvar', next) when Pvar.equal pvar pvar' ->
+        TrueBranch (pvar, PrunePairs.widen ~prev ~next ~num_iters)
+    | FalseBranch (pvar, prev), FalseBranch (pvar', next) when Pvar.equal pvar pvar' ->
+        FalseBranch (pvar, PrunePairs.widen ~prev ~next ~num_iters)
+    | V (pvar, prev_true, prev_false), V (pvar', next_true, next_false) when Pvar.equal pvar pvar'
+      ->
+        V
+          ( pvar
+          , PrunePairs.widen ~prev:prev_true ~next:next_true ~num_iters
+          , PrunePairs.widen ~prev:prev_false ~next:next_false ~num_iters )
+    | VRet (id, prev_true, prev_false), VRet (id', next_true, next_false) when Ident.equal id id' ->
+        VRet
+          ( id
+          , PrunePairs.widen ~prev:prev_true ~next:next_true ~num_iters
+          , PrunePairs.widen ~prev:prev_false ~next:next_false ~num_iters )
+    | _, _ ->
+        Top
+
 
   let top = Top
 
@@ -2043,7 +2155,10 @@ module MemReach = struct
 
 
   let find_heap : ?typ:Typ.t -> Loc.t -> _ t0 -> Val.t =
-   fun ?typ l m -> find_heap_default ~default:Val.Itv.top ?typ l m
+   fun ?typ l m ->
+    find_heap_default
+      ~default:(if Config.bo_bottom_as_default then Val.Itv.top else Val.unknown)
+      ?typ l m
 
 
   let find : ?typ:Typ.t -> Loc.t -> _ t0 -> Val.t =
@@ -2187,9 +2302,16 @@ module MemReach = struct
    fun k v m -> {m with mem_pure= MemPure.add k v m.mem_pure}
 
 
+  let strong_update_heap : Loc.t -> Val.t -> t -> t =
+   fun x v m ->
+    if Loc.is_unknown x && not Config.bo_bottom_as_default then m
+    else {m with mem_pure= MemPure.strong_update x v m.mem_pure}
+
+
   let add_heap : ?represents_multiple_values:bool -> Loc.t -> Val.t -> t -> t =
    fun ?represents_multiple_values x v m ->
-    {m with mem_pure= MemPure.add ?represents_multiple_values x v m.mem_pure}
+    if Loc.is_unknown x && not Config.bo_bottom_as_default then m
+    else {m with mem_pure= MemPure.add ?represents_multiple_values x v m.mem_pure}
 
 
   let add_heap_set : ?represents_multiple_values:bool -> PowLoc.t -> Val.t -> t -> t =
@@ -2206,7 +2328,9 @@ module MemReach = struct
 
   let strong_update : PowLoc.t -> Val.t -> t -> t =
    fun locs v m ->
-    let strong_update1 l m = if is_stack_loc l m then replace_stack l v m else add_heap l v m in
+    let strong_update1 l m =
+      if is_stack_loc l m then replace_stack l v m else strong_update_heap l v m
+    in
     PowLoc.fold strong_update1 locs m
 
 
@@ -2216,7 +2340,8 @@ module MemReach = struct
       let add, find =
         if is_stack_loc l m then (replace_stack, find_stack)
         else
-          (add_heap ~represents_multiple_values:false, find_heap_default ~default:Val.bot ?typ:None)
+          ( add_heap ~represents_multiple_values:false
+          , find_heap_default ~default:Val.default ?typ:None )
       in
       add l (f l (find l m)) m
     in
@@ -2227,31 +2352,18 @@ module MemReach = struct
    fun ~f -> transformi_mem ~f:(fun _ v -> f v)
 
 
-  let weak_update locs v m =
-    transformi_mem
-      ~f:(fun l v' -> if Loc.represents_multiple_values l then Val.join v' v else v)
-      locs m
+  (* TODO: it would probably make sense to use bot as a default value if locs contains a
+     single location that contain a star field (such location represents multiple values
+     but as opposed to a location representing all elements of an array, it would probably
+     make sense if their first of such location in a subprogram would be strong).*)
+  let weak_update locs v m = transform_mem ~f:(fun v' -> Val.join v' v) locs m
 
-
-  let update_mem : PowLoc.t -> Val.t -> t -> t =
-   fun ploc v s ->
-    if can_strong_update ploc then strong_update ploc v s
+  let update_mem : ?force_strong_update:Bool.t -> PowLoc.t -> Val.t -> t -> t =
+   fun ?(force_strong_update = false) ploc v s ->
+    if force_strong_update || can_strong_update ploc then strong_update ploc v s
     else (
       L.d_printfln_escaped "Weak update for %a <- %a" PowLoc.pp ploc Val.pp v ;
       weak_update ploc v s )
-
-
-  let remove_temp : Ident.t -> t -> t =
-   fun temp m ->
-    let l = Loc.of_id temp in
-    { m with
-      stack_locs= StackLocs.remove l m.stack_locs
-    ; mem_pure= MemPure.remove l m.mem_pure
-    ; alias= Alias.remove_temp temp m.alias }
-
-
-  let remove_temps : Ident.t list -> t -> t =
-   fun temps m -> List.fold temps ~init:m ~f:(fun acc temp -> remove_temp temp acc)
 
 
   let set_prune_pairs : PrunePairs.t -> t -> t =
@@ -2311,10 +2423,17 @@ module MemReach = struct
 
   let set_latest_prune : LatestPrune.t -> t -> t = fun latest_prune x -> {x with latest_prune}
 
-  let get_reachable_locs_from_aux : f:(Pvar.t -> bool) -> LocSet.t -> _ t0 -> LocSet.t =
+  (** Get set of locations containing the input locations locs and all the locations reachable from
+      these input locations. If a location represents a record, expand it to all its direct and
+      indirect fields. That is, a location representing a record field "X1..XN.F" is reachable if
+      there exists I in 1 .. 2 for which the location "X1..XI" is either an input location or it is
+      reachable. If expand_ptrs_arrs is true, follow pointers and arrays. *)
+  let expand_reachable_locs : locs:LocSet.t -> expand_ptrs_arrs:bool -> _ t0 -> LocSet.t =
+   fun ~locs ~expand_ptrs_arrs m ->
     let add_reachable1 ~root loc v acc =
-      if Loc.equal root loc then LocSet.union acc (Val.get_all_locs v |> PowLoc.to_set)
-      else if Loc.is_field_of ~loc:root ~field_loc:loc then LocSet.add loc acc
+      if Loc.equal root loc then
+        if expand_ptrs_arrs then LocSet.union acc (Val.get_all_locs v |> PowLoc.to_set) else acc
+      else if Loc.is_trans_field_of ~loc:root ~field_loc:loc then LocSet.add loc acc
       else acc
     in
     let rec add_from_locs heap locs acc = LocSet.fold (add_from_loc heap) locs acc
@@ -2324,13 +2443,17 @@ module MemReach = struct
         let reachable_locs = MemPure.fold (add_reachable1 ~root:loc) heap LocSet.empty in
         add_from_locs heap reachable_locs (LocSet.add loc acc)
     in
+    add_from_locs m.mem_pure locs LocSet.empty
+
+
+  let get_reachable_locs_from_aux : f:(Pvar.t -> bool) -> LocSet.t -> _ t0 -> LocSet.t =
     let add_param_locs ~f mem acc =
       let add_loc loc _ acc = if Loc.exists_pvar ~f loc then LocSet.add loc acc else acc in
       MemPure.fold add_loc mem acc
     in
     fun ~f locs m ->
       let locs = add_param_locs ~f m.mem_pure locs in
-      add_from_locs m.mem_pure locs LocSet.empty
+      expand_reachable_locs ~locs ~expand_ptrs_arrs:true m
 
 
   let get_reachable_locs_from : (Pvar.t * Typ.t) list -> LocSet.t -> _ t0 -> LocSet.t =
@@ -2366,6 +2489,29 @@ module MemReach = struct
 
   let forget_size_alias arr_locs m = {m with alias= Alias.forget_size_alias arr_locs m.alias}
 
+  let remove_vars : Var.t list -> t -> t =
+   fun vars m ->
+    let remove l key m =
+      { m with
+        stack_locs= StackLocs.remove l m.stack_locs
+      ; mem_pure= MemPure.remove l m.mem_pure
+      ; alias= Alias.remove_key key m.alias }
+    in
+    List.fold vars ~init:m ~f:(fun m var ->
+        match (var : Var.t) with
+        | ProgramVar pvar ->
+            if Config.bo_exit_frontend_gener_vars && Pvar.is_frontend_tmp pvar then
+              let locs =
+                expand_reachable_locs
+                  ~locs:(LocSet.singleton (Loc.of_pvar pvar))
+                  ~expand_ptrs_arrs:false m
+              in
+              LocSet.fold (fun l m -> remove l (KeyLhs.of_loc l) m) locs m
+            else m
+        | LogicalVar id ->
+            remove (Loc.of_id id) (KeyLhs.of_id id) m )
+
+
   (* unsound *)
   let set_first_idx_of_null : Loc.t -> Val.t -> t -> t =
    fun loc idx m -> update_mem (PowLoc.singleton (Loc.of_c_strlen loc)) idx m
@@ -2382,11 +2528,32 @@ module MemReach = struct
       set_first_idx_of_null loc new_c_strlen m
 
 
-  let add_cpp_iterator_cmp_alias id iter iter_end m =
-    {m with alias= Alias.add_cpp_iterator_cmp_alias id iter iter_end m.alias}
+  let add_cpp_iter_begin_alias pvar m = {m with alias= Alias.add_cpp_iter_begin_alias pvar m.alias}
 
+  let add_cpp_iter_end_alias pvar m = {m with alias= Alias.add_cpp_iter_end_alias pvar m.alias}
 
   let find_cpp_iterator_alias id m = Alias.find_cpp_iterator_alias id m.alias
+
+  let find_cpp_iter_begin_or_end_alias id m = Alias.find_cpp_iter_begin_or_end_alias id m.alias
+
+  let add_cpp_iterator_cmp_alias id ~iter_lhs ~iter_rhs m =
+    let open IOption.Let_syntax in
+    (let* begin_or_end_iter_v = find_cpp_iter_begin_or_end_alias iter_rhs m in
+     let+ begin_or_end = CppIterBeginOrEndValue.get begin_or_end_iter_v in
+     {m with alias= Alias.add_cpp_iterator_cmp_alias id ~iter_lhs ~iter_rhs begin_or_end m.alias} )
+    |> Option.value ~default:m
+
+
+  let propagate_cpp_iter_begin_or_end_alias ~new_pvar ~existing_pvar m =
+    let open IOption.Let_syntax in
+    (let* begin_or_end_iter_v = find_cpp_iter_begin_or_end_alias existing_pvar m in
+     let+ begin_or_end = CppIterBeginOrEndValue.get begin_or_end_iter_v in
+     match (begin_or_end : CppIterBeginOrEndKind.t) with
+     | Begin ->
+         add_cpp_iter_begin_alias new_pvar m
+     | End ->
+         add_cpp_iter_end_alias new_pvar m )
+    |> Option.value ~default:m
 end
 
 module Mem = struct
@@ -2397,6 +2564,8 @@ module Mem = struct
   type t = GOption.some t0
 
   let unreachable : t = Unreachable
+
+  let is_reachable = function Reachable _ -> true | _ -> false
 
   let exc_raised : t = ExcRaised
 
@@ -2471,7 +2640,7 @@ module Mem = struct
    fun k -> f_lift_default ~default:false (MemReach.is_rep_multi_loc k)
 
 
-  let find : Loc.t -> _ t0 -> Val.t = fun k -> f_lift_default ~default:Val.bot (MemReach.find k)
+  let find : Loc.t -> _ t0 -> Val.t = fun k -> f_lift_default ~default:Val.default (MemReach.find k)
 
   let find_stack : Loc.t -> _ t0 -> Val.t =
    fun k -> f_lift_default ~default:Val.bot (MemReach.find_stack k)
@@ -2600,13 +2769,16 @@ module Mem = struct
     f_lift_default ~default:LocSet.empty (MemReach.get_reachable_locs_from formals locs)
 
 
-  let update_mem : PowLoc.t -> Val.t -> t -> t = fun ploc v -> map ~f:(MemReach.update_mem ploc v)
+  let update_mem : ?force_strong_update:Bool.t -> PowLoc.t -> Val.t -> t -> t =
+   fun ?(force_strong_update = false) ploc v ->
+    map ~f:(MemReach.update_mem ~force_strong_update ploc v)
+
 
   let transform_mem : f:(Val.t -> Val.t) -> PowLoc.t -> t -> t =
    fun ~f ploc -> map ~f:(MemReach.transform_mem ~f ploc)
 
 
-  let remove_temps : Ident.t list -> t -> t = fun temps -> map ~f:(MemReach.remove_temps temps)
+  let remove_vars : Var.t list -> t -> t = fun vars -> map ~f:(MemReach.remove_vars vars)
 
   let set_prune_pairs : PrunePairs.t -> t -> t =
    fun prune_pairs -> map ~f:(MemReach.set_prune_pairs prune_pairs)
@@ -2671,10 +2843,18 @@ module Mem = struct
         MemReach.pp f m
 
 
-  let add_cpp_iterator_cmp_alias id iter iter_end m =
-    map m ~f:(MemReach.add_cpp_iterator_cmp_alias id iter iter_end)
-
-
   let find_cpp_iterator_alias id m =
     f_lift_default ~default:None (MemReach.find_cpp_iterator_alias id) m
+
+
+  let add_cpp_iterator_cmp_alias id ~iter_lhs ~iter_rhs m =
+    map m ~f:(MemReach.add_cpp_iterator_cmp_alias id ~iter_lhs ~iter_rhs)
+
+
+  let add_cpp_iter_begin_alias pvar m = map m ~f:(MemReach.add_cpp_iter_begin_alias pvar)
+
+  let add_cpp_iter_end_alias pvar m = map m ~f:(MemReach.add_cpp_iter_end_alias pvar)
+
+  let propagate_cpp_iter_begin_or_end_alias ~new_pvar ~existing_pvar m =
+    map m ~f:(MemReach.propagate_cpp_iter_begin_or_end_alias ~new_pvar ~existing_pvar)
 end

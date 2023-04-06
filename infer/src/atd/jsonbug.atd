@@ -24,6 +24,7 @@ type nullsafe_mode = [Default | LocalTrustAll | LocalTrustSome | LocalTrustNone 
 
 type nullsafe_meta_issue_info = {
   num_issues: int;
+  num_fixmes: int;
   curr_nullsafe_mode: nullsafe_mode;
   can_be_promoted_to: nullsafe_mode nullable (* If present, it implies that the class is not only free of issues, but the mode can be promoted to a stricter one *)
 }
@@ -94,15 +95,30 @@ type nullsafe_extra = {
   ?redundant_fixme_info: redundant_fixme_info option; (* Information necessary to codemod redundant NULLSAFE_FIXME comments *)
 }
 
+type config_usage_extra = {
+  config_name: string;
+  function_name: string;
+  filename: string;
+  line_number: int;
+}
+
+type taint_extra = {
+  ?taint_source : string option;
+  ?taint_sink : string option;
+  ?taint_policy_privacy_effect : string option;
+}
+
 type extra = {
   ?cost_polynomial : string option;
   ?cost_degree : int option;
-  ?nullsafe_extra : nullsafe_extra option
+  ?nullsafe_extra : nullsafe_extra option;
+  ?copy_type : string option;
+  ?config_usage_extra : config_usage_extra option;
+  ?taint_extra : taint_extra option;
 }
 
 type jsonbug = {
   bug_type : string;
-  ?doc_url : string option;
   qualifier : string;
   severity : string;
   line: int;
@@ -117,7 +133,6 @@ type jsonbug = {
   ?dotty : string option;
   ?infer_source_loc: loc option;
   bug_type_hum: string;
-  ?linters_def_file: string option;
   ?traceview_id: int option;
   ?censored_reason : string option;
   ?access : string option;

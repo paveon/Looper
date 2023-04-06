@@ -188,29 +188,23 @@ module InlineJavaSyntheticMethods = struct
     in
     let do_instr instr =
       match (instr, etl) with
-      | ( Sil.Load {e= Exp.Lfield (Exp.Var _, fn, ft); root_typ; typ}
-        , [(* getter for fields *) (e1, _)] ) ->
-          let instr' =
-            Sil.Load {id= ret_id; e= Exp.Lfield (e1, fn, ft); root_typ; typ; loc= loc_call}
-          in
+      | Sil.Load {e= Exp.Lfield (Exp.Var _, fn, ft); typ}, [(* getter for fields *) (e1, _)] ->
+          let instr' = Sil.Load {id= ret_id; e= Exp.Lfield (e1, fn, ft); typ; loc= loc_call} in
           found instr instr'
-      | Sil.Load {e= Exp.Lfield (Exp.Lvar pvar, fn, ft); root_typ; typ}, [] when Pvar.is_global pvar
-        ->
+      | Sil.Load {e= Exp.Lfield (Exp.Lvar pvar, fn, ft); typ}, [] when Pvar.is_global pvar ->
           (* getter for static fields *)
           let instr' =
-            Sil.Load
-              {id= ret_id; e= Exp.Lfield (Exp.Lvar pvar, fn, ft); root_typ; typ; loc= loc_call}
+            Sil.Load {id= ret_id; e= Exp.Lfield (Exp.Lvar pvar, fn, ft); typ; loc= loc_call}
           in
           found instr instr'
-      | ( Sil.Store {e1= Exp.Lfield (_, fn, ft); root_typ; typ}
-        , [(* setter for fields *) (e1, _); (e2, _)] ) ->
-          let instr' = Sil.Store {e1= Exp.Lfield (e1, fn, ft); root_typ; typ; e2; loc= loc_call} in
+      | Sil.Store {e1= Exp.Lfield (_, fn, ft); typ}, [(* setter for fields *) (e1, _); (e2, _)] ->
+          let instr' = Sil.Store {e1= Exp.Lfield (e1, fn, ft); typ; e2; loc= loc_call} in
           found instr instr'
-      | Sil.Store {e1= Exp.Lfield (Exp.Lvar pvar, fn, ft); root_typ; typ}, [(e1, _)]
-        when Pvar.is_global pvar ->
+      | Sil.Store {e1= Exp.Lfield (Exp.Lvar pvar, fn, ft); typ}, [(e1, _)] when Pvar.is_global pvar
+        ->
           (* setter for static fields *)
           let instr' =
-            Sil.Store {e1= Exp.Lfield (Exp.Lvar pvar, fn, ft); root_typ; typ; e2= e1; loc= loc_call}
+            Sil.Store {e1= Exp.Lfield (Exp.Lvar pvar, fn, ft); typ; e2= e1; loc= loc_call}
           in
           found instr instr'
       | Sil.Call (_, Exp.Const (Const.Cfun pn), etl', _, cf), _
@@ -272,9 +266,6 @@ end
 (** perform liveness analysis and insert Nullify/Remove_temps instructions into the IR to make it
     easy for analyses to do abstract garbage collection *)
 module Liveness = struct
-  module BackwardCfg = ProcCfg.Backward (ProcCfg.Exceptional)
-  module LivenessAnalysis =
-    AbstractInterpreter.MakeRPO (Liveness.PreAnalysisTransferFunctions (BackwardCfg))
   module VarDomain = Liveness.Domain
 
   (** computes the non-nullified reaching definitions at the end of each node by building on the
@@ -294,17 +285,18 @@ module Liveness = struct
 
     module CFG = ProcCfg.Exceptional
 
-    type analysis_data = LivenessAnalysis.invariant_map ProcData.t
+    type analysis_data = Liveness.t
 
-    let postprocess ((reaching_defs, _) as astate) node {ProcData.extras} =
+    let postprocess ((reaching_defs, _) as astate) node liveness_inv_map =
       let node_id = Procdesc.Node.get_id (CFG.Node.underlying_node node) in
-      match LivenessAnalysis.extract_state node_id extras with
-      (* note: because the analysis is backward, post and pre are reversed *)
-      | Some {AbstractInterpreter.State.post= live_before; pre= live_after} ->
+      match
+        (Liveness.live_before node_id liveness_inv_map, Liveness.live_after node_id liveness_inv_map)
+      with
+      | Some live_before, Some live_after ->
           let to_nullify = VarDomain.diff (VarDomain.union live_before reaching_defs) live_after in
           let reaching_defs' = VarDomain.diff reaching_defs to_nullify in
           (reaching_defs', to_nullify)
-      | None ->
+      | _, _ ->
           astate
 
 
@@ -326,7 +318,8 @@ module Liveness = struct
 
     let is_last_instr_in_node instr node = phys_equal (last_instr_in_node node) instr
 
-    let exec_instr ((active_defs, to_nullify) as astate) extras node _ (instr : Sil.instr) =
+    let exec_instr ((active_defs, to_nullify) as astate) liveness_inv_map node _ (instr : Sil.instr)
+        =
       let astate' =
         match instr with
         | Load {id= lhs_id} ->
@@ -357,7 +350,8 @@ module Liveness = struct
             L.(die InternalError)
               "Should not add nullify instructions before running nullify analysis!"
       in
-      if is_last_instr_in_node instr node then postprocess astate' node extras else astate'
+      if is_last_instr_in_node instr node then postprocess astate' node liveness_inv_map
+      else astate'
 
 
     let pp_session_name _node fmt = Format.pp_print_string fmt "nullify"
@@ -365,10 +359,9 @@ module Liveness = struct
 
   module NullifyAnalysis = AbstractInterpreter.MakeRPO (NullifyTransferFunctions)
 
-  let add_nullify_instrs summary tenv liveness_inv_map =
-    let proc_desc = Summary.get_proc_desc summary in
+  let add_nullify_instrs proc_desc liveness_inv_map =
     let address_taken_vars =
-      if Procname.is_java (Summary.get_proc_name summary) then AddressTaken.Domain.empty
+      if Procname.is_java (Procdesc.get_proc_name proc_desc) then AddressTaken.Domain.empty
         (* can't take the address of a variable in Java *)
       else
         let initial = AddressTaken.Domain.empty in
@@ -379,9 +372,8 @@ module Liveness = struct
             AddressTaken.Domain.empty
     in
     let nullify_proc_cfg = ProcCfg.Exceptional.from_pdesc proc_desc in
-    let nullify_proc_data = {ProcData.summary; tenv; extras= liveness_inv_map} in
     let initial = (VarDomain.bottom, VarDomain.bottom) in
-    let nullify_inv_map = NullifyAnalysis.exec_cfg nullify_proc_cfg nullify_proc_data ~initial in
+    let nullify_inv_map = NullifyAnalysis.exec_cfg nullify_proc_cfg liveness_inv_map ~initial in
     (* only nullify pvars that are local; don't nullify those that can escape *)
     let is_local pvar = not (Liveness.is_always_in_scope proc_desc pvar) in
     let prepend_node_nullify_instructions loc pvars instrs =
@@ -432,12 +424,9 @@ module Liveness = struct
       |> Procdesc.Node.append_instrs exit_node
 
 
-  let process summary tenv =
-    let proc_desc = Summary.get_proc_desc summary in
-    let liveness_proc_cfg = BackwardCfg.from_pdesc proc_desc in
-    let initial = Liveness.Domain.bottom in
-    let liveness_inv_map = LivenessAnalysis.exec_cfg liveness_proc_cfg proc_desc ~initial in
-    add_nullify_instrs summary tenv liveness_inv_map
+  let process proc_desc =
+    let liveness_inv_map = Liveness.compute proc_desc in
+    add_nullify_instrs proc_desc liveness_inv_map
 end
 
 (** pre-analysis to cut control flow after calls to functions whose type indicates they do not
@@ -464,22 +453,19 @@ module NoReturn = struct
 end
 
 let do_preanalysis exe_env pdesc =
-  let summary = Summary.OnDisk.reset pdesc in
-  let tenv = Exe_env.get_proc_tenv exe_env (Procdesc.get_proc_name pdesc) in
+  if not Config.preanalysis_html then NodePrinter.print_html := false ;
   let proc_name = Procdesc.get_proc_name pdesc in
+  let tenv = Exe_env.get_proc_tenv exe_env proc_name in
   if Procname.is_java proc_name || Procname.is_csharp proc_name then
     InlineJavaSyntheticMethods.process pdesc ;
-  if
-    Config.function_pointer_specialization
-    && not (Procname.is_java proc_name || Procname.is_csharp proc_name)
-  then FunctionPointers.substitute pdesc ;
   (* NOTE: It is important that this preanalysis stays before Liveness *)
   if not (Procname.is_java proc_name || Procname.is_csharp proc_name) then (
     CCallSpecializedWithClosures.process pdesc ;
     (* Apply dynamic selection of copy and overriden methods *)
     ReplaceObjCMethodCall.process tenv pdesc proc_name ) ;
-  Liveness.process summary tenv ;
+  Liveness.process pdesc ;
   AddAbstractionInstructions.process pdesc ;
-  if Procname.is_java proc_name then Devirtualizer.process summary tenv ;
+  if Procname.is_java proc_name then Devirtualizer.process pdesc tenv ;
   NoReturn.process tenv pdesc ;
+  NodePrinter.print_html := true ;
   ()

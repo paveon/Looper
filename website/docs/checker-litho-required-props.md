@@ -9,8 +9,9 @@ Activate with `--litho-required-props`.
 
 Supported languages:
 - C/C++/ObjC: No
-- C#/.Net: Yes
+- C#/.Net: No
 - Erlang: No
+- Hack: No
 - Java: Yes
 
 This analysis checks that all non-optional [`@Prop`](https://fblitho.com/docs/props)`s have been specified when constructing Litho components. This is a [Litho](https://fblitho.com/) specific checker.
@@ -44,27 +45,9 @@ MyComponent.create(c)
 
 If the required props are not called, then annotation processor throws an exception in run time. This is really bad and that's where this checker comes into play to detect such cases statically.
 
-
-## Examples
-
-E.g. the following is caught as [MISSING_REQUIRED_PROP](/docs/next/all-issue-types#missing_required_prop) `prop2`.
-
-```java
-MyComponent.create(c)
-    .prop1("My prop 1")
-    .build();
-```
-
-The following is ok though since `prop1` is optional.
-
-```java
-MyComponent.create(c)
-    .prop2(8)
-    .build();
-```
-
 Note that, the functions `create()` and `build()` could be defined in different methods and there could be various function calls, aliasing, and control flow patterns in between. Hence, this checker is inter-procedural.
 
+Check out the examples defined in the issue type [MISSING_REQUIRED_PROP](/docs/next/all-issue-types#missing_required_prop).
 
 ## List of Issue Types
 

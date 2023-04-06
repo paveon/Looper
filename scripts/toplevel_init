@@ -5,6 +5,7 @@
 #thread;;
 #require "ANSITerminal";;
 #require "atdgen";;
+#require "bheap";;
 #require "cmdliner";;
 #require "core.top";;
 #require "ctypes";;
@@ -36,7 +37,6 @@ open OpenSource;;
 open Backend;;
 open JavaFrontend;;
 open ClangFrontend;;
-open ASTLanguage;;
 open TestDeterminators;;
 open Integration;;
 

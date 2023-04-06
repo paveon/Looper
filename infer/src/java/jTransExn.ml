@@ -8,6 +8,7 @@
 
 open! IStd
 module Hashtbl = Caml.Hashtbl
+open Javalib_pack
 open Sawja_pack
 
 let create_handler_table impl =
@@ -22,6 +23,10 @@ let create_handler_table impl =
   handler_tb
 
 
+let java_lang_throwable = JBasics.make_cn "java.lang.Throwable"
+
+let is_java_lang_throwable cn = JBasics.cn_equal cn java_lang_throwable
+
 let translate_exceptions (context : JContext.t) exit_nodes get_body_nodes handler_table =
   let catch_block_table = Hashtbl.create 1 in
   let procdesc = context.procdesc in
@@ -32,12 +37,8 @@ let translate_exceptions (context : JContext.t) exit_nodes get_body_nodes handle
   (* this is removed in the true branches, and in the false branch of the last handler *)
   let id_exn_val = Ident.create_fresh Ident.knormal in
   let create_entry_node loc =
-    let instr_get_ret_val =
-      Sil.Load {id= id_ret_val; e= Exp.Lvar ret_var; root_typ= ret_type; typ= ret_type; loc}
-    in
-    let instr_deactivate_exn =
-      Sil.Store {e1= Exp.Lvar ret_var; root_typ= ret_type; typ= ret_type; e2= Exp.null; loc}
-    in
+    let instr_get_ret_val = Sil.Load {id= id_ret_val; e= Exp.Lvar ret_var; typ= ret_type; loc} in
+    let instr_deactivate_exn = Sil.Store {e1= Exp.Lvar ret_var; typ= ret_type; e2= Exp.null; loc} in
     let instr_unwrap_ret_val =
       let unwrap_builtin = Exp.Const (Const.Cfun BuiltinDecl.__unwrap_exception) in
       Sil.Call
@@ -62,11 +63,16 @@ let translate_exceptions (context : JContext.t) exit_nodes get_body_nodes handle
           | [] ->
               Location.none context.source_file
         in
+        let finally_case () =
+          let finally_node = create_node loc (Procdesc.Node.Stmt_node FinallyBranch) [] in
+          Procdesc.node_set_succs procdesc finally_node ~normal:catch_nodes ~exn:exit_nodes ;
+          [finally_node]
+        in
         match handler.JBir.e_catch_type with
         | None ->
-            let finally_node = create_node loc (Procdesc.Node.Stmt_node FinallyBranch) [] in
-            Procdesc.node_set_succs procdesc finally_node ~normal:catch_nodes ~exn:exit_nodes ;
-            [finally_node]
+            finally_case ()
+        | Some exn_class_name when is_java_lang_throwable exn_class_name ->
+            finally_case ()
         | Some exn_class_name ->
             let exn_type =
               match
@@ -100,20 +106,10 @@ let translate_exceptions (context : JContext.t) exit_nodes get_body_nodes handle
             in
             let instr_set_catch_var =
               let catch_var = JContext.set_pvar context handler.JBir.e_catch_var ret_type in
-              Sil.Store
-                { e1= Exp.Lvar catch_var
-                ; root_typ= ret_type
-                ; typ= ret_type
-                ; e2= Exp.Var id_exn_val
-                ; loc }
+              Sil.Store {e1= Exp.Lvar catch_var; typ= ret_type; e2= Exp.Var id_exn_val; loc}
             in
             let instr_rethrow_exn =
-              Sil.Store
-                { e1= Exp.Lvar ret_var
-                ; root_typ= ret_type
-                ; typ= ret_type
-                ; e2= Exp.Exn (Exp.Var id_exn_val)
-                ; loc }
+              Sil.Store {e1= Exp.Lvar ret_var; typ= ret_type; e2= Exp.Exn (Exp.Var id_exn_val); loc}
             in
             let node_kind_true =
               Procdesc.Node.Prune_node (true, if_kind, PruneNodeKind_ExceptionHandler)

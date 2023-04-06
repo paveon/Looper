@@ -11,7 +11,7 @@ module F = Format
 (** type of a procedure call; either direct or via function pointer *)
 type call = Direct of Procname.t | Indirect of HilExp.t [@@deriving compare]
 
-val pp_call : F.formatter -> call -> unit [@@warning "-32"]
+val pp_call : F.formatter -> call -> unit [@@warning "-unused-value-declaration"]
 
 type t =
   | Assign of HilExp.AccessExpression.t * HilExp.t * Location.t
@@ -20,7 +20,7 @@ type t =
       (** Assumed expression, true_branch boolean, source of the assume (conditional, ternary, etc.) *)
   | Call of AccessPath.base * call * HilExp.t list * CallFlags.t * Location.t
       (** Var to hold the return, call expression, formals *)
-  | Metadata of Sil.instr_metadata  (** see {!Sil.instr_metadata} *)
+  | Metadata of Sil.instr_metadata  (** see {!IR.Sil.instr_metadata} *)
 [@@deriving compare]
 
 val pp : F.formatter -> t -> unit

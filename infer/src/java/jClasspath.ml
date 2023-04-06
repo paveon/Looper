@@ -24,7 +24,7 @@ let classpath_of_paths paths =
   List.filter_map paths ~f:of_path |> String.concat ~sep:string_sep
 
 
-type file_entry = Singleton of SourceFile.t | Duplicate of (string * SourceFile.t) list
+type file_entry = Singleton of SourceFile.t | Duplicate of (string list * SourceFile.t) list
 
 type t =
   { classpath_channel: Javalib.class_path
@@ -39,6 +39,7 @@ let read_package_declaration source_file =
     String.strip line |> String.lsplit2 ~on:';' |> Option.map ~f:fst
     |> Option.bind ~f:(String.chop_prefix ~prefix:"package")
     |> Option.map ~f:String.strip
+    |> Option.map ~f:(String.split ~on:'.')
   in
   let rec loop file_in =
     match In_channel.input_line file_in with
@@ -47,7 +48,7 @@ let read_package_declaration source_file =
     | Some line -> (
       match process_line line with Some package -> Some package | None -> loop file_in )
   in
-  Utils.with_file_in path ~f:loop |> Option.value ~default:""
+  Utils.with_file_in path ~f:loop |> Option.value ~default:[]
 
 
 let add_source_file =
@@ -161,10 +162,13 @@ let search_classes path =
   Utils.directory_fold
     (fun accu p ->
       let paths, classes = accu in
-      if Filename.check_suffix p "class" then add_class paths classes p
-      else if Filename.check_suffix p "jar" then
-        (add_root_path p paths, collect_classnames classes p)
-      else accu )
+      match Filename.split_extension p with
+      | _, Some "class" ->
+          add_class paths classes p
+      | _, Some ("jar" | "war") ->
+          (add_root_path p paths, collect_classnames classes p)
+      | _ ->
+          accu )
     (String.Set.empty, JBasics.ClassSet.empty)
     path
 

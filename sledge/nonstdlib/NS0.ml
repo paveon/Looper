@@ -16,7 +16,7 @@ include Ppx_sexp_conv_lib.Conv
 
 (** Iterators *)
 
-module Iter = Iter
+module Iter = IterLabels
 include Iter.Import
 
 (** Specialize polymorphic comparison to int *)
@@ -82,7 +82,7 @@ let ( <$ ) f x =
   f x ;
   x
 
-let ( let@ ) x f = x @@ f
+let ( let@ ) f x = f @@ x
 
 (** Tuple operations *)
 
@@ -143,20 +143,8 @@ type 'a zero_one_many = Zero | One of 'a | Many
 type ('a, 'b) zero_one_many2 = Zero2 | One2 of 'a * 'b | Many2
 
 module Pair = Containers.Pair
-module Bijection = CCBijection [@@warning "-49"]
-
-module FHeap = struct
-  include Fheap
-
-  let remove_top_exn h = snd (pop_exn h)
-end
-
-module HashQueue = Core_kernel.Hash_queue
-
-(** Input / Output *)
-
-module In_channel = Stdio.In_channel
-module Out_channel = Stdio.Out_channel
+module Bijection = CCBijection [@@warning "-no-cmi-file"]
+module HashQueue = Core.Hash_queue
 
 (** Invariants *)
 
@@ -170,9 +158,8 @@ module Invariant = struct
     {pos_fname: string; pos_lnum: int; pos_bol: int; pos_cnum: int}
   [@@deriving sexp_of]
 
-  exception Violation of exn * position * Sexp.t
+  exception Violation of exn * position * Sexp.t ;;
 
-  ;;
   register_sexp_of_exn
     (Violation (Not_found, Lexing.dummy_pos, Sexp.List []))
     (function
@@ -202,9 +189,8 @@ end
 
 (** Failures *)
 
-exception Replay of exn * Sexp.t
+exception Replay of exn * Sexp.t ;;
 
-;;
 register_sexp_of_exn
   (Replay (Not_found, Sexp.List []))
   (function
@@ -212,11 +198,11 @@ register_sexp_of_exn
         Sexp.List [Atom "Replay"; sexp_of_exn exn; payload]
     | exn -> Sexp.Atom (Printexc.to_string exn) )
 
-let fail = Trace.fail
+let fail = Dbg.fail
 
 exception Unimplemented of string
 
-let todo fmt = Trace.raisef (fun msg -> Unimplemented msg) fmt
+let todo fmt = Dbg.raisef (fun msg -> Unimplemented msg) fmt
 
 let warn fmt =
   let fs = Format.std_formatter in

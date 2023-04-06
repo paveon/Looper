@@ -26,7 +26,7 @@ val is_minus_one : t -> bool
 val not_equal : t -> t -> bool
 
 (* the functions below shadow definitions in [Q] to give them safer types *)
-[@@@warning "-32"]
+[@@@warning "-unused-value-declaration"]
 
 val to_int : t -> int option
 
@@ -37,3 +37,5 @@ val to_int64 : t -> int64 option
 val to_bigint : t -> Z.t option
 
 val to_nativeint : t -> nativeint option
+
+val is_rational : t -> bool

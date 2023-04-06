@@ -151,7 +151,6 @@
                   "column" : 20
                 },
                 {
-                  "column" : 20
                 }
               )
             },
@@ -162,7 +161,8 @@
               ]
             },
             {
-              "type_ptr" : 10
+              "type_ptr" : 10,
+              "is_trivially_copyable" : true
             },
             {
               "parm_index_in_function" : 0
@@ -207,7 +207,6 @@
                   "column" : 19
                 },
                 {
-                  "column" : 19
                 }
               )
             },
@@ -218,7 +217,8 @@
               ]
             },
             {
-              "type_ptr" : 10
+              "type_ptr" : 10,
+              "is_trivially_copyable" : true
             },
             {
               "parm_index_in_function" : 0
@@ -232,7 +232,6 @@
                   "column" : 27
                 },
                 {
-                  "column" : 27
                 }
               )
             },
@@ -243,7 +242,8 @@
               ]
             },
             {
-              "type_ptr" : 10
+              "type_ptr" : 10,
+              "is_trivially_copyable" : true
             },
             {
               "parm_index_in_function" : 1
@@ -350,7 +350,8 @@
             ]
           },
           {
-            "type_ptr" : 10
+            "type_ptr" : 10,
+            "is_trivially_copyable" : true
           },
           {
           }
@@ -394,7 +395,8 @@
             ]
           },
           {
-            "type_ptr" : 22
+            "type_ptr" : 22,
+            "is_trivially_copyable" : true
           },
           {
           }
@@ -539,7 +541,6 @@
                                     "column" : 29
                                   },
                                   {
-                                    "column" : 29
                                   }
                                 )
                               },
@@ -547,14 +548,16 @@
                               ],
                               {
                                 "qual_type" : {
-                                  "type_ptr" : 33
+                                  "type_ptr" : 33,
+                                  "is_trivially_copyable" : true
                                 }
                               }
                             )>
                           ],
                           {
                             "qual_type" : {
-                              "type_ptr" : 10
+                              "type_ptr" : 10,
+                              "is_trivially_copyable" : true
                             },
                             "value_kind" : <"LValue">
                           },
@@ -579,7 +582,8 @@
                                 ]
                               },
                               "qual_type" : {
-                                "type_ptr" : 10
+                                "type_ptr" : 10,
+                                "is_trivially_copyable" : true
                               }
                             }
                           }
@@ -587,7 +591,8 @@
                       ],
                       {
                         "qual_type" : {
-                          "type_ptr" : 10
+                          "type_ptr" : 10,
+                          "is_trivially_copyable" : true
                         }
                       },
                       {
@@ -657,7 +662,8 @@
                   ]
                 },
                 {
-                  "type_ptr" : 10
+                  "type_ptr" : 10,
+                  "is_trivially_copyable" : true
                 },
                 {
                   "parm_index_in_function" : 0
@@ -712,7 +718,6 @@
                                 "column" : 31
                               },
                               {
-                                "column" : 31
                               }
                             )
                           },
@@ -720,14 +725,16 @@
                           ],
                           {
                             "qual_type" : {
-                              "type_ptr" : 33
+                              "type_ptr" : 33,
+                              "is_trivially_copyable" : true
                             }
                           }
                         )>
                       ],
                       {
                         "qual_type" : {
-                          "type_ptr" : 10
+                          "type_ptr" : 10,
+                          "is_trivially_copyable" : true
                         },
                         "value_kind" : <"LValue">
                       },
@@ -752,7 +759,8 @@
                             ]
                           },
                           "qual_type" : {
-                            "type_ptr" : 10
+                            "type_ptr" : 10,
+                            "is_trivially_copyable" : true
                           }
                         }
                       }
@@ -765,7 +773,6 @@
                             "column" : 44
                           },
                           {
-                            "column" : 44
                           }
                         )
                       },
@@ -775,10 +782,8 @@
                             "pointer" : 42,
                             "source_range" : (
                               {
-                                "column" : 44
                               },
                               {
-                                "column" : 44
                               }
                             )
                           },
@@ -786,7 +791,8 @@
                           ],
                           {
                             "qual_type" : {
-                              "type_ptr" : 10
+                              "type_ptr" : 10,
+                              "is_trivially_copyable" : true
                             },
                             "value_kind" : <"LValue">
                           },
@@ -801,7 +807,8 @@
                                 ]
                               },
                               "qual_type" : {
-                                "type_ptr" : 10
+                                "type_ptr" : 10,
+                                "is_trivially_copyable" : true
                               }
                             }
                           }
@@ -809,7 +816,8 @@
                       ],
                       {
                         "qual_type" : {
-                          "type_ptr" : 10
+                          "type_ptr" : 10,
+                          "is_trivially_copyable" : true
                         }
                       },
                       {
@@ -822,7 +830,8 @@
                   ],
                   {
                     "qual_type" : {
-                      "type_ptr" : 10
+                      "type_ptr" : 10,
+                      "is_trivially_copyable" : true
                     },
                     "value_kind" : <"LValue">
                   },
@@ -846,7 +855,6 @@
                 "column" : 7
               },
               {
-                "column" : 7
               }
             ),
             "is_implicit" : true,
@@ -872,10 +880,8 @@
                   "pointer" : 45,
                   "source_range" : (
                     {
-                      "column" : 7
                     },
                     {
-                      "column" : 7
                     }
                   )
                 },
@@ -895,6 +901,7 @@
             ]
           },
           {
+            "is_copy_assignment" : true
           }
         )>,
         <"CXXMethodDecl" : (
@@ -903,10 +910,8 @@
             "parent_pointer" : 15,
             "source_range" : (
               {
-                "column" : 7
               },
               {
-                "column" : 7
               }
             ),
             "is_implicit" : true,
@@ -932,10 +937,8 @@
                   "pointer" : 49,
                   "source_range" : (
                     {
-                      "column" : 7
                     },
                     {
-                      "column" : 7
                     }
                   )
                 },
@@ -963,10 +966,8 @@
             "parent_pointer" : 15,
             "source_range" : (
               {
-                "column" : 7
               },
               {
-                "column" : 7
               }
             ),
             "is_implicit" : true,
@@ -1110,7 +1111,6 @@
                       "column" : 18
                     },
                     {
-                      "column" : 18
                     }
                   )
                 }
@@ -1250,7 +1250,8 @@
                         ]
                       },
                       {
-                        "type_ptr" : 10
+                        "type_ptr" : 10,
+                        "is_trivially_copyable" : true
                       },
                       {
                       }
@@ -1279,7 +1280,6 @@
                             "column" : 5
                           },
                           {
-                            "column" : 5
                           }
                         )
                       },
@@ -1287,7 +1287,8 @@
                       ],
                       {
                         "qual_type" : {
-                          "type_ptr" : 10
+                          "type_ptr" : 10,
+                          "is_trivially_copyable" : true
                         },
                         "value_kind" : <"LValue">
                       },
@@ -1302,7 +1303,8 @@
                             ]
                           },
                           "qual_type" : {
-                            "type_ptr" : 10
+                            "type_ptr" : 10,
+                            "is_trivially_copyable" : true
                           }
                         }
                       }
@@ -1328,7 +1330,6 @@
                                 "column" : 9
                               },
                               {
-                                "column" : 9
                               }
                             )
                           },
@@ -1338,10 +1339,8 @@
                                 "pointer" : 68,
                                 "source_range" : (
                                   {
-                                    "column" : 9
                                   },
                                   {
-                                    "column" : 9
                                   }
                                 )
                               },
@@ -1351,10 +1350,8 @@
                                     "pointer" : 69,
                                     "source_range" : (
                                       {
-                                        "column" : 9
                                       },
                                       {
-                                        "column" : 9
                                       }
                                     )
                                   },
@@ -1362,14 +1359,16 @@
                                   ],
                                   {
                                     "qual_type" : {
-                                      "type_ptr" : 70
+                                      "type_ptr" : 70,
+                                      "is_trivially_copyable" : true
                                     }
                                   }
                                 )>
                               ],
                               {
                                 "qual_type" : {
-                                  "type_ptr" : 33
+                                  "type_ptr" : 33,
+                                  "is_trivially_copyable" : true
                                 }
                               },
                               {
@@ -1417,14 +1416,16 @@
                       ],
                       {
                         "qual_type" : {
-                          "type_ptr" : 10
+                          "type_ptr" : 10,
+                          "is_trivially_copyable" : true
                         }
                       }
                     )>
                   ],
                   {
                     "qual_type" : {
-                      "type_ptr" : 10
+                      "type_ptr" : 10,
+                      "is_trivially_copyable" : true
                     },
                     "value_kind" : <"LValue">
                   },
@@ -1467,7 +1468,6 @@
                                 "column" : 12
                               },
                               {
-                                "column" : 12
                               }
                             )
                           },
@@ -1477,10 +1477,8 @@
                                 "pointer" : 75,
                                 "source_range" : (
                                   {
-                                    "column" : 12
                                   },
                                   {
-                                    "column" : 12
                                   }
                                 )
                               },
@@ -1511,7 +1509,8 @@
                           ],
                           {
                             "qual_type" : {
-                              "type_ptr" : 76
+                              "type_ptr" : 76,
+                              "is_trivially_copyable" : true
                             }
                           },
                           {
@@ -1555,7 +1554,6 @@
                                         "column" : 17
                                       },
                                       {
-                                        "column" : 17
                                       }
                                     )
                                   },
@@ -1565,10 +1563,8 @@
                                         "pointer" : 80,
                                         "source_range" : (
                                           {
-                                            "column" : 17
                                           },
                                           {
-                                            "column" : 17
                                           }
                                         )
                                       },
@@ -1576,7 +1572,8 @@
                                       ],
                                       {
                                         "qual_type" : {
-                                          "type_ptr" : 10
+                                          "type_ptr" : 10,
+                                          "is_trivially_copyable" : true
                                         },
                                         "value_kind" : <"LValue">
                                       },
@@ -1591,7 +1588,8 @@
                                             ]
                                           },
                                           "qual_type" : {
-                                            "type_ptr" : 10
+                                            "type_ptr" : 10,
+                                            "is_trivially_copyable" : true
                                           }
                                         }
                                       }
@@ -1599,7 +1597,8 @@
                                   ],
                                   {
                                     "qual_type" : {
-                                      "type_ptr" : 10
+                                      "type_ptr" : 10,
+                                      "is_trivially_copyable" : true
                                     }
                                   },
                                   {
@@ -1617,7 +1616,6 @@
                                         "column" : 21
                                       },
                                       {
-                                        "column" : 21
                                       }
                                     )
                                   },
@@ -1627,10 +1625,8 @@
                                         "pointer" : 82,
                                         "source_range" : (
                                           {
-                                            "column" : 21
                                           },
                                           {
-                                            "column" : 21
                                           }
                                         )
                                       },
@@ -1638,7 +1634,8 @@
                                       ],
                                       {
                                         "qual_type" : {
-                                          "type_ptr" : 22
+                                          "type_ptr" : 22,
+                                          "is_trivially_copyable" : true
                                         }
                                       },
                                       {
@@ -1650,7 +1647,8 @@
                                   ],
                                   {
                                     "qual_type" : {
-                                      "type_ptr" : 10
+                                      "type_ptr" : 10,
+                                      "is_trivially_copyable" : true
                                     }
                                   },
                                   {
@@ -1663,7 +1661,8 @@
                               ],
                               {
                                 "qual_type" : {
-                                  "type_ptr" : 10
+                                  "type_ptr" : 10,
+                                  "is_trivially_copyable" : true
                                 }
                               },
                               {
@@ -1678,7 +1677,6 @@
                                     "column" : 25
                                   },
                                   {
-                                    "column" : 25
                                   }
                                 )
                               },
@@ -1686,7 +1684,8 @@
                               ],
                               {
                                 "qual_type" : {
-                                  "type_ptr" : 10
+                                  "type_ptr" : 10,
+                                  "is_trivially_copyable" : true
                                 }
                               },
                               "3.1400000000000001"
@@ -1694,7 +1693,8 @@
                           ],
                           {
                             "qual_type" : {
-                              "type_ptr" : 10
+                              "type_ptr" : 10,
+                              "is_trivially_copyable" : true
                             }
                           },
                           {
@@ -1704,7 +1704,8 @@
                       ],
                       {
                         "qual_type" : {
-                          "type_ptr" : 10
+                          "type_ptr" : 10,
+                          "is_trivially_copyable" : true
                         }
                       }
                     )>
@@ -1766,7 +1767,8 @@
                   ]
                 },
                 {
-                  "type_ptr" : 10
+                  "type_ptr" : 10,
+                  "is_trivially_copyable" : true
                 },
                 {
                   "parm_index_in_function" : 0
@@ -1808,7 +1810,6 @@
                             "column" : 36
                           },
                           {
-                            "column" : 36
                           }
                         )
                       },
@@ -1818,10 +1819,8 @@
                             "pointer" : 89,
                             "source_range" : (
                               {
-                                "column" : 36
                               },
                               {
-                                "column" : 36
                               }
                             )
                           },
@@ -1831,10 +1830,8 @@
                                 "pointer" : 90,
                                 "source_range" : (
                                   {
-                                    "column" : 36
                                   },
                                   {
-                                    "column" : 36
                                   }
                                 )
                               },
@@ -1842,14 +1839,16 @@
                               ],
                               {
                                 "qual_type" : {
-                                  "type_ptr" : 70
+                                  "type_ptr" : 70,
+                                  "is_trivially_copyable" : true
                                 }
                               }
                             )>
                           ],
                           {
                             "qual_type" : {
-                              "type_ptr" : 33
+                              "type_ptr" : 33,
+                              "is_trivially_copyable" : true
                             }
                           },
                           {
@@ -1928,7 +1927,6 @@
                                     "column" : 44
                                   },
                                   {
-                                    "column" : 44
                                   }
                                 )
                               },
@@ -1938,10 +1936,8 @@
                                     "pointer" : 94,
                                     "source_range" : (
                                       {
-                                        "column" : 44
                                       },
                                       {
-                                        "column" : 44
                                       }
                                     )
                                   },
@@ -1972,7 +1968,8 @@
                               ],
                               {
                                 "qual_type" : {
-                                  "type_ptr" : 95
+                                  "type_ptr" : 95,
+                                  "is_trivially_copyable" : true
                                 }
                               },
                               {
@@ -2003,7 +2000,6 @@
                                         "column" : 48
                                       },
                                       {
-                                        "column" : 48
                                       }
                                     )
                                   },
@@ -2013,10 +2009,8 @@
                                         "pointer" : 98,
                                         "source_range" : (
                                           {
-                                            "column" : 48
                                           },
                                           {
-                                            "column" : 48
                                           }
                                         )
                                       },
@@ -2024,7 +2018,8 @@
                                       ],
                                       {
                                         "qual_type" : {
-                                          "type_ptr" : 10
+                                          "type_ptr" : 10,
+                                          "is_trivially_copyable" : true
                                         },
                                         "value_kind" : <"LValue">
                                       },
@@ -2039,7 +2034,8 @@
                                             ]
                                           },
                                           "qual_type" : {
-                                            "type_ptr" : 10
+                                            "type_ptr" : 10,
+                                            "is_trivially_copyable" : true
                                           }
                                         }
                                       }
@@ -2047,7 +2043,8 @@
                                   ],
                                   {
                                     "qual_type" : {
-                                      "type_ptr" : 10
+                                      "type_ptr" : 10,
+                                      "is_trivially_copyable" : true
                                     }
                                   },
                                   {
@@ -2065,7 +2062,6 @@
                                         "column" : 59
                                       },
                                       {
-                                        "column" : 59
                                       }
                                     )
                                   },
@@ -2073,7 +2069,8 @@
                                   ],
                                   {
                                     "qual_type" : {
-                                      "type_ptr" : 10
+                                      "type_ptr" : 10,
+                                      "is_trivially_copyable" : true
                                     }
                                   },
                                   "0.5"
@@ -2081,7 +2078,8 @@
                               ],
                               {
                                 "qual_type" : {
-                                  "type_ptr" : 10
+                                  "type_ptr" : 10,
+                                  "is_trivially_copyable" : true
                                 }
                               },
                               {
@@ -2096,7 +2094,6 @@
                                     "column" : 64
                                   },
                                   {
-                                    "column" : 64
                                   }
                                 )
                               },
@@ -2106,10 +2103,8 @@
                                     "pointer" : 101,
                                     "source_range" : (
                                       {
-                                        "column" : 64
                                       },
                                       {
-                                        "column" : 64
                                       }
                                     )
                                   },
@@ -2117,7 +2112,8 @@
                                   ],
                                   {
                                     "qual_type" : {
-                                      "type_ptr" : 22
+                                      "type_ptr" : 22,
+                                      "is_trivially_copyable" : true
                                     }
                                   },
                                   {
@@ -2129,7 +2125,8 @@
                               ],
                               {
                                 "qual_type" : {
-                                  "type_ptr" : 10
+                                  "type_ptr" : 10,
+                                  "is_trivially_copyable" : true
                                 }
                               },
                               {
@@ -2142,7 +2139,8 @@
                           ],
                           {
                             "qual_type" : {
-                              "type_ptr" : 10
+                              "type_ptr" : 10,
+                              "is_trivially_copyable" : true
                             }
                           }
                         )>,
@@ -2154,7 +2152,6 @@
                                 "column" : 69
                               },
                               {
-                                "column" : 69
                               }
                             )
                           },
@@ -2162,7 +2159,8 @@
                           ],
                           {
                             "qual_type" : {
-                              "type_ptr" : 10
+                              "type_ptr" : 10,
+                              "is_trivially_copyable" : true
                             }
                           },
                           "3.1400000000000001"
@@ -2170,7 +2168,8 @@
                       ],
                       {
                         "qual_type" : {
-                          "type_ptr" : 10
+                          "type_ptr" : 10,
+                          "is_trivially_copyable" : true
                         }
                       },
                       {
@@ -2279,7 +2278,6 @@
                                     "column" : 27
                                   },
                                   {
-                                    "column" : 27
                                   }
                                 )
                               },
@@ -2289,10 +2287,8 @@
                                     "pointer" : 111,
                                     "source_range" : (
                                       {
-                                        "column" : 27
                                       },
                                       {
-                                        "column" : 27
                                       }
                                     )
                                   },
@@ -2302,10 +2298,8 @@
                                         "pointer" : 112,
                                         "source_range" : (
                                           {
-                                            "column" : 27
                                           },
                                           {
-                                            "column" : 27
                                           }
                                         )
                                       },
@@ -2315,10 +2309,8 @@
                                             "pointer" : 113,
                                             "source_range" : (
                                               {
-                                                "column" : 27
                                               },
                                               {
-                                                "column" : 27
                                               }
                                             )
                                           },
@@ -2326,14 +2318,16 @@
                                           ],
                                           {
                                             "qual_type" : {
-                                              "type_ptr" : 70
+                                              "type_ptr" : 70,
+                                              "is_trivially_copyable" : true
                                             }
                                           }
                                         )>
                                       ],
                                       {
                                         "qual_type" : {
-                                          "type_ptr" : 33
+                                          "type_ptr" : 33,
+                                          "is_trivially_copyable" : true
                                         }
                                       },
                                       {
@@ -2349,7 +2343,8 @@
                                   ],
                                   {
                                     "qual_type" : {
-                                      "type_ptr" : 22
+                                      "type_ptr" : 22,
+                                      "is_trivially_copyable" : true
                                     },
                                     "value_kind" : <"LValue">
                                   },
@@ -2374,7 +2369,8 @@
                                         ]
                                       },
                                       "qual_type" : {
-                                        "type_ptr" : 22
+                                        "type_ptr" : 22,
+                                        "is_trivially_copyable" : true
                                       }
                                     }
                                   }
@@ -2382,7 +2378,8 @@
                               ],
                               {
                                 "qual_type" : {
-                                  "type_ptr" : 22
+                                  "type_ptr" : 22,
+                                  "is_trivially_copyable" : true
                                 }
                               },
                               {
@@ -2400,7 +2397,6 @@
                                     "column" : 35
                                   },
                                   {
-                                    "column" : 35
                                   }
                                 )
                               },
@@ -2408,7 +2404,8 @@
                               ],
                               {
                                 "qual_type" : {
-                                  "type_ptr" : 22
+                                  "type_ptr" : 22,
+                                  "is_trivially_copyable" : true
                                 }
                               },
                               {
@@ -2420,7 +2417,8 @@
                           ],
                           {
                             "qual_type" : {
-                              "type_ptr" : 115
+                              "type_ptr" : 115,
+                              "is_trivially_copyable" : true
                             }
                           },
                           {
@@ -2430,7 +2428,8 @@
                       ],
                       {
                         "qual_type" : {
-                          "type_ptr" : 115
+                          "type_ptr" : 115,
+                          "is_trivially_copyable" : true
                         }
                       }
                     )>
@@ -2452,7 +2451,6 @@
                 "column" : 7
               },
               {
-                "column" : 7
               }
             ),
             "is_implicit" : true,
@@ -2478,10 +2476,8 @@
                   "pointer" : 118,
                   "source_range" : (
                     {
-                      "column" : 7
                     },
                     {
-                      "column" : 7
                     }
                   )
                 },
@@ -2501,6 +2497,7 @@
             ]
           },
           {
+            "is_copy_assignment" : true
           }
         )>,
         <"CXXMethodDecl" : (
@@ -2509,10 +2506,8 @@
             "parent_pointer" : 53,
             "source_range" : (
               {
-                "column" : 7
               },
               {
-                "column" : 7
               }
             ),
             "is_implicit" : true,
@@ -2538,10 +2533,8 @@
                   "pointer" : 122,
                   "source_range" : (
                     {
-                      "column" : 7
                     },
                     {
-                      "column" : 7
                     }
                   )
                 },
@@ -2569,10 +2562,8 @@
             "parent_pointer" : 53,
             "source_range" : (
               {
-                "column" : 7
               },
               {
-                "column" : 7
               }
             ),
             "is_implicit" : true,
@@ -2606,7 +2597,7 @@
       },
       {
         "bases" : [
-          16
+          126
         ],
         "destructor" : {
           "kind" : <"CXXDestructor">,
@@ -2626,7 +2617,7 @@
     )>,
     <"TypedefDecl" : (
       {
-        "pointer" : 126,
+        "pointer" : 127,
         "source_range" : (
           {
           },
@@ -2641,7 +2632,7 @@
           "instancetype"
         ]
       },
-      127,
+      128,
       {
       }
     )>
@@ -2673,19 +2664,19 @@
       )>,
       <"BuiltinType" : (
         {
-          "pointer" : 128
+          "pointer" : 129
         },
         <"Char_S">
       )>,
       <"BuiltinType" : (
         {
-          "pointer" : 129
+          "pointer" : 130
         },
         <"SChar">
       )>,
       <"BuiltinType" : (
         {
-          "pointer" : 130
+          "pointer" : 131
         },
         <"Short">
       )>,
@@ -2697,49 +2688,49 @@
       )>,
       <"BuiltinType" : (
         {
-          "pointer" : 131
+          "pointer" : 132
         },
         <"Long">
       )>,
       <"BuiltinType" : (
         {
-          "pointer" : 132
+          "pointer" : 133
         },
         <"LongLong">
       )>,
       <"BuiltinType" : (
         {
-          "pointer" : 133
+          "pointer" : 134
         },
         <"UChar">
       )>,
       <"BuiltinType" : (
         {
-          "pointer" : 134
+          "pointer" : 135
         },
         <"UShort">
       )>,
       <"BuiltinType" : (
         {
-          "pointer" : 135
+          "pointer" : 136
         },
         <"UInt">
       )>,
       <"BuiltinType" : (
         {
-          "pointer" : 136
+          "pointer" : 137
         },
         <"ULong">
       )>,
       <"BuiltinType" : (
         {
-          "pointer" : 137
+          "pointer" : 138
         },
         <"ULongLong">
       )>,
       <"BuiltinType" : (
         {
-          "pointer" : 138
+          "pointer" : 139
         },
         <"Float">
       )>,
@@ -2751,211 +2742,217 @@
       )>,
       <"BuiltinType" : (
         {
-          "pointer" : 139
+          "pointer" : 140
         },
         <"LongDouble">
       )>,
       <"BuiltinType" : (
         {
-          "pointer" : 140
+          "pointer" : 141
         },
         <"Float128">
       )>,
       <"BuiltinType" : (
         {
-          "pointer" : 141
-        },
-        <"Float16">
-      )>,
-      <"BuiltinType" : (
-        {
           "pointer" : 142
         },
-        <"ShortAccum">
+        <"Ibm128">
       )>,
       <"BuiltinType" : (
         {
           "pointer" : 143
         },
-        <"Accum">
+        <"Float16">
       )>,
       <"BuiltinType" : (
         {
           "pointer" : 144
         },
-        <"LongAccum">
+        <"ShortAccum">
       )>,
       <"BuiltinType" : (
         {
           "pointer" : 145
         },
-        <"UShortAccum">
+        <"Accum">
       )>,
       <"BuiltinType" : (
         {
           "pointer" : 146
         },
-        <"UAccum">
+        <"LongAccum">
       )>,
       <"BuiltinType" : (
         {
           "pointer" : 147
         },
-        <"ULongAccum">
+        <"UShortAccum">
       )>,
       <"BuiltinType" : (
         {
           "pointer" : 148
         },
-        <"ShortFract">
+        <"UAccum">
       )>,
       <"BuiltinType" : (
         {
           "pointer" : 149
         },
-        <"Fract">
+        <"ULongAccum">
       )>,
       <"BuiltinType" : (
         {
           "pointer" : 150
         },
-        <"LongFract">
+        <"ShortFract">
       )>,
       <"BuiltinType" : (
         {
           "pointer" : 151
         },
-        <"UShortFract">
+        <"Fract">
       )>,
       <"BuiltinType" : (
         {
           "pointer" : 152
         },
-        <"UFract">
+        <"LongFract">
       )>,
       <"BuiltinType" : (
         {
           "pointer" : 153
         },
-        <"ULongFract">
+        <"UShortFract">
       )>,
       <"BuiltinType" : (
         {
           "pointer" : 154
         },
-        <"SatShortAccum">
+        <"UFract">
       )>,
       <"BuiltinType" : (
         {
           "pointer" : 155
         },
-        <"SatAccum">
+        <"ULongFract">
       )>,
       <"BuiltinType" : (
         {
           "pointer" : 156
         },
-        <"SatLongAccum">
+        <"SatShortAccum">
       )>,
       <"BuiltinType" : (
         {
           "pointer" : 157
         },
-        <"SatUShortAccum">
+        <"SatAccum">
       )>,
       <"BuiltinType" : (
         {
           "pointer" : 158
         },
-        <"SatUAccum">
+        <"SatLongAccum">
       )>,
       <"BuiltinType" : (
         {
           "pointer" : 159
         },
-        <"SatULongAccum">
+        <"SatUShortAccum">
       )>,
       <"BuiltinType" : (
         {
           "pointer" : 160
         },
-        <"SatShortFract">
+        <"SatUAccum">
       )>,
       <"BuiltinType" : (
         {
           "pointer" : 161
         },
-        <"SatFract">
+        <"SatULongAccum">
       )>,
       <"BuiltinType" : (
         {
           "pointer" : 162
         },
-        <"SatLongFract">
+        <"SatShortFract">
       )>,
       <"BuiltinType" : (
         {
           "pointer" : 163
         },
-        <"SatUShortFract">
+        <"SatFract">
       )>,
       <"BuiltinType" : (
         {
           "pointer" : 164
         },
-        <"SatUFract">
+        <"SatLongFract">
       )>,
       <"BuiltinType" : (
         {
           "pointer" : 165
         },
-        <"SatULongFract">
+        <"SatUShortFract">
       )>,
       <"BuiltinType" : (
         {
           "pointer" : 166
         },
-        <"Int128">
+        <"SatUFract">
       )>,
       <"BuiltinType" : (
         {
           "pointer" : 167
         },
-        <"UInt128">
+        <"SatULongFract">
       )>,
       <"BuiltinType" : (
         {
           "pointer" : 168
         },
-        <"WChar_S">
+        <"Int128">
       )>,
       <"BuiltinType" : (
         {
           "pointer" : 169
         },
-        <"Char8">
+        <"UInt128">
       )>,
       <"BuiltinType" : (
         {
           "pointer" : 170
         },
-        <"Char16">
+        <"WChar_S">
       )>,
       <"BuiltinType" : (
         {
           "pointer" : 171
         },
-        <"Char32">
+        <"Char8">
       )>,
       <"BuiltinType" : (
         {
           "pointer" : 172
         },
-        <"Dependent">
+        <"Char16">
       )>,
       <"BuiltinType" : (
         {
           "pointer" : 173
+        },
+        <"Char32">
+      )>,
+      <"BuiltinType" : (
+        {
+          "pointer" : 174
+        },
+        <"Dependent">
+      )>,
+      <"BuiltinType" : (
+        {
+          "pointer" : 175
         },
         <"Overload">
       )>,
@@ -2967,69 +2964,49 @@
       )>,
       <"BuiltinType" : (
         {
-          "pointer" : 174
+          "pointer" : 176
         },
         <"PseudoObject">
       )>,
       <"BuiltinType" : (
         {
-          "pointer" : 175
+          "pointer" : 177
         },
         <"UnknownAny">
       )>,
       <"BuiltinType" : (
         {
-          "pointer" : 176
+          "pointer" : 178
         },
         <"ARCUnbridgedCast">
       )>,
       <"BuiltinType" : (
         {
-          "pointer" : 177
+          "pointer" : 179
         },
         <"BuiltinFn">
       )>,
-      <"ComplexType" : (
-        {
-          "pointer" : 178
-        }
-      )>,
-      <"ComplexType" : (
-        {
-          "pointer" : 179
-        }
-      )>,
-      <"ComplexType" : (
-        {
-          "pointer" : 180
-        }
-      )>,
-      <"ComplexType" : (
-        {
-          "pointer" : 181
-        }
-      )>,
       <"BuiltinType" : (
         {
-          "pointer" : 182
+          "pointer" : 180
         },
         <"ObjCId">
       )>,
       <"BuiltinType" : (
         {
-          "pointer" : 183
+          "pointer" : 181
         },
         <"ObjCClass">
       )>,
       <"BuiltinType" : (
         {
-          "pointer" : 184
+          "pointer" : 182
         },
         <"ObjCSel">
       )>,
       <"PointerType" : (
         {
-          "pointer" : 185
+          "pointer" : 183
         },
         {
           "type_ptr" : 103
@@ -3037,67 +3014,71 @@
       )>,
       <"BuiltinType" : (
         {
-          "pointer" : 186
+          "pointer" : 184
         },
         <"NullPtr">
       )>,
       <"BuiltinType" : (
         {
-          "pointer" : 187
+          "pointer" : 185
         },
         <"Half">
       )>,
       <"BuiltinType" : (
         {
-          "pointer" : 188
+          "pointer" : 186
         },
         <"BFloat16">
       )>,
       <"RecordType" : (
         {
+          "pointer" : 187
+        },
+        188
+      )>,
+      <"PointerType" : (
+        {
           "pointer" : 189
         },
-        190
+        {
+          "type_ptr" : 22,
+          "is_const" : true,
+          "is_trivially_copyable" : true
+        }
+      )>,
+      <"PointerType" : (
+        {
+          "pointer" : 190
+        },
+        {
+          "type_ptr" : 129,
+          "is_const" : true,
+          "is_trivially_copyable" : true
+        }
       )>,
       <"PointerType" : (
         {
           "pointer" : 191
         },
         {
-          "type_ptr" : 22,
-          "is_const" : true
-        }
-      )>,
-      <"PointerType" : (
-        {
-          "pointer" : 192
-        },
-        {
-          "type_ptr" : 128,
-          "is_const" : true
-        }
-      )>,
-      <"PointerType" : (
-        {
-          "pointer" : 193
-        },
-        {
-          "type_ptr" : 128
+          "type_ptr" : 129,
+          "is_trivially_copyable" : true
         }
       )>,
       <"RecordType" : (
         {
-          "pointer" : 194
+          "pointer" : 192
         },
-        195
+        193
       )>,
       <"ConstantArrayType" : (
         {
-          "pointer" : 196
+          "pointer" : 194
         },
         {
           "element_type" : {
-            "type_ptr" : 194
+            "type_ptr" : 192,
+            "is_trivially_copyable" : true
           },
           "stride" : 24
         },
@@ -3109,13 +3090,15 @@
         },
         {
           "return_type" : {
-            "type_ptr" : 10
+            "type_ptr" : 10,
+            "is_trivially_copyable" : true
           }
         },
         {
           "params_type" : [
             {
-              "type_ptr" : 10
+              "type_ptr" : 10,
+              "is_trivially_copyable" : true
             }
           ]
         }
@@ -3126,16 +3109,19 @@
         },
         {
           "return_type" : {
-            "type_ptr" : 10
+            "type_ptr" : 10,
+            "is_trivially_copyable" : true
           }
         },
         {
           "params_type" : [
             {
-              "type_ptr" : 10
+              "type_ptr" : 10,
+              "is_trivially_copyable" : true
             },
             {
-              "type_ptr" : 10
+              "type_ptr" : 10,
+              "is_trivially_copyable" : true
             }
           ]
         }
@@ -3172,7 +3158,8 @@
         },
         {
           "return_type" : {
-            "type_ptr" : 10
+            "type_ptr" : 10,
+            "is_trivially_copyable" : true
           }
         },
         {
@@ -3190,14 +3177,21 @@
         {
           "params_type" : [
             {
-              "type_ptr" : 10
+              "type_ptr" : 10,
+              "is_trivially_copyable" : true
             }
           ]
         }
       )>,
+      <"ElaboratedType" : (
+        {
+          "pointer" : 126,
+          "desugared_type" : 16
+        }
+      )>,
       <"LValueReferenceType" : (
         {
-          "pointer" : 197
+          "pointer" : 195
         },
         {
           "type_ptr" : 16
@@ -3205,10 +3199,27 @@
       )>,
       <"LValueReferenceType" : (
         {
-          "pointer" : 46
+          "pointer" : 196
+        },
+        {
+          "type_ptr" : 126
+        }
+      )>,
+      <"LValueReferenceType" : (
+        {
+          "pointer" : 197
         },
         {
           "type_ptr" : 16,
+          "is_const" : true
+        }
+      )>,
+      <"LValueReferenceType" : (
+        {
+          "pointer" : 46
+        },
+        {
+          "type_ptr" : 126,
           "is_const" : true
         }
       )>,
@@ -3218,13 +3229,13 @@
         },
         {
           "return_type" : {
-            "type_ptr" : 197
+            "type_ptr" : 195
           }
         },
         {
           "params_type" : [
             {
-              "type_ptr" : 46
+              "type_ptr" : 197
             }
           ]
         }
@@ -3235,7 +3246,7 @@
         },
         {
           "return_type" : {
-            "type_ptr" : 197
+            "type_ptr" : 196
           }
         },
         {
@@ -3248,25 +3259,33 @@
       )>,
       <"RValueReferenceType" : (
         {
-          "pointer" : 50
+          "pointer" : 199
         },
         {
           "type_ptr" : 16
         }
       )>,
+      <"RValueReferenceType" : (
+        {
+          "pointer" : 50
+        },
+        {
+          "type_ptr" : 126
+        }
+      )>,
       <"FunctionProtoType" : (
         {
-          "pointer" : 199
+          "pointer" : 200
         },
         {
           "return_type" : {
-            "type_ptr" : 197
+            "type_ptr" : 195
           }
         },
         {
           "params_type" : [
             {
-              "type_ptr" : 50
+              "type_ptr" : 199
             }
           ]
         }
@@ -3277,7 +3296,7 @@
         },
         {
           "return_type" : {
-            "type_ptr" : 197
+            "type_ptr" : 196
           }
         },
         {
@@ -3320,15 +3339,22 @@
         },
         {
           "return_type" : {
-            "type_ptr" : 115
+            "type_ptr" : 115,
+            "is_trivially_copyable" : true
           }
         },
         {
         }
       )>,
+      <"ElaboratedType" : (
+        {
+          "pointer" : 201,
+          "desugared_type" : 54
+        }
+      )>,
       <"LValueReferenceType" : (
         {
-          "pointer" : 200
+          "pointer" : 202
         },
         {
           "type_ptr" : 54
@@ -3336,26 +3362,43 @@
       )>,
       <"LValueReferenceType" : (
         {
-          "pointer" : 119
+          "pointer" : 203
+        },
+        {
+          "type_ptr" : 201
+        }
+      )>,
+      <"LValueReferenceType" : (
+        {
+          "pointer" : 204
         },
         {
           "type_ptr" : 54,
           "is_const" : true
         }
       )>,
+      <"LValueReferenceType" : (
+        {
+          "pointer" : 119
+        },
+        {
+          "type_ptr" : 201,
+          "is_const" : true
+        }
+      )>,
       <"FunctionProtoType" : (
         {
-          "pointer" : 201
+          "pointer" : 205
         },
         {
           "return_type" : {
-            "type_ptr" : 200
+            "type_ptr" : 202
           }
         },
         {
           "params_type" : [
             {
-              "type_ptr" : 119
+              "type_ptr" : 204
             }
           ]
         }
@@ -3366,7 +3409,7 @@
         },
         {
           "return_type" : {
-            "type_ptr" : 200
+            "type_ptr" : 203
           }
         },
         {
@@ -3379,25 +3422,33 @@
       )>,
       <"RValueReferenceType" : (
         {
-          "pointer" : 123
+          "pointer" : 206
         },
         {
           "type_ptr" : 54
         }
       )>,
+      <"RValueReferenceType" : (
+        {
+          "pointer" : 123
+        },
+        {
+          "type_ptr" : 201
+        }
+      )>,
       <"FunctionProtoType" : (
         {
-          "pointer" : 202
+          "pointer" : 207
         },
         {
           "return_type" : {
-            "type_ptr" : 200
+            "type_ptr" : 202
           }
         },
         {
           "params_type" : [
             {
-              "type_ptr" : 123
+              "type_ptr" : 206
             }
           ]
         }
@@ -3408,7 +3459,7 @@
         },
         {
           "return_type" : {
-            "type_ptr" : 200
+            "type_ptr" : 203
           }
         },
         {
@@ -3449,42 +3500,44 @@
       )>,
       <"ObjCObjectType" : (
         {
-          "pointer" : 203
+          "pointer" : 208
         },
         {
-          "base_type" : 182
+          "base_type" : 180
         }
       )>,
       <"ObjCObjectPointerType" : (
         {
-          "pointer" : 204
+          "pointer" : 209
         },
         {
-          "type_ptr" : 203
+          "type_ptr" : 208
         }
       )>,
       <"TypedefType" : (
         {
-          "pointer" : 205,
-          "desugared_type" : 204
+          "pointer" : 210,
+          "desugared_type" : 209
         },
         {
           "child_type" : {
-            "type_ptr" : 204
+            "type_ptr" : 209,
+            "is_trivially_copyable" : true
           },
-          "decl_ptr" : 206
+          "decl_ptr" : 211
         }
       )>,
       <"TypedefType" : (
         {
-          "pointer" : 127,
-          "desugared_type" : 204
+          "pointer" : 128,
+          "desugared_type" : 209
         },
         {
           "child_type" : {
-            "type_ptr" : 205
+            "type_ptr" : 210,
+            "is_trivially_copyable" : true
           },
-          "decl_ptr" : 126
+          "decl_ptr" : 127
         }
       )>,
       <"NoneType" : (

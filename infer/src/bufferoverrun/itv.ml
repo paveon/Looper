@@ -134,8 +134,6 @@ module ItvPure = struct
 
   let of_int_lit n = of_big_int (IntLit.to_big_int n)
 
-  let of_foreign_id id = of_bound (Bound.of_foreign_id id)
-
   let mone = of_bound Bound.mone
 
   let zero_255 = (Bound.zero, Bound.z255)
@@ -187,13 +185,13 @@ module ItvPure = struct
 
   let is_true : t -> bool = fun (l, u) -> Bound.le Bound.one l || Bound.le u Bound.mone
 
-  let is_false : t -> bool = is_zero
-
   let is_symbolic : t -> bool = fun (lb, ub) -> Bound.is_symbolic lb || Bound.is_symbolic ub
 
   let is_ge_zero : t -> bool = fun (lb, _) -> Bound.le Bound.zero lb
 
   let is_le_zero : t -> bool = fun (_, ub) -> Bound.le ub Bound.zero
+
+  let is_false : t -> bool = fun i -> is_le_zero i && is_ge_zero i
 
   let is_le_mone : t -> bool = fun (_, ub) -> Bound.le ub Bound.mone
 
@@ -212,17 +210,6 @@ module ItvPure = struct
 
   let to_boolean : t -> Boolean.t =
    fun x -> if is_false x then Boolean.False else if is_true x then Boolean.True else Boolean.Top
-
-
-  let of_boolean : Boolean.t -> t bottom_lifted = function
-    | True ->
-        NonBottom (of_int 1)
-    | False ->
-        NonBottom (of_int 0)
-    | Bottom ->
-        Bottom
-    | Top ->
-        NonBottom top
 
 
   let lnot : t -> Boolean.t = fun x -> to_boolean x |> Boolean.not_
@@ -375,18 +362,16 @@ module ItvPure = struct
   let ge_sem : t -> t -> Boolean.t = fun x y -> le_sem y x
 
   let eq_sem : t -> t -> Boolean.t =
-   fun (l1, u1) (l2, u2) ->
+   fun ((l1, u1) as itv1) ((l2, u2) as itv2) ->
     if Bound.eq l1 u1 && Bound.eq u1 l2 && Bound.eq l2 u2 then Boolean.True
     else if Bound.lt u1 l2 || Bound.lt u2 l1 then Boolean.False
+    else if
+      Boolean.equal Boolean.True (ge_sem itv1 itv2) && Boolean.equal Boolean.True (le_sem itv1 itv2)
+    then Boolean.True
     else Boolean.Top
 
 
-  let ne_sem : t -> t -> Boolean.t =
-   fun (l1, u1) (l2, u2) ->
-    if Bound.eq l1 u1 && Bound.eq u1 l2 && Bound.eq l2 u2 then Boolean.False
-    else if Bound.lt u1 l2 || Bound.lt u2 l1 then Boolean.True
-    else Boolean.Top
-
+  let ne_sem : t -> t -> Boolean.t = fun itv1 itv2 -> eq_sem itv1 itv2 |> Boolean.not_
 
   let land_sem : t -> t -> Boolean.t = fun x y -> Boolean.and_ (to_boolean x) (to_boolean y)
 
@@ -423,50 +408,6 @@ module ItvPure = struct
     | _ ->
         Bottom
 
-
-  let assert_no_bottom = function Bottom -> assert false | NonBottom x -> x
-
-  let arith_binop (bop : Binop.t) x y =
-    match bop with
-    | PlusA _ | PlusPI ->
-        plus x y
-    | MinusA _ | MinusPI | MinusPP ->
-        minus x y
-    | Mult _ ->
-        mult x y
-    | Div ->
-        div x y
-    | Mod ->
-        mod_sem x y
-    | Shiftlt ->
-        shiftlt x y
-    | Shiftrt ->
-        shiftrt x y
-    | Lt ->
-        of_boolean (lt_sem x y) |> assert_no_bottom
-    | Gt ->
-        of_boolean (gt_sem x y) |> assert_no_bottom
-    | Le ->
-        of_boolean (le_sem x y) |> assert_no_bottom
-    | Ge ->
-        of_boolean (ge_sem x y) |> assert_no_bottom
-    | Eq ->
-        of_boolean (eq_sem x y) |> assert_no_bottom
-    | Ne ->
-        of_boolean (ne_sem x y) |> assert_no_bottom
-    | BAnd ->
-        band_sem x y
-    | BXor ->
-        top
-    | BOr ->
-        top
-    | LAnd ->
-        of_boolean (land_sem x y) |> assert_no_bottom
-    | LOr ->
-        of_boolean (lor_sem x y) |> assert_no_bottom
-
-
-  let arith_unop (unop : Unop.t) x = match unop with Neg -> Some (neg x) | BNot | LNot -> None
 
   let prune_le : t -> t -> t bottom_lifted =
    fun (l1, u1) (_, u2) -> normalize (l1, Bound.overapprox_min u1 u2)
@@ -537,7 +478,8 @@ module ItvPure = struct
     | MinusPI
     | MinusPP
     | Mult _
-    | Div
+    | DivI
+    | DivF
     | Mod
     | Shiftlt
     | Shiftrt
@@ -558,8 +500,9 @@ module ItvPure = struct
     (not (SymbolSet.is_empty symbols)) && SymbolSet.for_all Symb.Symbol.is_non_int symbols
 
 
-  let make_positive : t -> t =
-   fun ((l, u) as x) -> if Bound.lt l Bound.zero then (Bound.zero, u) else x
+  let make_non_negative : t -> t =
+    let max_zero x = if Bound.lt x Bound.zero then Bound.zero else x in
+    fun (l, u) -> (max_zero l, max_zero u)
 
 
   let max_of_ikind integer_type_widths ikind =
@@ -729,6 +672,8 @@ let incr = plus one
 
 let decr x = minus x one
 
+let decr_length x = map ~f:ItvPure.make_non_negative (decr x)
+
 let set_lb lb = lift1 (ItvPure.set_lb lb)
 
 let set_lb_zero = lift1 ItvPure.set_lb_zero
@@ -839,3 +784,5 @@ let is_length_path_of path = bind1_gen ~bot:false (ItvPure.is_length_path_of pat
 let has_only_non_int_symbols = bind1bool ItvPure.has_only_non_int_symbols
 
 let is_incr_of path = bind1bool (ItvPure.is_incr_of path)
+
+let is_top v = match v with Bottom -> false | NonBottom v_itv_pure -> ItvPure.is_top v_itv_pure

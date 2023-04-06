@@ -3,14 +3,20 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
-TESTS_DIR = ../../..
+# NOTE: If you wish to deactivate a Topl test, simply remove it from this list
+SUBDIRS = taint file process reach-pair reach-simple less fields atom-literal
 
-# see explanations in cpp/biabduction/Makefile for the custom isystem
-INFER_OPTIONS = --topl --topl-properties taint.topl --project-root $(TESTS_DIR)
-INFERPRINT_OPTIONS = --issues-tests
+test-%:
+	$(MAKE) -C $* test
 
-SOURCES = $(wildcard src/*.erl)
+test: $(SUBDIRS:%=test-%)
 
-include $(TESTS_DIR)/erlang.make
+replace-%:
+	$(MAKE) -C $* replace
 
-infer-out/report.json: $(MAKEFILE_LIST)
+replace: $(SUBDIRS:%=replace-%)
+
+clean-%:
+	$(MAKE) -C $* clean
+
+clean: $(SUBDIRS:%=clean-%)

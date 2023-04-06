@@ -6,17 +6,14 @@
  *)
 open! IStd
 
-type t = Clang | CIL | Erlang | Java [@@deriving compare, enumerate, equal]
+type t = Clang | CIL | Erlang | Hack | Java [@@deriving compare, enumerate, equal]
 
 let language_to_string =
-  [(Clang, "C/C++/ObjC"); (Erlang, "Erlang"); (Java, "Java"); (CIL, "C#/.Net")]
+  [(Clang, "C/C++/ObjC"); (Erlang, "Erlang"); (Hack, "Hack"); (Java, "Java"); (CIL, "C#/.Net")]
 
 
 let to_string lang = List.Assoc.find_exn language_to_string ~equal lang
 
-let of_string s = List.Assoc.find (List.Assoc.inverse language_to_string) ~equal:String.equal s
-
-(** Current language *)
 let curr_language = ref Clang
 
 let curr_language_is lang = equal !curr_language lang

@@ -13,7 +13,7 @@ module BasicCost = struct
 
   (* NOTE: Increment the version number if you changed the [t] type.  This is for avoiding
      demarshalling failure of cost analysis results in running infer-reportdiff. *)
-  let version = 12
+  let version = 13
 end
 
 module BasicCostWithReason = struct
@@ -70,7 +70,7 @@ end
 module VariantCostMap = struct
   include PrettyPrintable.PPMonoMapOfPPMap (CostIssues.CostKindMap) (BasicCostWithReason)
 
-  let[@warning "-32"] add _ = Logging.die InternalError "Don't call me"
+  let[@warning "-unused-value-declaration"] add _ = Logging.die InternalError "Don't call me"
 
   let get kind record = find_opt kind record |> Option.value ~default:BasicCostWithReason.zero
 

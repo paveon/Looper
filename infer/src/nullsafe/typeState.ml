@@ -17,13 +17,13 @@ module M = Caml.Map.Make (struct
   let compare = Exp.compare
 end)
 
-type range = Typ.t * InferredNullability.t [@@deriving compare]
+type range = Typ.t * InferredNullability.t [@@deriving compare, equal]
 
 let pp_range fmt (typ, nullability) =
   F.fprintf fmt "Typ: %s; Nullability: %a" (Typ.to_string typ) InferredNullability.pp nullability
 
 
-type t = range M.t [@@deriving compare]
+type t = range M.t [@@deriving compare, equal]
 
 let equal = [%compare.equal: t]
 
@@ -69,16 +69,16 @@ let lookup_pvar pvar typestate = M.find_opt (Exp.Lvar pvar) typestate
 
 let add_id id range typestate ~descr =
   ( if Config.write_html then
-    let _, nullability = range in
-    L.d_printfln "Setting %a to Id %a: %s" InferredNullability.pp nullability Ident.pp id descr ) ;
+      let _, nullability = range in
+      L.d_printfln "Setting %a to Id %a: %s" InferredNullability.pp nullability Ident.pp id descr ) ;
   M.add (Exp.Var id) range typestate
 
 
 let add pvar range typestate ~descr =
   ( if Config.write_html then
-    let _, nullability = range in
-    L.d_printfln "Setting %a to Pvar %a: %s" InferredNullability.pp nullability
-      Pvar.pp_value_non_verbose pvar descr ) ;
+      let _, nullability = range in
+      L.d_printfln "Setting %a to Pvar %a: %s" InferredNullability.pp nullability
+        Pvar.pp_value_non_verbose pvar descr ) ;
   M.add (Exp.Lvar pvar) range typestate
 
 

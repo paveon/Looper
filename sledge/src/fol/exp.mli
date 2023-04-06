@@ -87,6 +87,10 @@ module rec Term : sig
   val map_trms : t -> f:(Trm.t -> Trm.t) -> t
   val fold_map_vars : t -> 's -> f:(Var.t -> 's -> Var.t * 's) -> t * 's
   val rename : Var.Subst.t -> t -> t
+
+  (** Encode *)
+
+  val to_z3 : Z3.context -> t -> Z3.Expr.expr
 end
 
 (** Formulas *)
@@ -147,4 +151,35 @@ and Formula : sig
   val map_vars : t -> f:(Var.t -> Var.t) -> t
   val fold_map_vars : t -> 's -> f:(Var.t -> 's -> Var.t * 's) -> t * 's
   val rename : Var.Subst.t -> t -> t
+
+  (** Encode *)
+
+  val to_z3 : Z3.context -> t -> Z3.Expr.expr
+end
+
+module Infix : sig
+  (* arithmetic terms *)
+  val ( ~- ) : Term.t -> Term.t
+  val ( + ) : Term.t -> Term.t -> Term.t
+  val ( - ) : Term.t -> Term.t -> Term.t
+  val ( *. ) : Q.t -> Term.t -> Term.t
+  val ( * ) : Term.t -> Term.t -> Term.t
+  val ( / ) : Term.t -> Term.t -> Term.t
+  val ( ^ ) : Term.t -> int -> Term.t
+
+  (* equality formulas *)
+  val ( = ) : Term.t -> Term.t -> Formula.t
+  val ( != ) : Term.t -> Term.t -> Formula.t
+
+  (* arithmetic formulas *)
+  val ( > ) : Term.t -> Term.t -> Formula.t
+  val ( >= ) : Term.t -> Term.t -> Formula.t
+  val ( < ) : Term.t -> Term.t -> Formula.t
+  val ( <= ) : Term.t -> Term.t -> Formula.t
+
+  (* logical connectives *)
+  val ( ~~ ) : Formula.t -> Formula.t
+  val ( && ) : Formula.t -> Formula.t -> Formula.t
+  val ( || ) : Formula.t -> Formula.t -> Formula.t
+  val ( <=> ) : Formula.t -> Formula.t -> Formula.t
 end

@@ -11,9 +11,17 @@ module L = Logging
 
 let docs_dir = "docs"
 
-let mk_markdown_docs_path ~website_root ~basename = website_root ^/ docs_dir ^/ basename ^ ".md"
+let pp_markdown_docs_path ~website_root ~basename ~pp =
+  let path = website_root ^/ docs_dir ^/ basename ^ ".md" in
+  Utils.with_file_out path ~f:(fun out_channel ->
+      let f = F.formatter_of_out_channel out_channel in
+      pp f ;
+      F.pp_print_flush f () )
+
 
 let escape_double_quotes s = String.substr_replace_all s ~pattern:"\"" ~with_:"\\\""
+
+let all_checkers_basename = "all-checkers"
 
 let all_issues_basename = "all-issue-types"
 
@@ -83,7 +91,7 @@ let list_checkers () =
               ; short_documentation= _ (* only list in [show_checkers] *)
               ; cli_flags= _ (* only list in [show_checkers] *)
               ; enabled_by_default
-              ; activates } [@warning "+9"] ) =
+              ; activates } [@warning "+missing-record-field-pattern"] ) =
            Checker.config checker
          in
          L.result "%s:%s:%s:%s:%b:%a@;" id (string_of_checker_kind kind)
@@ -93,14 +101,24 @@ let list_checkers () =
   L.result "@]%!"
 
 
+let simple_template ?(toc = true) ~title short_intro =
+  F.sprintf {|---
+title: %s
+%s---
+
+%s|} title
+    (if not toc then "hide_table_of_contents: true\n" else "")
+    short_intro
+
+
+let all_checkers_header =
+  simple_template ~toc:false ~title:"List of all checkers"
+    "Here is an overview of the checkers currently available in Infer."
+
+
 let all_issues_header =
-  {|---
-title: List of all issue types
----
-
-Here is an overview of the issue types currently reported by Infer.
-
-|}
+  simple_template ~title:"List of all issue types"
+    "Here is an overview of the issue types currently reported by Infer."
 
 
 let all_issues =
@@ -113,10 +131,8 @@ let all_issues =
 
 let all_issues_website ~website_root =
   let issues_to_document = Lazy.force all_issues in
-  Utils.with_file_out (mk_markdown_docs_path ~website_root ~basename:all_issues_basename)
-    ~f:(fun out_channel ->
-      let f = F.formatter_of_out_channel out_channel in
-      F.fprintf f "%s@\n%a@\n%!" all_issues_header
+  pp_markdown_docs_path ~website_root ~basename:all_issues_basename ~pp:(fun f ->
+      F.fprintf f "%s@\n@\n%a@\n" all_issues_header
         (Pp.seq ~sep:"\n" markdown_one_issue)
         issues_to_document )
 
@@ -125,7 +141,7 @@ let list_issue_types () =
   L.progress
     "@[Format:@\n\
      Issue type unique identifier:Human-readable version:Visibility:Default \
-     severity:Enabled:Checker:Documentation URL (AL only):Linters definition file (AL only)@\n\
+     severity:Enabled:Checker@\n\
      @\n\
      @]%!" ;
   L.result "@[<v>" ;
@@ -140,22 +156,18 @@ let list_issue_types () =
                  (* do not show this as this can be a big multi-line string and not tool-friendly *)
              ; default_severity
              ; enabled
-             ; hum
-             ; doc_url
-             ; linters_def_file } [@warning "+9"] )
+             ; hum } [@warning "+missing-record-field-pattern"] )
           ->
-         L.result "%s:%s:%s:%s:%b:%s:%s:%s@;" unique_id hum
+         L.result "%s:%s:%s:%s:%b:%s@;" unique_id hum
            (IssueType.string_of_visibility visibility)
            (IssueType.string_of_severity default_severity)
-           enabled (Checker.get_id checker)
-           (Option.value ~default:"" doc_url)
-           (Option.value ~default:"" linters_def_file) ) ;
+           enabled (Checker.get_id checker) ) ;
   L.result "@]%!"
 
 
 let pp_checker f checker =
   let ({Checker.id; kind; support; short_documentation; cli_flags; enabled_by_default; activates}
-      [@warning "+9"] ) =
+      [@warning "+missing-record-field-pattern"] ) =
     Checker.config checker
   in
   F.fprintf f
@@ -218,7 +230,7 @@ let mk_checkers_json checkers_base_filenames =
              '@' ) )
     ; ( "doc_entries"
       , `List
-          ( `String all_issues_basename
+          ( `String all_checkers_basename :: `String all_issues_basename
           :: List.map checkers_base_filenames ~f:(fun filename -> `String filename) ) ) ]
 
 
@@ -243,11 +255,8 @@ title: "%s"
 description: "%s"
 ---
 
-%s
-
 |} (escape_double_quotes title)
     (escape_double_quotes short_documentation)
-    short_documentation
 
 
 let pp_checker_deprecation_message f message =
@@ -266,35 +275,44 @@ let pp_checker_language_support f support =
 
 
 let pp_checker_issue_types f checker =
-  F.fprintf f "@\n@\n## List of Issue Types@\n@\n" ;
-  F.fprintf f "The following issue types are reported by this checker:@\n" ;
   let checker_issues =
     List.filter (Lazy.force all_issues) ~f:(fun {IssueType.checker= issue_checker} ->
         Checker.equal issue_checker checker )
   in
-  let pp_issue f {IssueType.unique_id} =
-    F.fprintf f "- [%s](%s)@\n" unique_id (abs_url_of_issue_type unique_id)
-  in
-  List.iter checker_issues ~f:(pp_issue f)
+  if not (List.is_empty checker_issues) then (
+    F.fprintf f "@\n@\n## List of Issue Types@\n@\n" ;
+    F.fprintf f "The following issue types are reported by this checker:@\n" ;
+    List.iter checker_issues ~f:(fun {IssueType.unique_id} ->
+        F.fprintf f "- [%s](%s)@\n" unique_id (abs_url_of_issue_type unique_id) ) )
+
+
+let pp_checker_intro f ~short_documentation ~deprecated_opt =
+  F.fprintf f "%s@\n@\n" short_documentation ;
+  Option.iter deprecated_opt ~f:(pp_checker_deprecation_message f)
 
 
 let write_checker_webpage ~website_root (checker : Checker.t) =
   let checker_config = Checker.config checker in
-  match get_checker_web_documentation checker_config with
-  | None ->
-      ()
-  | Some (title, markdown_body, deprecated_opt) ->
-      Utils.with_file_out
-        (mk_markdown_docs_path ~website_root ~basename:(basename_of_checker checker_config))
-        ~f:(fun out_channel ->
-          let f = F.formatter_of_out_channel out_channel in
+  Option.iter (get_checker_web_documentation checker_config)
+    ~f:(fun (title, markdown_body, deprecated_opt) ->
+      pp_markdown_docs_path ~website_root ~basename:(basename_of_checker checker_config)
+        ~pp:(fun f ->
           pp_checker_webpage_header f ~title ~short_documentation:checker_config.short_documentation ;
-          Option.iter deprecated_opt ~f:(pp_checker_deprecation_message f) ;
+          pp_checker_intro f ~short_documentation:checker_config.short_documentation ~deprecated_opt ;
           Option.iter checker_config.cli_flags ~f:(fun _ -> pp_checker_cli_flags f checker_config) ;
           pp_checker_language_support f checker_config.support ;
           F.pp_print_string f markdown_body ;
-          pp_checker_issue_types f checker ;
-          () )
+          pp_checker_issue_types f checker ) )
+
+
+let write_checker_in_list f (checker : Checker.t) =
+  let checker_config = Checker.config checker in
+  Option.iter (get_checker_web_documentation checker_config)
+    ~f:(fun (title, _markdown_body, deprecated_opt) ->
+      F.fprintf f "## %s@\n@\n" title ;
+      pp_checker_intro f ~short_documentation:checker_config.short_documentation ~deprecated_opt ;
+      F.fprintf f "[Visit here for more information.](/%s/next/%s)@\n@\n" docs_dir
+        (basename_of_checker checker_config) )
 
 
 (** delete all files that look like they were generated by a previous invocation of
@@ -310,7 +328,10 @@ let delete_checkers_website ~website_root =
 
 let all_checkers_website ~website_root =
   delete_checkers_website ~website_root ;
-  List.iter Checker.all ~f:(fun checker -> write_checker_webpage ~website_root checker)
+  List.iter Checker.all ~f:(fun checker -> write_checker_webpage ~website_root checker) ;
+  pp_markdown_docs_path ~website_root ~basename:all_checkers_basename ~pp:(fun f ->
+      F.fprintf f "%s@\n@\n" all_checkers_header ;
+      List.iter Checker.all ~f:(write_checker_in_list f) )
 
 
 let write_website ~website_root =

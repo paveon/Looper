@@ -16,6 +16,11 @@ let add_edges (context : JContext.t) start_node exn_node exit_nodes method_body_
   let pc_nb = Array.length method_body_nodes in
   let last_pc = pc_nb - 1 in
   let is_last pc = Int.equal pc last_pc in
+  let is_a_throw pc =
+    let code = JBir.code impl in
+    if pc < 0 || pc >= Array.length code then false
+    else match code.(pc) with JBir.Throw _ -> true | _ -> false
+  in
   let rec get_body_nodes_ pc visited =
     let current_nodes = method_body_nodes.(pc) in
     match current_nodes with
@@ -35,7 +40,8 @@ let add_edges (context : JContext.t) start_node exn_node exit_nodes method_body_
       match JContext.get_goto_jump context pc with
       | JContext.Next ->
           let next_pc = pc + 1 in
-          if Int.Set.mem visited next_pc then [] else get_body_nodes_ next_pc visited
+          if Int.Set.mem visited next_pc || is_a_throw pc then []
+          else get_body_nodes_ next_pc visited
       | JContext.Jump goto_pc when Int.Set.mem visited goto_pc ->
           [] (* loop in goto *)
       | JContext.Jump goto_pc ->
@@ -87,7 +93,7 @@ let add_edges (context : JContext.t) start_node exn_node exit_nodes method_body_
 
 (** Add a concrete method. *)
 let add_cmethod source_file program icfg cm proc_name =
-  let cn, _ = JBasics.cms_split cm.Javalib.cm_class_method_signature in
+  let cn, ms = JBasics.cms_split cm.Javalib.cm_class_method_signature in
   if
     (not Config.kotlin_capture)
     && SourceFile.has_extension source_file ~ext:Config.kotlin_source_extension
@@ -99,40 +105,27 @@ let add_cmethod source_file program icfg cm proc_name =
     | Some (procdesc, start_node, exit_node, exn_node, jbir_code) ->
         let context = JContext.create_context icfg procdesc jbir_code cn source_file program in
         let method_body_nodes = Array.mapi ~f:(JTrans.instruction context) (JBir.code jbir_code) in
-        add_edges context start_node exn_node [exit_node] method_body_nodes jbir_code false
+        add_edges context start_node exn_node [exit_node] method_body_nodes jbir_code false ;
+        if Config.java_reflection then
+          let calls = Reflect.get_method_refl_calls cm in
+          if not (List.is_empty calls) then (
+            L.result "Usage(s) of reflection found in %s:%s(): " (JBasics.cn_name cn)
+              (JBasics.ms_name ms) ;
+            List.iter calls ~f:(fun refl_call -> L.result "%s() " refl_call.Reflect.refl_ms) ;
+            L.result "@\n" )
 
 
-let path_of_cached_classname cn =
-  let root_path = ResultsDir.get_path JavaClassnamesCache in
-  let package_path = List.fold ~f:Filename.concat ~init:root_path (JBasics.cn_package cn) in
-  Filename.concat package_path (JBasics.cn_simple_name cn ^ ".java")
+let classname_path cn =
+  let package_path = List.fold ~f:Filename.concat ~init:Filename.root (JBasics.cn_package cn) in
+  Filename.concat package_path (JBasics.cn_simple_name cn ^ ".class")
 
 
-let cache_classname cn =
-  let path = path_of_cached_classname cn in
-  let splitted_root_dir =
-    let rec split l p =
-      match p with
-      | p when String.equal p Filename.current_dir_name ->
-          l
-      | p when String.equal p Filename.dir_sep ->
-          l
-      | p ->
-          split (Filename.basename p :: l) (Filename.dirname p)
-    in
-    split [] (Filename.dirname path)
-  in
-  let rec mkdir l p =
-    let () = if not (ISys.file_exists p) then Unix.mkdir p ~perm:493 in
-    match l with [] -> () | d :: tl -> mkdir tl (Filename.concat p d)
-  in
-  mkdir splitted_root_dir Filename.dir_sep ;
-  let file_out = Out_channel.create path in
-  Out_channel.output_string file_out (string_of_float (Unix.time ())) ;
-  Out_channel.close file_out
+let cache_classname, is_classname_cached =
+  let translated_classnames = ref JBasics.ClassSet.empty in
+  let cache cn = translated_classnames := JBasics.ClassSet.add cn !translated_classnames
+  and is_cached cn = JBasics.ClassSet.mem cn !translated_classnames in
+  (cache, is_cached)
 
-
-let is_classname_cached cn = ISys.file_exists (path_of_cached_classname cn)
 
 let test_source_file_location source_file program cn node =
   let is_synthetic = function
@@ -185,26 +178,18 @@ let create_icfg source_file program tenv icfg cn node =
 
 (* returns true for the set of classes that are selected to be translated in the given
    program *)
-let should_capture program package_opt source_basename node =
-  let classname = Javalib.get_name node in
-  let match_package pkg cn =
-    match JTransType.package_to_string (JBasics.cn_package cn) with
-    | None ->
-        String.equal pkg ""
-    | Some found_pkg ->
-        String.equal found_pkg pkg
-  in
-  if JProgramDesc.mem_classmap classname program then
-    match Javalib.get_sourcefile node with
-    | None ->
-        false
-    | Some found_basename -> (
+let should_capture package_opt source_basename classname node =
+  match Javalib.get_sourcefile node with
+  | None ->
+      false
+  | Some found_basename -> (
+      String.equal found_basename source_basename
+      &&
       match package_opt with
       | None ->
-          String.equal found_basename source_basename
+          true
       | Some pkg ->
-          match_package pkg classname && String.equal found_basename source_basename )
-  else false
+          List.equal String.equal pkg (JBasics.cn_package classname) )
 
 
 (* Computes the control - flow graph and call - graph of a given source file.
@@ -212,20 +197,21 @@ let should_capture program package_opt source_basename node =
    source file. *)
 let compute_source_icfg program tenv source_basename package_opt source_file =
   let icfg = {JContext.cfg= Cfg.create (); tenv} in
-  let select test procedure cn node =
-    if test node then try procedure cn node with Bir.Subroutine -> ()
+  let select test procedure cn =
+    match JProgramDesc.lookup_node cn program with
+    | None ->
+        ()
+    | Some node -> (
+        if test cn node then try procedure cn node with Bir.Subroutine -> () )
   in
   (* we must set the java location for all classes in the source file before translation *)
   if Config.java_source_parser_experimental then
     JSourceLocations.collect_class_location program source_file
   else JSourceFileInfo.collect_class_location program source_file ;
-  let () =
-    JBasics.ClassMap.iter
-      (select
-         (should_capture program package_opt source_basename)
-         (create_icfg source_file program tenv icfg) )
-      (JProgramDesc.get_classmap program)
+  let create =
+    select (should_capture package_opt source_basename) (create_icfg source_file program tenv icfg)
   in
+  List.iter ~f:create (JProgramDesc.get_matching_class_names program source_basename) ;
   icfg.JContext.cfg
 
 

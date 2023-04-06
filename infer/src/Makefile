@@ -11,8 +11,6 @@ include $(ROOT_DIR)/Makefile.config
 INFER_MAIN = infer
 INFERTOP_MAIN = infertop
 INFERUNIT_MAIN = inferunit
-INFER_CREATE_TRACEVIEW_LINKS_MODULE = InferCreateTraceViewLinks
-INFER_CREATE_TRACEVIEW_LINKS_MAIN = $(INFER_CREATE_TRACEVIEW_LINKS_MODULE)
 CHECKCOPYRIGHT_MAIN = checkCopyright
 
 #### Clang declarations ####
@@ -20,9 +18,6 @@ CHECKCOPYRIGHT_MAIN = checkCopyright
 CLANG_PLUGIN_MIRROR = atd
 
 FCP_CLANG_OCAML_BUILD_DIR = $(FCP_CLANG_OCAML_DIR)/build
-
-CLANG_PLUGIN_BINARIES = $(addprefix $(FCP_CLANG_OCAML_BUILD_DIR), \
-                          clang_ast_converter clang_ast_named_decl_printer)
 
 CLANG_AST_BASE_NAME = clang_ast
 CLANG_ATDGEN_STUB_BASE = $(CLANG_PLUGIN_MIRROR)/$(CLANG_AST_BASE_NAME)
@@ -43,12 +38,6 @@ ifeq ($(ENABLE_OCAMLOPT_CUSTOM_CC),yes)
 EXTRA_CFLAGS += -cc,$(CC)
 endif
 
-# list of ocamlbuild targets common to all build targets -- native version
-INFER_CONFIG_TARGETS = $(INFER_MAIN).exe
-ifeq ($(IS_FACEBOOK_TREE),yes)
-INFER_CONFIG_TARGETS += $(INFER_CREATE_TRACEVIEW_LINKS_MAIN).exe
-endif
-
 OCAML_GENERATED_SOURCES = base/Version.ml
 
 ifeq ($(BUILD_C_ANALYZERS),yes)
@@ -67,7 +56,7 @@ GENERATED_FROM_AUTOCONF = dune.common ../dune-workspace base/Version.ml
 .PHONY: dune-workspace
 dune-workspace: ../dune-workspace
 
-GENERATED_DUNES += dune al/dune clang/dune integration/dune java/dune opensource/dune unit/dune
+GENERATED_DUNES += dune clang/dune integration/dune java/dune opensource/dune unit/dune
 
 SRC_BUILD_COMMON = $(GENERATED_FROM_AUTOCONF) $(GENERATED_DUNES) $(OCAML_SOURCES)
 ifeq ($(BUILD_C_ANALYZERS),yes)
@@ -82,6 +71,10 @@ ifneq ($(PLATFORM_ENV),)
 LDPATH=$(LIBRARY_PATH)
 endif
 
+.PHONY: fmt_dune
+fmt_dune:
+	BYTE_MODE=true $(DUNE_BUILD) @fmt --auto-promote
+
 .PHONY: runtest
 runtest: $(SRC_BUILD_COMMON) $(MAKEFILE_LIST)
 	BYTE_MODE=true LD_LIBRARY_PATH=$(LDPATH) $(DUNE_BUILD) @runtest --auto-promote
@@ -94,8 +87,7 @@ runtest_formatted: $(SRC_BUILD_COMMON) $(MAKEFILE_LIST) runtest
 .PHONY: test
 test: $(SRC_BUILD_COMMON) $(MAKEFILE_LIST) runtest_formatted
 	BYTE_MODE=true $(DUNE_BUILD) \
-	  $(patsubst %.exe, %.bc.exe, $(INFER_CONFIG_TARGETS)) \
-	  scripts/$(CHECKCOPYRIGHT_MAIN).bc.exe $(INFERUNIT_MAIN).bc.exe $(INFERTOP_MAIN).bc.exe
+	  $(INFER_MAIN).bc.exe scripts/$(CHECKCOPYRIGHT_MAIN).bc.exe $(INFERUNIT_MAIN).bc.exe $(INFERTOP_MAIN).bc.exe
 
 .PHONY: unit
 unit: runtest test
@@ -111,8 +103,12 @@ doc: $(SRC_BUILD_COMMON) $(MAKEFILE_LIST)
 	$(QUIET)cd .. && $(DUNE_BUILD) @doc
 
 .PHONY: check
-check: src_build_common
+check: $(SRC_BUILD_COMMON)
 	$(DUNE_BUILD) @check
+
+.PHONY: watch
+watch: $(SRC_BUILD_COMMON)
+	$(DUNE_BUILD) --watch --terminal-persistence=clear-on-rebuild $(INFER_MAIN).exe
 
 #### Aliases for building binaries ####
 
@@ -124,11 +120,11 @@ check: src_build_common
 
 .PHONY: $(INFER_BIN).exe
 $(INFER_BIN).exe: $(SRC_BUILD_COMMON) $(MAKEFILE_LIST)
-	$(QUIET)$(DUNE_BUILD) $(INFER_CONFIG_TARGETS)
+	$(QUIET)$(DUNE_BUILD) $(INFER_MAIN).exe
 
 .PHONY: $(INFER_BIN).bc.exe
 $(INFER_BIN).bc.exe: $(SRC_BUILD_COMMON) $(MAKEFILE_LIST)
-	$(QUIET)BYTE_MODE=true $(DUNE_BUILD) $(patsubst %.exe, %.bc.exe, $(INFER_CONFIG_TARGETS))
+	$(QUIET)BYTE_MODE=true $(DUNE_BUILD) $(INFER_MAIN).bc.exe
 
 .PHONY: $(INFERTOP_BIN) toplevel
 $(INFERTOP_BIN): $(SRC_BUILD_COMMON) $(MAKEFILE_LIST)
@@ -143,17 +139,11 @@ checkCopyright: $(CHECKCOPYRIGHT_BIN)
 .PHONY: infer
 infer: $(INFER_BIN).exe
 	$(INSTALL_PROGRAM) -C $(INFER_BIN).exe $(INFER_BIN)
-ifeq ($(IS_FACEBOOK_TREE),yes)
-	$(INSTALL_PROGRAM) -C $(INFER_CREATE_TRACEVIEW_LINKS_BIN).exe $(INFER_CREATE_TRACEVIEW_LINKS_BIN)
-endif
 	$(MAKE) $(INFER_BIN_ALIASES)
 
 .PHONY: byte
 byte: $(INFER_BIN).bc.exe
 	$(INSTALL_PROGRAM) -C $(INFER_BIN).bc.exe $(INFER_BIN)
-ifeq ($(IS_FACEBOOK_TREE),yes)
-	$(INSTALL_PROGRAM) -C $(INFER_CREATE_TRACEVIEW_LINKS_BIN).bc.exe $(INFER_CREATE_TRACEVIEW_LINKS_BIN)
-endif
 	$(MAKE) $(INFER_BIN_ALIASES)
 
 INFER_BIN_ALIASES = $(foreach alias,$(INFER_COMMANDS),$(BIN_DIR)/$(alias))
@@ -163,10 +153,7 @@ $(INFER_BIN_ALIASES): Makefile $(BIN_DIR)/$(INFER_MAIN)
 	$(QUIET)touch $@
 
 roots:=Infer
-ifeq ($(IS_FACEBOOK_TREE),yes)
-roots += $(INFER_CREATE_TRACEVIEW_LINKS_MODULE)
-endif
-clusters:=absint al atd backend base biabduction bufferoverrun checkers clang clang_stubs concurrency cost looper c_stubs deadcode integration IR istd java labs dotnet llvm nullsafe opensource pulse quandary scripts test_determinator topl unit
+clusters:=absint al atd backend base biabduction bufferoverrun checkers clang clang_stubs concurrency cost looper c_stubs datalog deadcode integration IR istd java labs dotnet llvm nullsafe opensource pulse python quandary scripts test_determinator topl unit
 
 ml_src_files:=$(shell find . -not -path "./*stubs*" -regex '\./[a-zA-Z].*\.ml\(i\)*')
 inc_flags:=$(foreach dir,$(shell find . -not -path './_build*' -type d),-I $(dir))
@@ -240,6 +227,7 @@ $(GENERATED_FROM_AUTOCONF): $(MAKEFILE_LIST)
 	  -e "s|@JAVA_MAJOR_VERSION[@]|$(JAVA_MAJOR_VERSION)|g" \
 	  -e "s|@BUILD_C_ANALYZERS[@]|$(BUILD_C_ANALYZERS)|g" \
 	  -e "s|@BUILD_ERLANG_ANALYZERS[@]|$(BUILD_ERLANG_ANALYZERS)|g" \
+	  -e "s|@BUILD_HACK_ANALYZERS[@]|$(BUILD_HACK_ANALYZERS)|g" \
 	  -e "s|@BUILD_JAVA_ANALYZERS[@]|$(BUILD_JAVA_ANALYZERS)|g" \
 	  -e "s|@BUILD_PLATFORM[@]|$(BUILD_PLATFORM)|g" \
 	  -e "s|@OPAMSWITCH[@]|$(OPAMSWITCH)|g" \
@@ -247,6 +235,7 @@ $(GENERATED_FROM_AUTOCONF): $(MAKEFILE_LIST)
 	  -e "s|@INFER_MAN_LAST_MODIFIED[@]|$(INFER_MAN_LAST_MODIFIED)|g" \
 	  $@.in > "$$TMPFILE"; \
 	cat "$$TMPFILE" > $@; \
+	echo -e "\n;;" >> $@; \
 	$(REMOVE) "$$TMPFILE"
 dune.common: dune.common.in
 ../dune-workspace: ../dune-workspace.in
@@ -256,7 +245,6 @@ $(GENERATED_DUNES): dune.common
 	$(QUIET)cat $+ > $@
 
 dune: dune.in
-al/dune: al/dune.in
 clang/dune: clang/dune.in
 integration/dune: integration/dune.in
 java/dune: java/dune.in
@@ -274,7 +262,7 @@ clean:
 	$(REMOVE) base/Version.ml.tmp.* dune.tmp.* dune-workspace.tmp.*
 #	be a bit more aggressive than needed with what we remove here so that stale binaries that
 #	only existed in previous versions get removed as well
-	$(REMOVE) $(INFER_BIN) $(INFER_BIN_ALIASES) $(INFER_CREATE_TRACEVIEW_LINKS_BIN)
+	$(REMOVE) $(INFER_BIN) $(INFER_BIN_ALIASES)
 	$(REMOVE) $(BIN_DIR)/llvm_sil
 	$(REMOVE) atd/*_{j,t,v}.ml{,i} atd/clang_ast_*
 	$(REMOVE) mod_dep.dot

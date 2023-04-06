@@ -20,11 +20,8 @@ type std_vector_function =
 
 val pp_std_vector_function : F.formatter -> std_vector_function -> unit
 
-type java_iterator_function = Remove
-
 type t =
   | CFree
-  | CustomFree of Procname.t
   | ConstantDereference of IntLit.t
   | CppDelete
   | CppDeleteArray
@@ -32,11 +29,7 @@ type t =
   | GoneOutOfScope of Pvar.t * Typ.t
   | OptionalEmpty
   | StdVector of std_vector_function
-  | JavaIterator of java_iterator_function
 [@@deriving compare, equal]
-
-val isl_equiv : t -> t -> bool
-(** check equality up to some ISL equivalences *)
 
 val pp : F.formatter -> t -> unit
 
@@ -47,6 +40,7 @@ type must_be_valid_reason =
   | InsertionIntoCollectionKey
   | InsertionIntoCollectionValue
   | SelfOfNonPODReturnMethod of Typ.t
+  | NullArgumentWhereNonNullExpected of string
 [@@deriving compare, equal]
 
 val pp_must_be_valid_reason : F.formatter -> must_be_valid_reason option -> unit

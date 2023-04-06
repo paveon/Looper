@@ -431,7 +431,7 @@ let drop_unchecked_params calls_this curr_pname proc_attributes params =
     | Some _ ->
         constructor_check_calls_this curr_pname calls_this pname ;
         (* Drop reference parameters to this and outer objects. *)
-        let is_hidden_parameter (n, _) =
+        let is_hidden_parameter (n, _, _) =
           Mangled.is_this n || Str.string_match (Str.regexp "$bcvar[0-9]+") (Mangled.to_string n) 0
         in
         let rec drop_n_args ntl =
@@ -540,14 +540,14 @@ let do_preconditions_check_not_null
           && not (InferredNullability.origin_is_fun_defined nullability)
         in
         ( if checks.eradicate && should_report then
-          let cond = Exp.BinOp (Binop.Ne, Exp.Lvar pvar, Exp.null) in
-          TypeErr.register_error analysis_data find_canonical_duplicate
-            (Condition_redundant
-               { is_always_true= true
-               ; loc
-               ; condition_descr= EradicateChecks.explain_expr tenv node cond
-               ; nonnull_origin= InferredNullability.get_simple_origin nullability } )
-            (Some instr_ref) ~nullsafe_mode ) ;
+            let cond = Exp.BinOp (Binop.Ne, Exp.Lvar pvar, Exp.null) in
+            TypeErr.register_error analysis_data find_canonical_duplicate
+              (Condition_redundant
+                 { is_always_true= true
+                 ; loc
+                 ; condition_descr= EradicateChecks.explain_expr tenv node cond
+                 ; nonnull_origin= InferredNullability.get_simple_origin nullability } )
+              (Some instr_ref) ~nullsafe_mode ) ;
         let previous_origin = InferredNullability.get_simple_origin nullability in
         let new_origin = TypeOrigin.InferredNonnull {previous_origin} in
         TypeState.add pvar
@@ -898,18 +898,18 @@ let rec check_condition_for_sil_prune
         ~is_assignment:false ~node ~original_node expr typestate loc
     in
     ( if with_cond_redundant_check then
-      (* We are about to set [pvar_expr] to nonnull. But what if it already is non-null?
-         This means the corresponding condition (initiated this PRUNE branch) was redudant.
-      *)
-      let typ, inferred_nullability =
-        typecheck_expr_simple analysis_data ~nullsafe_mode find_canonical_duplicate calls_this
-          checks original_node instr_ref typestate pvar_expr StdTyp.void
-          TypeOrigin.OptimisticFallback loc
-      in
-      if checks.eradicate then
-        EradicateChecks.check_condition_for_redundancy analysis_data ~is_always_true:true_branch
-          find_canonical_duplicate original_node pvar_expr typ inferred_nullability ~nullsafe_mode
-          idenv linereader loc instr_ref ) ;
+        (* We are about to set [pvar_expr] to nonnull. But what if it already is non-null?
+           This means the corresponding condition (initiated this PRUNE branch) was redudant.
+        *)
+        let typ, inferred_nullability =
+          typecheck_expr_simple analysis_data ~nullsafe_mode find_canonical_duplicate calls_this
+            checks original_node instr_ref typestate pvar_expr StdTyp.void
+            TypeOrigin.OptimisticFallback loc
+        in
+        if checks.eradicate then
+          EradicateChecks.check_condition_for_redundancy analysis_data ~is_always_true:true_branch
+            find_canonical_duplicate original_node pvar_expr typ inferred_nullability ~nullsafe_mode
+            idenv linereader loc instr_ref ) ;
     set_nonnull pvar_expr typestate ~descr
   in
   (* Assuming [expr] is a boolean, this is the branch where, according to PRUNE semantics,
@@ -965,7 +965,7 @@ let rec check_condition_for_sil_prune
     set_original_pvar_to_nonnull_in_typestate ~with_cond_redundant_check:true expr typestate
       ~descr:"`!= null` branch"
   in
-  match[@warning "-57"] c with
+  match[@warning "-ambiguous-var-in-pattern-guard"] c with
   | Exp.BinOp (Binop.Eq, Exp.Const (Const.Cint i), expr)
   | Exp.BinOp (Binop.Eq, expr, Exp.Const (Const.Cint i))
     when IntLit.iszero i ->
@@ -1137,7 +1137,7 @@ let typecheck_sil_call_function
                       Mangled.this
                     else Printf.sprintf "arg%d" i |> Mangled.from_string
                   in
-                  (arg, typ) )
+                  (arg, typ, Annot.Item.empty) )
                 etl_
             in
             let ret_type = Procname.Java.get_return_typ callee_pname_java in
@@ -1175,11 +1175,9 @@ let typecheck_sil_call_function
             let is_callee_in_trust_list =
               let caller_nullsafe_mode = NullsafeMode.of_procname tenv curr_pname in
               let callee_class = Procname.get_class_type_name callee_pname in
-              Option.value_map callee_class
-                ~f:(fun class_name ->
+              Option.exists callee_class ~f:(fun class_name ->
                   Typ.Name.Java.get_java_class_name_exn class_name
                   |> NullsafeMode.is_in_trust_list caller_nullsafe_mode )
-                ~default:false
             in
             Models.get_modelled_annotated_signature ~is_callee_in_trust_list tenv callee_attributes
       in

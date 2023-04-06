@@ -12,6 +12,10 @@ module Access : sig
   include PrettyPrintable.PrintableOrderedType with type t = AbstractValue.t HilExp.Access.t
 
   val equal : t -> t -> bool
+
+  val is_strong_access : Tenv.t -> t -> bool
+
+  val canonicalize : get_var_repr:(AbstractValue.t -> AbstractValue.t) -> t -> t
 end
 
 module AccessSet : Caml.Set.S with type elt = Access.t
@@ -20,7 +24,11 @@ module AddrTrace : sig
   type t = AbstractValue.t * ValueHistory.t
 end
 
-module Edges : RecencyMap.S with type key = Access.t and type value = AddrTrace.t
+module Edges : sig
+  include RecencyMap.S with type key = Access.t and type value = AddrTrace.t
+
+  val canonicalize : get_var_repr:(AbstractValue.t -> AbstractValue.t) -> t -> t
+end
 
 include PrettyPrintable.PPMonoMap with type key = AbstractValue.t and type value = Edges.t
 
@@ -32,7 +40,12 @@ val register_address : AbstractValue.t -> t -> t
 
 val add_edge : AbstractValue.t -> Access.t -> AddrTrace.t -> t -> t
 
-val find_edge_opt : AbstractValue.t -> Access.t -> t -> AddrTrace.t option
+val find_edge_opt :
+     ?get_var_repr:(AbstractValue.t -> AbstractValue.t)
+  -> AbstractValue.t
+  -> Access.t
+  -> t
+  -> AddrTrace.t option
 
 val has_edge : AbstractValue.t -> Access.t -> t -> bool
 

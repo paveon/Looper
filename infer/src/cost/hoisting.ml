@@ -19,15 +19,24 @@ module LoopHeadToHoistInstrs = Procdesc.NodeMap
  *     1. C is guaranteed to execute, i.e. N dominates all loop sources
  *     2. args are loop invariant *)
 
+let is_hoistable_call inv_vars node source_nodes idom ret_id =
+  (* Check condition (1); N dominates all loop sources *)
+  List.for_all ~f:(fun source -> Dominators.dominates idom node source) source_nodes
+  && (* Check condition (2); id should be invariant already *)
+  LoopInvariant.InvariantVars.mem (Var.of_id ret_id) inv_vars
+
+
 let add_if_hoistable inv_vars instr node idx source_nodes idom hoistable_calls =
   match instr with
-  | Sil.Call (((ret_id, _) as ret), Exp.Const (Const.Cfun pname), args, loc, _)
-    when (* Check condition (1); N dominates all loop sources *)
-         List.for_all ~f:(fun source -> Dominators.dominates idom node source) source_nodes
-         && (* Check condition (2); id should be invariant already *)
-         LoopInvariant.InvariantVars.mem (Var.of_id ret_id) inv_vars ->
+  | Sil.Call (((ret_id, _) as ret), Const (Cfun pname), args, loc, _)
+    when is_hoistable_call inv_vars node source_nodes idom ret_id ->
       HoistCalls.add
-        {pname; loc; node= ProcCfg.DefaultNode.to_instr idx node; args; ret}
+        {pname; loc; node= ProcCfg.DefaultNode.to_instr idx node; args; captured_vars= []; ret}
+        hoistable_calls
+  | Sil.Call (((ret_id, _) as ret), Closure {name= pname; captured_vars}, args, loc, _)
+    when is_hoistable_call inv_vars node source_nodes idom ret_id ->
+      HoistCalls.add
+        {pname; loc; node= ProcCfg.DefaultNode.to_instr idx node; args; captured_vars; ret}
         hoistable_calls
   | _ ->
       hoistable_calls
@@ -121,9 +130,7 @@ let checker
       CostInstantiate.get_cost_if_expensive analysis_data
     else fun _ -> None
   in
-  let get_callee_purity callee_pname =
-    match analyze_dependency callee_pname with Some (_, (_, purity, _)) -> purity | _ -> None
-  in
+  let get_callee_purity callee_pname = Option.bind ~f:snd3 (analyze_dependency callee_pname) in
   report_errors proc_desc tenv err_log get_callee_purity reaching_defs_invariant_map
     loop_head_to_source_nodes extract_cost_if_expensive ;
   ()

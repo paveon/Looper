@@ -9,6 +9,8 @@ open! IStd
 module F = Format
 open PulseBasicInterface
 module AbductiveDomain = PulseAbductiveDomain
+module DecompilerExpr = PulseDecompilerExpr
+module Diagnostic = PulseDiagnostic
 module LatentIssue = PulseLatentIssue
 
 (* The type variable is needed to distinguish summaries from plain states.
@@ -17,16 +19,16 @@ module LatentIssue = PulseLatentIssue
    normalized them and don't need to normalize them again. *)
 type 'abductive_domain_t base_t =
   | ContinueProgram of 'abductive_domain_t
-  | ExitProgram of AbductiveDomain.summary
-  | AbortProgram of AbductiveDomain.summary
-  | LatentAbortProgram of {astate: AbductiveDomain.summary; latent_issue: LatentIssue.t}
+  | ExceptionRaised of 'abductive_domain_t
+  | ExitProgram of AbductiveDomain.Summary.t
+  | AbortProgram of AbductiveDomain.Summary.t
+  | LatentAbortProgram of {astate: AbductiveDomain.Summary.t; latent_issue: LatentIssue.t}
   | LatentInvalidAccess of
-      { astate: AbductiveDomain.summary
-      ; address: AbstractValue.t
+      { astate: AbductiveDomain.Summary.t
+      ; address: DecompilerExpr.t
       ; must_be_valid: (Trace.t * Invalidation.must_be_valid_reason option[@yojson.opaque])
       ; calling_context: ((CallEvent.t * Location.t) list[@yojson.opaque]) }
-  | ISLLatentMemoryError of AbductiveDomain.summary
-[@@deriving equal, compare, yojson_of]
+[@@deriving equal, compare, yojson_of, variants]
 
 type t = AbductiveDomain.t base_t
 
@@ -36,71 +38,76 @@ let leq ~lhs ~rhs =
   phys_equal lhs rhs
   ||
   match (lhs, rhs) with
-  | AbortProgram astate1, AbortProgram astate2
-  | ExitProgram astate1, ExitProgram astate2
-  | ISLLatentMemoryError astate1, ISLLatentMemoryError astate2 ->
-      AbductiveDomain.leq ~lhs:(astate1 :> AbductiveDomain.t) ~rhs:(astate2 :> AbductiveDomain.t)
+  | AbortProgram astate1, AbortProgram astate2 | ExitProgram astate1, ExitProgram astate2 ->
+      AbductiveDomain.Summary.leq ~lhs:astate1 ~rhs:astate2
+  | ExceptionRaised astate1, ExceptionRaised astate2
   | ContinueProgram astate1, ContinueProgram astate2 ->
       AbductiveDomain.leq ~lhs:astate1 ~rhs:astate2
   | ( LatentAbortProgram {astate= astate1; latent_issue= issue1}
     , LatentAbortProgram {astate= astate2; latent_issue= issue2} ) ->
-      LatentIssue.equal issue1 issue2
-      && AbductiveDomain.leq ~lhs:(astate1 :> AbductiveDomain.t) ~rhs:(astate2 :> AbductiveDomain.t)
+      LatentIssue.equal issue1 issue2 && AbductiveDomain.Summary.leq ~lhs:astate1 ~rhs:astate2
   | ( LatentInvalidAccess {astate= astate1; address= v1; must_be_valid= _}
     , LatentInvalidAccess {astate= astate2; address= v2; must_be_valid= _} ) ->
-      AbstractValue.equal v1 v2
-      && AbductiveDomain.leq ~lhs:(astate1 :> AbductiveDomain.t) ~rhs:(astate2 :> AbductiveDomain.t)
+      DecompilerExpr.equal v1 v2 && AbductiveDomain.Summary.leq ~lhs:astate1 ~rhs:astate2
   | _ ->
       false
 
 
-let pp fmt = function
+let pp_ pp_abductive_domain_t fmt = function
   | AbortProgram astate ->
-      F.fprintf fmt "{AbortProgram %a}" AbductiveDomain.pp (astate :> AbductiveDomain.t)
+      F.fprintf fmt "{AbortProgram %a}" AbductiveDomain.Summary.pp astate
   | ContinueProgram astate ->
-      AbductiveDomain.pp fmt astate
+      pp_abductive_domain_t fmt astate
+  | ExceptionRaised astate ->
+      F.fprintf fmt "{ExceptionRaised %a}" pp_abductive_domain_t astate
   | ExitProgram astate ->
-      F.fprintf fmt "{ExitProgram %a}" AbductiveDomain.pp (astate :> AbductiveDomain.t)
-  | ISLLatentMemoryError astate ->
-      F.fprintf fmt "{ISLLatentMemoryError %a}" AbductiveDomain.pp (astate :> AbductiveDomain.t)
+      F.fprintf fmt "{ExitProgram %a}" AbductiveDomain.Summary.pp astate
   | LatentAbortProgram {astate; latent_issue} ->
       let diagnostic = LatentIssue.to_diagnostic latent_issue in
       let message = Diagnostic.get_message diagnostic in
       let location = Diagnostic.get_location diagnostic in
-      F.fprintf fmt "{LatentAbortProgram(%a: %s) %a}" Location.pp location message
-        AbductiveDomain.pp
-        (astate :> AbductiveDomain.t)
+      F.fprintf fmt "{LatentAbortProgram(%a: %s)@ %a@ %a}" Location.pp location message
+        LatentIssue.pp latent_issue AbductiveDomain.Summary.pp astate
   | LatentInvalidAccess {astate; address; must_be_valid= _} ->
-      F.fprintf fmt "{LatentInvalidAccess(%a) %a}" AbstractValue.pp address AbductiveDomain.pp
-        (astate :> AbductiveDomain.t)
+      F.fprintf fmt "{LatentInvalidAccess(%a) %a}" DecompilerExpr.pp address
+        AbductiveDomain.Summary.pp astate
 
 
-(* do not export this function as there lies wickedness: clients should generally care about what
-   kind of state they are manipulating so let's not encourage them not to *)
-let get_astate : t -> AbductiveDomain.t = function
-  | ContinueProgram astate ->
-      astate
-  | ExitProgram astate
-  | AbortProgram astate
-  | LatentAbortProgram {astate}
-  | LatentInvalidAccess {astate}
-  | ISLLatentMemoryError astate ->
-      (astate :> AbductiveDomain.t)
+let pp fmt exec_state = pp_ AbductiveDomain.pp fmt exec_state
 
+type summary = AbductiveDomain.Summary.t base_t [@@deriving compare, equal, yojson_of]
 
-let is_unsat_cheap exec_state = PathCondition.is_unsat_cheap (get_astate exec_state).path_condition
-
-type summary = AbductiveDomain.summary base_t [@@deriving compare, equal, yojson_of]
+let pp_summary fmt exec_summary = pp_ AbductiveDomain.Summary.pp fmt exec_summary
 
 let equal_fast exec_state1 exec_state2 =
   phys_equal exec_state1 exec_state2
   ||
   match (exec_state1, exec_state2) with
-  | AbortProgram astate1, AbortProgram astate2
-  | ExitProgram astate1, ExitProgram astate2
-  | ISLLatentMemoryError astate1, ISLLatentMemoryError astate2 ->
+  | AbortProgram astate1, AbortProgram astate2 | ExitProgram astate1, ExitProgram astate2 ->
       phys_equal astate1 astate2
   | ContinueProgram astate1, ContinueProgram astate2 ->
       phys_equal astate1 astate2
   | _ ->
       false
+
+
+let is_normal (exec_state : t) : bool =
+  match exec_state with ExceptionRaised _ -> false | _ -> true
+
+
+let is_exceptional (exec_state : t) : bool =
+  match exec_state with ExceptionRaised _ -> true | _ -> false
+
+
+let is_executable (exec_state : t) : bool =
+  match exec_state with ContinueProgram _ | ExceptionRaised _ -> true | _ -> false
+
+
+let exceptional_to_normal : t -> t = function
+  | ExceptionRaised astate ->
+      ContinueProgram astate
+  | x ->
+      x
+
+
+let to_name = Variants_of_base_t.to_name

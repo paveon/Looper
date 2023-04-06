@@ -50,8 +50,8 @@ endif
 # Note that we run find under _build directory. Since we copy some
 # sources from subfolders to src/ folder to avoid duplicates we use
 # $(DEPTH_ONE) and iteration over main and library folders.
-LIBRARY_FOLDERS = . ./IR ./absint ./al ./atd ./backend ./base ./biabduction ./bufferoverrun ./c_stubs ./checkers ./clang ./clang/unit ./concurrency ./cost ./erlang ./integration ./istd ./java ./labs ./dotnet ./nullsafe ./nullsafe/unit ./pulse ./quandary ./scripts ./test_determinator ./topl ./unit
-INCLUDE_FOLDERS = -I IR -I absint -I al -I atd -I backend -I base -I biabduction -I bufferoverrun -I c_stubs -I checkers -I clang -I clang/unit -I concurrency -I cost -I erlang -I integration -I istd -I java -I labs -I dotnet -I nullsafe -I nullsafe/unit -I pulse -I quandary -I scripts -I test_determinator -I topl -I unit
+LIBRARY_FOLDERS = . ./IR  ./textual ./absint ./atd ./backend ./base ./biabduction ./bufferoverrun ./c_stubs ./checkers ./clang ./clang/unit ./concurrency ./cost ./datalog ./erlang ./integration ./istd ./java ./labs ./dotnet ./nullsafe ./nullsafe/unit ./pulse ./quandary ./scripts ./test_determinator ./topl ./unit
+INCLUDE_FOLDERS = -I IR -I textual -I textual/unit -I absint -I atd -I backend -I base -I biabduction -I bufferoverrun -I c_stubs -I checkers -I clang -I clang/unit -I concurrency -I cost -I datalog -I erlang -I integration -I istd -I java -I labs -I nullsafe -I nullsafe/unit -I pulse -I quandary -I scripts -I test_determinator -I topl -I unit
 
 ml_src_files = $(shell \
   cd $(INFER_BUILD_DIR); \
@@ -74,12 +74,21 @@ ml_src_files_without_mli:=$(shell \
 .PHONY: depend
 depend:
 	cd $(INFER_BUILD_DIR) && \
-	ocamldep -native \
+	ocamldep -native -one-line \
 	  $(INCLUDE_FOLDERS) \
 	  $(ml_src_files) $(mli_src_files) > $(DEADCODE_DIR)/.depend
+#	For each module foo, union the dependencies of foo.cmx and foo.cmi together. This is because
+#	flatten_infer will include a .ml file *together* with its corresponding .mli file, so will
+#	need the dependencies of *both* of these files to have been dealt with before we include
+#	*either* of these files.
+#
+#	This proceeds in two steps: first remove any "foo.cmi" dep from "foo.cmx", then rename all
+#	.cmi to .cmx. The first step avoids introducing a circular dependency in the second step.
+	$(GNU_SED) -i .depend \
+	  -e 's/^\([^ :]\+\)\.cmx[ ]*: \(.*\)\1\.cmi/\1.cmx: \2/' \
+	  -e 's/\.cmi\b/.cmx/g'
 
-# circular dependency... not sure how to fix properly
-%.cmi: %.cmx
+%.cmx:
 #	deal with the .ml *and* the .mli at the same time: when all the modules are inlined in one
 #	file, you need the module value to be defined before you can refer to it, even in
 #	signatures. Because of this, the order given by ocamldep is not enough to avoid "Unbound
@@ -98,11 +107,10 @@ depend:
 	cat $(INFER_BUILD_DIR)/$*.mli >> $(ALL_INFER_IN_ONE_FILE_ML)
 	$(QUIET)echo "  end end " >> $(ALL_INFER_IN_ONE_FILE_ML)
 #	silence "unused module" warnings for executables
-	$(QUIET)if [ $@ = "infer.cmi" ] \
-	        || [ $@ = "inferunit.cmi" ] \
-	        || [ $@ = "InferCreateTraceViewLinks.cmi" ] \
+	$(QUIET)if [ $@ = "infer.cmx" ] \
+	        || [ $@ = "inferunit.cmx" ] \
 	        ; then \
-	  echo '[@warning "-60"] ' >> $(ALL_INFER_IN_ONE_FILE_ML); \
+	  echo '[@warning "-unused-module"] ' >> $(ALL_INFER_IN_ONE_FILE_ML); \
 	fi
 	$(QUIET)echo "(* END OF SIGNATURE $*.mli *)" >> $(ALL_INFER_IN_ONE_FILE_ML)
 	$(QUIET)echo >> $(ALL_INFER_IN_ONE_FILE_ML)
@@ -119,12 +127,11 @@ depend:
 	$(QUIET)echo "  end end" >> $(ALL_INFER_IN_ONE_FILE_ML)
 	$(QUIET)echo "(* END OF MODULE $*.ml *)" >> $(ALL_INFER_IN_ONE_FILE_ML)
 #	silence "unused module" warnings for executables
-	$(QUIET)if [ $@ = "infer.cmi" ] \
-	        || [ $@ = "inferunit.cmi" ] \
-	        || [ $@ = "InferCreateTraceViewLinks.cmi" ] \
-	        || [ $@ = "scripts/checkCopyright.cmi" ] \
+	$(QUIET)if [ $@ = "infer.cmx" ] \
+	        || [ $@ = "inferunit.cmx" ] \
+	        || [ $@ = "scripts/checkCopyright.cmx" ] \
 	        ; then \
-	  echo '[@warning "-60"] ' >> $(ALL_INFER_IN_ONE_FILE_ML);\
+	  echo '[@warning "-unused-module"] ' >> $(ALL_INFER_IN_ONE_FILE_ML);\
 	fi
 	$(QUIET)echo >> $(ALL_INFER_IN_ONE_FILE_ML)
 	$(QUIET)echo "$*.mli" >> $(ALL_MLI_FILES_COPIED)
@@ -144,9 +151,6 @@ $(ml_src_files_without_mli:.ml=.cmx):
 	$(QUIET)echo >> $(ALL_INFER_IN_ONE_FILE_ML)
 	$(QUIET)echo $@ | $(GNU_SED) -e 's/\.cmx$$/.ml/' >> $(ALL_ML_FILES_COPIED)
 
-%.cmx:
-	$(QUIET)echo skipping '$@'
-
 -include .depend
 
 # Concatenate all source files of infer into a single file. Assume that all source files are
@@ -154,7 +158,7 @@ $(ml_src_files_without_mli:.ml=.cmx):
 # root .cmx to include all the code. Any code not used in the construction of these "root .cmx" will
 # be considered dead.
 .PHONY: flatten_infer
-flatten_infer: infer.cmx inferunit.cmx InferCreateTraceViewLinks.cmx scripts/checkCopyright.cmx
+flatten_infer: infer.cmx inferunit.cmx scripts/checkCopyright.cmx
 	$(QUIET)echo "see results in $(ALL_INFER_IN_ONE_FILE_ML)"
 
 # copy dune.in to dune only when needed to avoid dune trying to build
@@ -166,9 +170,10 @@ dune: dune.in
 detect_dead_code: dune
 #	create a dummy implementation file to keep dune happy, as we are about to generate the
 #	dune file for this directory
-	touch $(ALL_INFER_IN_ONE_FILE_ML) $(ALL_INFER_IN_ONE_FILE_ML:.ml=.mli)
+	printf "" > $(ALL_INFER_IN_ONE_FILE_ML)
+	printf "" > $(ALL_INFER_IN_ONE_FILE_ML:.ml=.mli)
 #	needed to get the generated code for the lexers and parsers in ../_build
-	$(MAKE) -C ..
+	$(MAKE) -C .. check
 	$(MAKE) depend
 #	Need to be sequential to avoid getting a garbled file. Need to re-include .depend as it may
 #	have changed. For both of these reasons, run another `make`.
@@ -180,7 +185,7 @@ detect_dead_code: dune
 	sort -u "$$tmp_file_copied" > $(ALL_ML_FILES_COPIED); \
 	rm "$$tmp_file_copied"
 #	build and get dead code warnings
-	$(DUNE_BUILD) all_infer_in_one_file.bc
+	$(DUNE_BUILD) @check
 	$(REMOVE) dune
 	$(MAKE) -j 1 detect_dead_src_file
 
@@ -237,4 +242,3 @@ detect_dead_src_file:
 clean:
 	$(REMOVE) .depend *.ml *.mli $(ALL_ML_FILES) $(ALL_MLI_FILES) $(ALL_ML_FILES_COPIED) \
 	  $(ALL_MLI_FILES_COPIED) dune
-

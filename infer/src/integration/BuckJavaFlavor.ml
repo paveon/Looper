@@ -14,7 +14,7 @@ let capture build_cmd =
   L.progress "Querying buck for java flavor capture targets...@." ;
   let time0 = Mtime_clock.counter () in
   let BuckFlavors.{command; rev_not_targets; targets} =
-    BuckFlavors.add_flavors_to_buck_arguments JavaFlavor ~extra_flavors:[] buck_cmd
+    BuckFlavors.add_flavors_to_buck_arguments Java ~extra_flavors:[] buck_cmd
   in
   L.progress "Found %d java flavor capture targets in %a.@." (List.length targets) Mtime.Span.pp
     (Mtime_clock.count time0) ;
@@ -24,7 +24,7 @@ let capture build_cmd =
   in
   let updated_buck_cmd =
     (* make buck tell us where in buck-out are the capture directories for merging *)
-    (prog :: command :: "--build-report" :: build_report_file :: Buck.config JavaFlavor)
+    (prog :: command :: "--build-report" :: build_report_file :: Buck.config Java V1)
     @ Config.buck_build_args_no_inline
     @ Buck.store_args_in_file ~identifier:"java_flavor_build" all_args
   in
@@ -33,11 +33,12 @@ let capture build_cmd =
   if List.is_empty targets then L.external_warning "WARNING: found no buck targets to analyze.@."
   else
     let time0 = Mtime_clock.counter () in
-    Buck.wrap_buck_call ~label:"build" updated_buck_cmd |> ignore ;
-    let infer_deps_lines = BuckBuildReport.parse_infer_deps ~build_report_file in
+    Buck.wrap_buck_call ~label:"build" V1 updated_buck_cmd |> ignore ;
+    let infer_deps_lines =
+      BuckBuildReport.parse_infer_deps ~root:Config.project_root ~build_report_file
+    in
     let infer_deps = ResultsDir.get_path CaptureDependencies in
     Utils.with_file_out infer_deps ~f:(fun out_channel ->
         Out_channel.output_lines out_channel infer_deps_lines ) ;
     L.progress "Java flavor capture took %a.@." Mtime.Span.pp (Mtime_clock.count time0) ;
-    ResultsDir.RunState.set_merge_capture true ;
     ()

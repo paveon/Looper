@@ -5,26 +5,16 @@
  * LICENSE file in the root directory of this source tree.
  *)
 
-module ConfigName : sig
-  type t
+val get_config : is_param:'is_param -> 'exp -> 'config_name option
 
-  val compare : t -> t -> int
-
-  val equal : t -> t -> bool
-
-  val pp : Format.formatter -> t -> unit
-end
-
-val get_config : 'exp -> 'config_name option
-
-val get_config_check : 'tenv -> 'pname -> 'args -> 'a option
-
-val is_marker_start_java : 'tenv -> 'pname -> bool
-
-val is_marker_end_java : 'tenv -> 'pname -> bool
-
-val is_marker_start_objc : 'pname -> bool
-
-val is_marker_end_objc : 'pname -> bool
+val get_config_check : is_param:'is_param -> 'tenv -> 'pname -> 'args -> 'a option
 
 val is_lazy_instance : 'pname -> bool
+
+type known_expensiveness = KnownCheap | KnownExpensive
+
+module ExpensivenessModel : sig
+  val dispatcher : 'tenv -> 'pname -> 'args -> 'known_expensivene option
+end
+
+val action_message : string

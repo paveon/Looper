@@ -17,19 +17,18 @@ module CProcname : sig
   (** Given decl, return its procname. This function should be used for all procedures present in
       original AST *)
 
-  val from_decl_for_linters : Clang_ast_t.decl -> Procname.t
-  (** This is used for bug hashing for linters. In ObjC the method names contain the parameter
-      names, thus if people add new parameters, any bug about the method will be considered
-      different which means reporting on unchanged code. So, in the ObjC method case, we create the
-      method name only based on the first part of the name without the parameters *)
-
   (** WARNING: functions from this module should not be used if full decl is available in AST *)
   module NoAstDecl : sig
     val c_function_of_string : Tenv.t -> string -> Procname.t
 
     val cpp_method_of_string : Tenv.t -> Typ.Name.t -> string -> Procname.t
 
-    val objc_method_of_string_kind : Typ.Name.t -> string -> Procname.ObjC_Cpp.kind -> Procname.t
+    val objc_method_of_string_kind :
+         Typ.Name.t
+      -> string
+      -> Procname.ObjC_Cpp.kind
+      -> Procname.Parameter.clang_parameter list
+      -> Procname.t
   end
 end
 
@@ -49,11 +48,14 @@ val class_from_pointer_type : Tenv.t -> Clang_ast_t.qual_type -> Typ.Name.t
 
 val get_type_from_expr_info : Clang_ast_t.expr_info -> Tenv.t -> Typ.t
 
+val get_template_args :
+  Tenv.t -> Clang_ast_t.template_instantiation_arg_info list -> Typ.template_arg list
+
 val method_signature_of_decl :
      Tenv.t
   -> Clang_ast_t.decl
   -> ?block_return_type:Clang_ast_t.qual_type
-  -> ?passed_as_noescape_block_to:Procname.t option
+  -> ?block_as_arg_attributes:ProcAttributes.block_as_arg_attributes option
   -> Procname.t
   -> CMethodSignature.t
 
@@ -61,7 +63,7 @@ val method_signature_body_of_decl :
      Tenv.t
   -> Clang_ast_t.decl
   -> ?block_return_type:Clang_ast_t.qual_type
-  -> ?passed_as_noescape_block_to:Procname.t option
+  -> ?block_as_arg_attributes:ProcAttributes.block_as_arg_attributes option
   -> Procname.t
   -> CMethodSignature.t * Clang_ast_t.stmt option * CFrontend_config.instr_type list
 

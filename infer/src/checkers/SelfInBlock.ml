@@ -227,31 +227,33 @@ module Mem = struct
     {astate with vars}
 
 
+  let pvar_same_name a b = Mangled.equal (Pvar.get_name a) (Pvar.get_name b)
+
   let is_captured_self attributes pvar =
-    let pvar_name = Pvar.get_name pvar in
     Pvar.is_self pvar
     && List.exists
-         ~f:(fun {CapturedVar.name= captured; typ} ->
-           Mangled.equal captured pvar_name && Typ.is_strong_pointer typ )
+         ~f:(fun {CapturedVar.pvar= captured; typ} ->
+           pvar_same_name captured pvar && Typ.is_strong_pointer typ )
          attributes.ProcAttributes.captured
 
+
+  let lowercase_name pvar = String.lowercase (Mangled.to_string (Pvar.get_name pvar))
 
   (* The variable is captured in the block, contains self in the name, is not self, and it's strong. *)
   let is_captured_strong_self attributes pvar =
     (not (Pvar.is_self pvar))
     && List.exists
-         ~f:(fun {CapturedVar.name= captured; typ} ->
-           Typ.is_strong_pointer typ
-           && Mangled.equal captured (Pvar.get_name pvar)
-           && String.is_suffix ~suffix:"self" (String.lowercase (Mangled.to_string captured)) )
+         ~f:(fun {CapturedVar.pvar= captured; typ} ->
+           Typ.is_strong_pointer typ && pvar_same_name captured pvar
+           && String.is_suffix ~suffix:"self" (lowercase_name captured) )
          attributes.ProcAttributes.captured
 
 
   let is_captured_weak_self attributes pvar =
     List.exists
-      ~f:(fun {CapturedVar.name= captured; typ} ->
-        Mangled.equal captured (Pvar.get_name pvar)
-        && String.is_substring ~substring:"self" (String.lowercase (Mangled.to_string captured))
+      ~f:(fun {CapturedVar.pvar= captured; typ} ->
+        pvar_same_name captured pvar
+        && String.is_substring ~substring:"self" (lowercase_name captured)
         && Typ.is_weak_pointer typ )
       attributes.ProcAttributes.captured
 
@@ -349,7 +351,7 @@ module TransferFunctions = struct
   let get_annotations attributes_opt =
     match attributes_opt with
     | Some proc_attrs ->
-        Some proc_attrs.ProcAttributes.method_annotation.params
+        Some (List.map proc_attrs.ProcAttributes.formals ~f:trd3)
     | None ->
         None
 
@@ -501,8 +503,14 @@ let report_weakself_multiple_issue proc_desc err_log domain (weakSelf1 : DomainD
 let report_captured_strongself_issue proc_desc err_log domain (capturedStrongSelf : DomainData.t)
     report_captured_strongself =
   let attributes = Procdesc.get_attributes proc_desc in
+  let passed_as_noescape_block =
+    Option.value_map
+      ~f:(fun ({passed_as_noescape_block} : ProcAttributes.block_as_arg_attributes) ->
+        passed_as_noescape_block )
+      ~default:false attributes.block_as_arg_attributes
+  in
   if
-    Option.is_none attributes.ProcAttributes.passed_as_noescape_block_to
+    (not passed_as_noescape_block)
     && not (Pvar.Set.mem capturedStrongSelf.pvar report_captured_strongself)
   then (
     let report_captured_strongself =
@@ -534,11 +542,11 @@ let report_issues proc_desc err_log domain =
     | DomainData.WEAK_SELF ->
         let reported_weak_self_in_noescape_block =
           let attributes = Procdesc.get_attributes proc_desc in
-          match attributes.ProcAttributes.passed_as_noescape_block_to with
-          | Some procname ->
+          match attributes.ProcAttributes.block_as_arg_attributes with
+          | Some {passed_to= procname; passed_as_noescape_block= true} ->
               report_weakself_in_no_escape_block_issues proc_desc err_log domain domain_data
                 procname result.reported_weak_self_in_noescape_block
-          | None ->
+          | _ ->
               result.reported_weak_self_in_noescape_block
         in
         { result with

@@ -174,7 +174,7 @@ module TransferFunctions (CFG : ProcCfg.S) = struct
         Some (make_ret_attr (Looper ForUIThread))
       else None
     in
-    let get_callee_summary () = analyze_dependency callee |> Option.map ~f:snd in
+    let get_callee_summary () = analyze_dependency callee in
     let treat_handler_constructor () =
       if StarvationModels.is_handler_constructor tenv callee actuals then
         match actuals_acc_exps with
@@ -408,12 +408,12 @@ let set_initial_attributes ({InterproceduralAnalysis.proc_desc} as interproc) as
   let procname = Procdesc.get_proc_name proc_desc in
   if not Config.starvation_whole_program then astate
   else
-    match procname with
+    match Procname.base_of procname with
     | Procname.Java java_pname when Procname.Java.is_class_initializer java_pname ->
         (* we are analyzing the class initializer, don't go through on-demand again *)
         astate
-    | Procname.Java java_pname
-      when Procname.Java.(is_constructor java_pname || is_static java_pname) ->
+    | Procname.Java java_pname when Procname.Java.(is_constructor java_pname || is_static java_pname)
+      ->
         (* analyzing a constructor or static method, so we need the attributes established by the
            class initializer *)
         set_class_init_attributes interproc astate
@@ -429,7 +429,7 @@ let analyze_procedure ({InterproceduralAnalysis.proc_desc; tenv} as interproc) =
   let procname = Procdesc.get_proc_name proc_desc in
   if StarvationModels.should_skip_analysis tenv procname [] then None
   else
-    let formals = FormalMap.make proc_desc in
+    let formals = FormalMap.make (Procdesc.get_attributes proc_desc) in
     let proc_data = {interproc; formals} in
     let loc = Procdesc.get_loc proc_desc in
     let set_lock_state_for_synchronized_proc astate =
@@ -607,7 +607,7 @@ end = struct
         loc_map SourceFile.Map.empty
     in
     SourceFile.Map.iter
-      (fun file loc_map -> issue_log_of loc_map |> IssueLog.store ~entry:StarvationIssues ~file)
+      (fun file loc_map -> issue_log_of loc_map |> IssueLog.store ~checker:Starvation ~file)
       source_map
 end
 
@@ -635,7 +635,7 @@ let should_report_deadlock_on_current_proc current_elem endpoint_elem =
 
 
 let should_report attrs =
-  match ProcAttributes.get_proc_name attrs with
+  match Procname.base_of (ProcAttributes.get_proc_name attrs) with
   | Procname.Java java_pname ->
       (not (Procname.Java.is_autogen_method java_pname))
       && not (Procname.Java.is_class_initializer java_pname)

@@ -22,20 +22,26 @@ void even_cannot_be_odd_parameter_ok(int x) {
   }
 }
 
-void even_cannot_be_odd_float_conv_FP() {
+void even_cannot_be_odd_float_conv_ok() {
   int x = random();
-  // two causes here: 1) Pulse represents floats as arbitrary values
-  // and 2) the int conversion is omitted by the frontend
   if (x + x == (int)5.5) {
     int* p = NULL;
     *p = 42;
   }
 }
 
-void int_conversions_feasible_bad() {
+void FN_even_can_be_even_float_conv_bad() {
+  int x = random();
+  if (x + x == (int)6.5) {
+    int* p = NULL;
+    *p = 42;
+  }
+}
+
+void FN_int_conversions_feasible_bad() {
   int x = random();
   int y = 3 / 2;
-  int z = (int)1.234;
+  int z = (int)1.234; // SIL ignores the cast so we get a contradiction here
   int w = x / 2;
   if (w == 5 && x == 10 && y == 1 && z == 1) {
     int* p = NULL;
@@ -56,3 +62,22 @@ void FPlatent_even_cannot_be_odd_fields_ok(struct s* x) {
     *p = 42;
   }
 }
+
+void float_div_bad() {
+  float y = 5.0 / 2.0;
+  if (y != 2.0) { // always true
+    int* p = NULL;
+    *p = 42;
+  }
+}
+
+void float_comparison_latent(float f) {
+  if (2 + f < 2.2) {
+    int* p = NULL;
+    *p = 42;
+  }
+}
+
+// FN because x > y is translated as x >= y+1 by pulse, which is not
+// valid for floats
+void FN_call_float_comparison_bad() { float_comparison_latent(0.1); }

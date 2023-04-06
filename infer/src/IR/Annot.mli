@@ -45,13 +45,15 @@ val pp : F.formatter -> t -> unit
 
 module Item : sig
   (** Annotation for one item: a list of annotations with visibility. *)
-  type nonrec t = (t * bool) list [@@deriving compare, equal]
+  type nonrec t = t list [@@deriving compare, equal]
 
   val pp : F.formatter -> t -> unit
   (** Pretty print an item annotation. *)
 
   val empty : t
   (** Empty item annotation. *)
+
+  val is_empty : t -> bool
 
   val is_final : t -> bool
   (** Check if final annotation is included in. *)
@@ -63,18 +65,4 @@ module Class : sig
   val objc : Item.t
 
   val cpp : Item.t
-end
-
-module Method : sig
-  (** Annotation for a method: return value and list of parameters. *)
-  type t = {return: Item.t; params: Item.t list}
-
-  val empty : t
-  (** Empty method annotation. *)
-
-  val is_empty : t -> bool
-  (** Check if the method annotation is empty. *)
-
-  val pp : string -> F.formatter -> t -> unit
-  (** Pretty print a method annotation. *)
 end

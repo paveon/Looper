@@ -14,7 +14,7 @@ open! IStd
 module type NodeCommonS = sig
   type t
 
-  type id
+  type id [@@deriving compare, equal]
 
   val kind : t -> Procdesc.Node.nodekind
 
@@ -27,8 +27,6 @@ module type NodeCommonS = sig
   val underlying_node : t -> Procdesc.Node.t
 
   val of_underlying_node : Procdesc.Node.t -> t
-
-  val compare_id : id -> id -> int
 
   val pp_id : Format.formatter -> id -> unit
 
@@ -45,6 +43,8 @@ module InstrNode : sig
     NodeCommonS
       with type t = Procdesc.Node.t * instr_index
        and type id = Procdesc.Node.id * instr_index
+
+  val equal : t -> t -> bool
 
   val compare : t -> t -> int
 
@@ -89,6 +89,8 @@ module type S = sig
 
   val exit_node : t -> Node.t
 
+  val exn_sink_node : t -> Node.t option
+
   val proc_desc : t -> Procdesc.t
 
   val fold_nodes : (t, Node.t, 'accum) Container.fold
@@ -106,12 +108,17 @@ module DefaultNode : Node with type t = Procdesc.Node.t and type id = Procdesc.N
 module Normal :
   S with type t = Procdesc.t and module Node = DefaultNode and type instrs_dir = Instrs.not_reversed
 
-(** Forward CFG with exceptional control-flow *)
-module Exceptional :
+module type ExceptionalS =
   S
     with type t = Procdesc.t * DefaultNode.t list Procdesc.IdMap.t
      and module Node = DefaultNode
      and type instrs_dir = Instrs.not_reversed
+
+(** Forward CFG with exceptional control-flow *)
+module Exceptional : ExceptionalS
+
+(** Forward CFG with exceptional control-flow, but no edge from exceptions sink to exit node. *)
+module ExceptionalNoSinkToExitEdge : ExceptionalS
 
 (** Wrapper that reverses the direction of the CFG *)
 module Backward (Base : S with type instrs_dir = Instrs.not_reversed) :

@@ -13,6 +13,22 @@ include BUILTINS.S with type t = Procname.t
 
 val is_declared : Procname.t -> bool
 
+val __erlang_equal : Procname.t
+
+val __erlang_exactly_equal : Procname.t
+
+val __erlang_not_equal : Procname.t
+
+val __erlang_exactly_not_equal : Procname.t
+
+val __erlang_lesser : Procname.t
+
+val __erlang_lesser_or_equal : Procname.t
+
+val __erlang_greater : Procname.t
+
+val __erlang_greater_or_equal : Procname.t
+
 val __erlang_error_badkey : Procname.t
 
 val __erlang_error_badmatch : Procname.t
@@ -20,6 +36,9 @@ val __erlang_error_badmatch : Procname.t
 val __erlang_error_badmap : Procname.t
 
 val __erlang_error_badrecord : Procname.t
+
+val __erlang_error_badreturn : Procname.t
+(** Not a runtime error in Erlang. It means that the actual type disagrees with the spec. *)
 
 val __erlang_error_case_clause : Procname.t
 
@@ -29,9 +48,9 @@ val __erlang_error_if_clause : Procname.t
 
 val __erlang_error_try_clause : Procname.t
 
-val __erlang_lists_append2 : Procname.t
+val __erlang_make_atom : Procname.t
 
-val __erlang_lists_reverse : Procname.t
+val __erlang_make_integer : Procname.t
 
 val __erlang_make_cons : Procname.t
 
@@ -41,13 +60,13 @@ val __erlang_make_tuple : Procname.t
 
 val __erlang_make_map : Procname.t
 
-val __erlang_maps_is_key : Procname.t
+val __erlang_make_str_const : Procname.t
 
-val __erlang_maps_get : Procname.t
+val __erlang_make_bitstring : Procname.t
 
-val __erlang_maps_put : Procname.t
+val __erlang_receive : Procname.t
 
-val __erlang_missing_translation : Procname.t
+val __erlang_str_equal : Procname.t
 
 val __infer_initializer_list : Procname.t
 
@@ -76,5 +95,11 @@ val __c11_atomic_fetch_min : Procname.t
 val __opencl_atomic_fetch_max : Procname.t
 
 val __opencl_atomic_fetch_min : Procname.t
+
+val __builtin_cxx_co_return : Procname.t
+
+val __builtin_cxx_co_await : Procname.t
+
+val dispatch_sync : Procname.t
 
 val match_builtin : t -> 'a -> string -> bool

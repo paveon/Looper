@@ -1,0 +1,34 @@
+{
+  "force-delete-results-dir": true,
+  "pulse-taint-sources": [
+    { "procedure": "inferSecretSource", "kinds": ["Simple"] },
+    { "class_names": ["codetoanalyze.kotlin.pulse.InferBaseSource"],
+      "method_return_type_names": ["java.lang.String"],
+      "kinds": ["Simple"]
+    },
+    { "class_names": ["codetoanalyze.kotlin.pulse.Basics"],
+      "method_names": ["firstParameterTainted"],
+      "taint_target": ["ArgumentPositions", [1]],
+      "kinds": ["Simple"]
+    },
+    { "class_names": ["codetoanalyze.kotlin.pulse.Callback"],
+      "method_names": ["onCompletion"],
+      "taint_target": ["ArgumentPositions", [1]],
+      "kinds": ["Simple"]
+    },
+    { "method_with_annotation": "codetoanalyze.kotlin.pulse.SensitiveSourceMarker" },
+    { "class_names": ["codetoanalyze.kotlin.pulse.Constants"],
+      "method_names": ["source"],
+      "taint_target": ["ArgumentPositions", [1]]
+    }
+  ],
+  "pulse-taint-sinks": [
+    { "procedure": "inferSensitiveSink" },
+    { "class_name_regex": "codetoanalyze.kotlin.pulse.sinks.*"},
+    { "method_with_annotation": "codetoanalyze.kotlin.pulse.SensitiveSinkMarker" }
+  ],
+  "pulse-taint-sanitizers": [
+    { "procedure": "inferUniversalSanitizer" },
+    { "method_with_annotation": "codetoanalyze.kotlin.pulse.SanitizerMarker" }
+  ]
+}

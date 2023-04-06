@@ -35,6 +35,8 @@ module Partition = struct
         (fold_nodes [@tailcall]) next ~init ~f
 
 
+  let iter_nodes partition ~f = Container.iter partition ~fold:fold_nodes ~f
+
   let rec fold_heads partition ~init ~f =
     match partition with
     | Empty ->
@@ -67,7 +69,7 @@ module Partition = struct
                   | Node {node= head; next= rest} ->
                       cb (Component {head; rest; next}) ) )
     in
-    expand_aux ~cb:IStd.ident partition
+    expand_aux ~cb:Fn.id partition
 
 
   let rec pp ~prefix ~pp_node fmt = function

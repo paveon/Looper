@@ -21,7 +21,8 @@ let create_cmd (source_file, (compilation_data : CompilationDatabase.compilation
   ( source_file
   , { CompilationDatabase.directory= compilation_data.directory
     ; executable= swap_executable compilation_data.executable
-    ; escaped_arguments= ["@" ^ arg_file; "-fsyntax-only"] @ Config.clang_extra_flags } )
+    ; escaped_arguments=
+        ["@" ^ arg_file; "-fsyntax-only"; "-fno-builtin"] @ Config.clang_extra_flags } )
 
 
 let invoke_cmd (source_file, (cmd : CompilationDatabase.compilation_data)) =
@@ -39,8 +40,7 @@ let invoke_cmd (source_file, (cmd : CompilationDatabase.compilation_data)) =
       ()
   | Error error ->
       let log_or_die fmt =
-        if Config.linters_ignore_clang_failures || Config.keep_going then L.debug Capture Quiet fmt
-        else L.die ExternalError fmt
+        if Config.keep_going then L.debug Capture Quiet fmt else L.die ExternalError fmt
       in
       log_or_die "Error running compilation for '%a': %a:@\n%s@." SourceFile.pp source_file
         Pp.cli_args argv error ) ;
@@ -60,11 +60,8 @@ let run_compilation_database compilation_database should_capture_file =
   (* no stats to record so [child_epilogue] does nothing and we ignore the return
      {!Tasks.Runner.run} *)
   let runner =
-    Tasks.Runner.create ~jobs:Config.jobs
-      ~child_prologue:(fun () -> ())
-      ~f:invoke_cmd
-      ~child_epilogue:(fun () -> ())
-      ~tasks
+    Tasks.Runner.create ~jobs:Config.jobs ~child_prologue:ignore ~f:invoke_cmd
+      ~child_epilogue:ignore ~tasks
   in
   Tasks.Runner.run runner |> ignore ;
   L.progress "@." ;
@@ -88,9 +85,9 @@ let get_compilation_database_files_buck db_deps ~prog ~args =
         "--config" :: "*//cxx.pch_enabled=false" :: "--config" :: "*//cxx.modules_default=false"
         :: "--config" :: "*//cxx.modules=False" :: targets_args
       in
-      Logging.(debug Linters Quiet)
-        "Processed buck command is: 'buck %a'@\n" (Pp.seq F.pp_print_string) build_args ;
-      Buck.wrap_buck_call ~label:"compdb_build" (prog :: build_args) |> ignore ;
+      Logging.debug Capture Quiet "Processed buck command is: 'buck %a'@\n"
+        (Pp.seq F.pp_print_string) build_args ;
+      Buck.wrap_buck_call ~label:"compdb_build" V1 (prog :: build_args) |> ignore ;
       let buck_targets_shell =
         prog :: "targets"
         :: List.rev_append
@@ -119,7 +116,7 @@ let get_compilation_database_files_buck db_deps ~prog ~args =
             in
             List.fold ~f:scan_output ~init:[] lines
       in
-      Buck.wrap_buck_call ~label:"compdb_targets" buck_targets_shell |> on_target_lines
+      Buck.wrap_buck_call ~label:"compdb_targets" V1 buck_targets_shell |> on_target_lines
   | _ ->
       Process.print_error_and_exit "Incorrect buck command: %s %a. Please use buck build <targets>"
         prog (Pp.seq F.pp_print_string) args

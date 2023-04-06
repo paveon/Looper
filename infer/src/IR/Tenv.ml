@@ -6,6 +6,7 @@
  *)
 open! IStd
 module L = Logging
+open Option.Monad_infix
 
 (** Module for Type Environments. *)
 
@@ -24,28 +25,33 @@ let create () = TypenameHash.create 1000
 
 (** Construct a struct type in a type environment *)
 let mk_struct tenv ?default ?fields ?statics ?methods ?exported_objc_methods ?supers ?objc_protocols
-    ?annots ?java_class_info ?dummy name =
+    ?annots ?java_class_info ?dummy ?source_file name =
   let struct_typ =
     Struct.internal_mk_struct ?default ?fields ?statics ?methods ?exported_objc_methods ?supers
-      ?objc_protocols ?annots ?java_class_info ?dummy ()
+      ?objc_protocols ?annots ?java_class_info ?dummy ?source_file name
   in
   TypenameHash.replace tenv name struct_typ ;
   struct_typ
 
 
-(** Look up a name in the global type environment. *)
+(** Look up a name in the given type environment. *)
 let lookup tenv name : Struct.t option =
-  try Some (TypenameHash.find tenv name)
-  with Caml.Not_found -> (
-    (* ToDo: remove the following additional lookups once C/C++ interop is resolved *)
-    match (name : Typ.Name.t) with
-    | CStruct m ->
-        TypenameHash.find_opt tenv
-          (CppClass {name= m; template_spec_info= NoTemplate; is_union= false})
-    | CppClass {name= m; template_spec_info= NoTemplate} ->
-        TypenameHash.find_opt tenv (CStruct m)
-    | _ ->
-        None )
+  let result =
+    try Some (TypenameHash.find tenv name)
+    with Caml.Not_found -> (
+      (* ToDo: remove the following additional lookups once C/C++ interop is resolved *)
+      match (name : Typ.Name.t) with
+      | CStruct m ->
+          TypenameHash.find_opt tenv
+            (CppClass {name= m; template_spec_info= NoTemplate; is_union= false})
+      | CppClass {name= m; template_spec_info= NoTemplate} ->
+          TypenameHash.find_opt tenv (CStruct m)
+      | _ ->
+          None )
+  in
+  (* Record Tenv lookups during analysis to facilitate conservative incremental invalidation *)
+  Option.iter (result >>= Struct.get_source_file) ~f:Dependencies.record_srcfile_dep ;
+  result
 
 
 let compare_fields (name1, _, _) (name2, _, _) = Fieldname.compare name1 name2
@@ -63,15 +69,45 @@ let add_field tenv class_tn_name field =
       ()
 
 
+let fold_supers tenv name ~init ~f =
+  let rec aux worklist visited result =
+    match worklist with
+    | [] ->
+        (visited, result)
+    | name :: worklist when Typ.Name.Set.mem name visited ->
+        aux worklist visited result
+    | name :: worklist -> (
+        let visited = Typ.Name.Set.add name visited in
+        let struct_opt = lookup tenv name in
+        let result = f name struct_opt result in
+        match struct_opt with
+        | None ->
+            aux worklist visited result
+        | Some {supers} ->
+            let visited, result = aux supers visited result in
+            aux worklist visited result )
+  in
+  aux [name] Typ.Name.Set.empty init |> snd
+
+
+let find_map_supers (type f_result) tenv name ~(f : Typ.Name.t -> Struct.t option -> f_result option)
+    =
+  let exception FOUND of f_result option in
+  try
+    fold_supers tenv name ~init:() ~f:(fun name struct_opt () ->
+        match f name struct_opt with None -> () | Some _ as result -> raise (FOUND result) ) ;
+    None
+  with FOUND result -> result
+
+
+let mem_supers tenv name ~f =
+  find_map_supers tenv name ~f:(fun name struct_opt -> if f name struct_opt then Some () else None)
+  |> Option.is_some
+
+
 let implements_remodel_class tenv name =
   Option.exists Typ.Name.Objc.remodel_class ~f:(fun remodel_class ->
-      let rec implements_remodel_class_helper name =
-        Typ.Name.equal name remodel_class
-        || lookup tenv name
-           |> Option.exists ~f:(fun {Struct.supers} ->
-                  List.exists supers ~f:implements_remodel_class_helper )
-      in
-      implements_remodel_class_helper name )
+      mem_supers tenv name ~f:(fun name _ -> Typ.Name.equal name remodel_class) )
 
 
 type per_file = Global | FileLocal of t
@@ -113,7 +149,8 @@ let merge ~src ~dst =
         TypenameHash.add dst typename newer
     | Some current ->
         let merged_struct = Struct.merge typename ~newer ~current in
-        TypenameHash.replace dst typename merged_struct
+        if not (phys_equal merged_struct current) then
+          TypenameHash.replace dst typename merged_struct
   in
   TypenameHash.iter merge_internal src
 
@@ -130,7 +167,7 @@ let merge_per_file ~src ~dst =
 
 
 let load_statement =
-  ResultsDatabase.register_statement
+  Database.register_statement CaptureDatabase
     "SELECT type_environment FROM source_files WHERE source_file = :k"
 
 
@@ -151,14 +188,13 @@ let load_global () : t option =
 
 
 let load source =
-  ResultsDatabase.with_registered_statement load_statement ~f:(fun db load_stmt ->
+  Database.with_registered_statement load_statement ~f:(fun db load_stmt ->
       SourceFile.SQLite.serialize source
       |> Sqlite3.bind load_stmt 1
       |> SqliteUtils.check_result_code db ~log:"load bind source file" ;
       SqliteUtils.result_single_column_option ~finalize:false ~log:"Tenv.load" db load_stmt
-      |> Option.bind ~f:(fun x ->
-             SQLite.deserialize x
-             |> function Global -> load_global () | FileLocal tenv -> Some tenv ) )
+      >>| SQLite.deserialize
+      >>= function Global -> load_global () | FileLocal tenv -> Some tenv )
 
 
 let store_debug_file tenv tenv_filename =
@@ -185,25 +221,12 @@ module Normalizer = struct
   let normalize tenv =
     let new_tenv = TypenameHash.create (TypenameHash.length tenv) in
     let normalize_mapping name tstruct =
-      let name = Typ.Name.Normalizer.normalize name in
+      let name = Typ.NameNormalizer.normalize name in
       let tstruct = Struct.Normalizer.normalize tstruct in
       TypenameHash.add new_tenv name tstruct
     in
     TypenameHash.iter normalize_mapping tenv ;
     new_tenv
-
-
-  let reset () =
-    Typ.Normalizer.reset () ;
-    Typ.Name.Normalizer.reset () ;
-    Struct.Normalizer.reset () ;
-    Fieldname.Normalizer.reset () ;
-    Procname.Normalizer.reset () ;
-    SourceFile.Normalizer.reset () ;
-    Location.Normalizer.reset () ;
-    Annot.Item.Normalizer.reset () ;
-    JavaClassName.Normalizer.reset () ;
-    HashNormalizer.StringNormalizer.reset ()
 end
 
 let store_global tenv =
@@ -211,14 +234,23 @@ let store_global tenv =
      frontend and backend run in the same process *)
   if Config.debug_level_capture > 0 then
     L.debug Capture Quiet "Tenv.store: global tenv has size %d bytes.@."
-      (Obj.(reachable_words (repr tenv)) * (Sys.word_size / 8)) ;
+      (Obj.(reachable_words (repr tenv)) * (Sys.word_size_in_bits / 8)) ;
   let tenv = Normalizer.normalize tenv in
-  Normalizer.reset () ;
+  HashNormalizer.reset_all_normalizers () ;
   if Config.debug_level_capture > 0 then
     L.debug Capture Quiet "Tenv.store: canonicalized tenv has size %d bytes.@."
-      (Obj.(reachable_words (repr tenv)) * (Sys.word_size / 8)) ;
+      (Obj.(reachable_words (repr tenv)) * (Sys.word_size_in_bits / 8)) ;
   global_tenv := Some tenv ;
   store_to_filename tenv global_tenv_path
+
+
+let normalize = function
+  | Global ->
+      Global
+  | FileLocal tenv ->
+      let new_tenv = Normalizer.normalize tenv in
+      HashNormalizer.reset_all_normalizers () ;
+      FileLocal new_tenv
 
 
 let resolve_method ~method_exists tenv class_name proc_name =
@@ -241,6 +273,9 @@ let resolve_method ~method_exists tenv class_name proc_name =
           | CStruct _ | CUnion _ | CppClass _ ->
               (* multiple inheritance possible, search all supers *)
               class_struct.supers
+          | HackClass _ ->
+              (* super-classes, super-interfaces, and traits are modelled via multiple inheritance *)
+              class_struct.supers
           | JavaClass _ ->
               (* multiple inheritance not possible, but cannot distinguish interfaces from typename so search all *)
               class_struct.supers
@@ -254,9 +289,7 @@ let resolve_method ~method_exists tenv class_name proc_name =
               []
         in
         List.find_map supers_to_search ~f:resolve_name )
-  and resolve_name class_name =
-    lookup tenv class_name |> Option.bind ~f:(resolve_name_struct class_name)
-  in
+  and resolve_name class_name = lookup tenv class_name >>= resolve_name_struct class_name in
   resolve_name class_name
 
 
@@ -268,3 +301,15 @@ let find_cpp_destructor tenv class_name =
         Procname.ObjC_Cpp.(is_destructor f && not (is_inner_destructor f))
     | _ ->
         false )
+
+
+let find_cpp_constructor tenv class_name =
+  match lookup tenv class_name with
+  | Some struct_ ->
+      List.filter struct_.Struct.methods ~f:(function
+        | Procname.ObjC_Cpp {kind= CPPConstructor _} ->
+            true
+        | _ ->
+            false )
+  | None ->
+      []

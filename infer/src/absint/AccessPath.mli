@@ -14,11 +14,10 @@ type base = Var.t * Typ.t [@@deriving compare]
 type access =
   | ArrayAccess of Typ.t * t list  (** array element type with list of access paths in index *)
   | FieldAccess of Fieldname.t  (** field name *)
-[@@deriving compare, equal]
 
 (** root var, and a list of accesses. closest to the root var is first that is, x.f.g is represented
     as (x, [f; g]) *)
-and t = base * access list [@@deriving compare]
+and t = base * access list [@@deriving compare, equal]
 
 val get_typ : t -> Tenv.t -> Typ.t option
 (** get the typ of the last access in the list of accesses if the list is non-empty, or the base if
@@ -43,7 +42,8 @@ val append : t -> access list -> t
 val is_prefix : t -> t -> bool
 
 (* used in infer/src/labs/ *)
-val replace_prefix : prefix:t -> replace_with:t -> t -> t option [@@warning "-32"]
+val replace_prefix : prefix:t -> replace_with:t -> t -> t option
+  [@@warning "-unused-value-declaration"]
 
 val equal_base : base -> base -> bool
 
@@ -54,7 +54,7 @@ val pp_base : Format.formatter -> base -> unit
 val pp_access : Format.formatter -> access -> unit
 
 (* used in infer/src/labs/ *)
-val pp_access_list : Format.formatter -> access list -> unit [@@warning "-32"]
+val pp_access_list : Format.formatter -> access list -> unit [@@warning "-unused-value-declaration"]
 
 module Abs : sig
   type raw = t

@@ -14,7 +14,7 @@ module F = Format
 module L = Logging
 
 (* reverse the natural order on Var *)
-type ident_ = Ident.t
+type ident_ = Ident.t [@@deriving equal]
 
 let compare_ident_ x y = Ident.compare y x
 
@@ -47,9 +47,7 @@ and t =
       (** A field offset, the type is the surrounding struct type *)
   | Lindex of t * t  (** An array index offset: [exp1\[exp2\]] *)
   | Sizeof of sizeof_data
-[@@deriving compare]
-
-let equal = [%compare.equal: t]
+[@@deriving compare, equal]
 
 let hash = Hashtbl.hash
 
@@ -353,6 +351,25 @@ let rec gen_program_vars =
 
 
 let program_vars e = Sequence.Generator.run (gen_program_vars e)
+
+let rec gen_closures =
+  let open Sequence.Generator in
+  function
+  | Closure closure ->
+      yield closure
+  | Const _ | Lvar _ | Var _ ->
+      return ()
+  | UnOp (_, e1, _) | Exn e1 | Cast (_, e1) | Lfield (e1, _, _) ->
+      gen_closures e1
+  | Sizeof {dynamic_length= Some e1} ->
+      gen_closures e1
+  | Sizeof {dynamic_length= None} ->
+      return ()
+  | BinOp (_, e1, e2) | Lindex (e1, e2) ->
+      gen_closures e1 >>= fun () -> gen_closures e2
+
+
+let closures e = Sequence.Generator.run (gen_closures e)
 
 let zero_of_type typ =
   match typ.Typ.desc with

@@ -9,13 +9,13 @@ module F = Format
 module L = Logging
 
 let select_existing_statement =
-  ResultsDatabase.register_statement
+  Database.register_statement CaptureDatabase
     "SELECT type_environment, procedure_names FROM source_files WHERE source_file = :source AND \
      freshly_captured = 1"
 
 
 let get_existing_data source_file =
-  ResultsDatabase.with_registered_statement select_existing_statement ~f:(fun db stmt ->
+  Database.with_registered_statement select_existing_statement ~f:(fun db stmt ->
       SourceFile.SQLite.serialize source_file
       |> Sqlite3.bind stmt 1
       (* :source *)
@@ -25,6 +25,21 @@ let get_existing_data source_file =
           let tenv = Sqlite3.column stmt 0 |> Tenv.SQLite.deserialize
           and proc_names = Sqlite3.column stmt 1 |> Procname.SQLiteList.deserialize in
           (tenv, proc_names) ) )
+
+
+let proc_names_of_source =
+  let stmt =
+    Database.register_statement CaptureDatabase
+      "SELECT procedure_names FROM source_files WHERE source_file = :k"
+  in
+  fun source ->
+    Database.with_registered_statement stmt ~f:(fun db stmt ->
+        SourceFile.SQLite.serialize source
+        |> Sqlite3.bind stmt 1
+        |> SqliteUtils.check_result_code db ~log:"load bind source file" ;
+        SqliteUtils.result_single_column_option ~finalize:false db
+          ~log:"SourceFiles.proc_names_of_source" stmt
+        |> Option.value_map ~default:[] ~f:Procname.SQLiteList.deserialize )
 
 
 let add source_file cfg tenv integer_type_widths =
@@ -52,9 +67,23 @@ let add source_file cfg tenv integer_type_widths =
     | None ->
         (tenv, new_proc_names)
   in
-  (* NOTE: it's important to write attribute files to disk before writing cfgs to disk.
-     OndemandCapture module relies on it - it uses existance of the cfg as a barrier to make
-     sure that all attributes were written to disk (but not necessarily flushed) *)
+  if Config.mark_unchanged_procs then
+    (* Mark any newly-captured procedure as unchanged if it is structurally identical to the
+       previously-captured version, in order to avoid invalidating summaries of unchanged
+       procedures in changed files.
+
+       NB that this only works if the capture DB has some previous version of the procedure
+       and thus won't work with integrations that require merging (e.g. buck).
+    *)
+    List.iter (proc_names_of_source source_file) ~f:(fun pname ->
+        IOption.iter2 (Procdesc.load pname) (Procname.Hash.find_opt cfg pname)
+          ~f:(fun old_pdesc new_pdesc ->
+            Procdesc.mark_if_unchanged ~old_pdesc ~new_pdesc ;
+            (* If there are already stored attributes for this procedure, delete them from the DB
+               to ensure that the one we have in [cfg] is persisted deterministically. *)
+            if (Procdesc.get_attributes new_pdesc).changed then
+              DBWriter.delete_attributes ~proc_uid:(Procname.to_unique_id pname) ) ) ;
+  let tenv = Tenv.normalize tenv in
   Cfg.store source_file cfg ;
   DBWriter.add_source_file
     ~source_file:(SourceFile.SQLite.serialize source_file)
@@ -64,7 +93,7 @@ let add source_file cfg tenv integer_type_widths =
 
 
 let get_all ~filter () =
-  let db = ResultsDatabase.get_database () in
+  let db = Database.get_database CaptureDatabase in
   (* we could also register this statement but it's typically used only once per run so just prepare
      it inside the function *)
   Sqlite3.prepare db "SELECT source_file FROM source_files"
@@ -75,41 +104,28 @@ let get_all ~filter () =
          Option.some_if (filter source_file) source_file )
 
 
-let load_proc_names_statement =
-  ResultsDatabase.register_statement
-    "SELECT procedure_names FROM source_files WHERE source_file = :k"
+let is_non_empty_statement =
+  Database.register_statement CaptureDatabase "SELECT 1 FROM source_files LIMIT 1"
 
-
-let proc_names_of_source source =
-  ResultsDatabase.with_registered_statement load_proc_names_statement ~f:(fun db load_stmt ->
-      SourceFile.SQLite.serialize source
-      |> Sqlite3.bind load_stmt 1
-      |> SqliteUtils.check_result_code db ~log:"load bind source file" ;
-      SqliteUtils.result_single_column_option ~finalize:false db
-        ~log:"SourceFiles.proc_names_of_source" load_stmt
-      |> Option.value_map ~default:[] ~f:Procname.SQLiteList.deserialize )
-
-
-let is_non_empty_statement = ResultsDatabase.register_statement "SELECT 1 FROM source_files LIMIT 1"
 
 let is_empty () =
-  ResultsDatabase.with_registered_statement is_non_empty_statement ~f:(fun db stmt ->
+  Database.with_registered_statement is_non_empty_statement ~f:(fun db stmt ->
       SqliteUtils.result_single_column_option ~finalize:false ~log:"SourceFiles.is_empty" db stmt
       |> Option.is_none )
 
 
 let is_freshly_captured_statement =
-  ResultsDatabase.register_statement
+  Database.register_statement CaptureDatabase
     "SELECT freshly_captured FROM source_files WHERE source_file = :k"
 
 
-let deserialize_freshly_captured = function[@warning "-8"]
+let deserialize_freshly_captured = function[@warning "-partial-match"]
   | Sqlite3.Data.INT p ->
       Int64.equal p Int64.one
 
 
 let is_freshly_captured source =
-  ResultsDatabase.with_registered_statement is_freshly_captured_statement ~f:(fun db load_stmt ->
+  Database.with_registered_statement is_freshly_captured_statement ~f:(fun db load_stmt ->
       SourceFile.SQLite.serialize source
       |> Sqlite3.bind load_stmt 1
       |> SqliteUtils.check_result_code db ~log:"load bind source file" ;
@@ -121,7 +137,7 @@ let is_freshly_captured source =
 let mark_all_stale () = DBWriter.mark_all_source_files_stale ()
 
 let select_all_source_files_statement =
-  ResultsDatabase.register_statement
+  Database.register_statement CaptureDatabase
     {|
   SELECT source_file
   , type_environment
@@ -150,7 +166,7 @@ let pp_all ~filter ~type_environment ~procedure_names ~freshly_captured fmt () =
          Format.pp_print_bool )
       3
   in
-  ResultsDatabase.with_registered_statement select_all_source_files_statement ~f:(fun db stmt ->
+  Database.with_registered_statement select_all_source_files_statement ~f:(fun db stmt ->
       let pp fmt column =
         let source_file = SourceFile.SQLite.deserialize column in
         if filter source_file then pp_row stmt fmt source_file

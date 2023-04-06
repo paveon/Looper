@@ -9,14 +9,19 @@ module F = Format
 
 (** Location in the original source file *)
 type t =
-  { line: int  (** The line number. -1 means "do not know" *)
+  { file: SourceFile.t  (** The name of the source file *)
+  ; line: int  (** The line number. -1 means "do not know" *)
   ; col: int  (** The column number. -1 means "do not know" *)
-  ; file: SourceFile.t  (** The name of the source file *) }
-[@@deriving compare, sexp_of]
+  ; macro_file_opt: SourceFile.t option
+        (** If the location is coming from macro expansion, the name of the file macro is defined in *)
+  ; macro_line: int  (** If the location is coming from macro expansion, the line number *) }
+[@@deriving compare, equal, sexp, hash]
 
-let equal = [%compare.equal: t]
+let get_macro_file_line_opt {macro_file_opt; macro_line} =
+  Option.map macro_file_opt ~f:(fun file -> (file, macro_line))
 
-let none file = {line= -1; col= -1; file}
+
+let none file = {line= -1; col= -1; file; macro_file_opt= None; macro_line= -1}
 
 let dummy = none (SourceFile.invalid __FILE__)
 

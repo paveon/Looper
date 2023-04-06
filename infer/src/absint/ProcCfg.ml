@@ -15,7 +15,7 @@ module F = Format
 module type NodeCommonS = sig
   type t
 
-  type id
+  type id [@@deriving compare, equal]
 
   val kind : t -> Procdesc.Node.nodekind
 
@@ -28,8 +28,6 @@ module type NodeCommonS = sig
   val underlying_node : t -> Procdesc.Node.t
 
   val of_underlying_node : Procdesc.Node.t -> t
-
-  val compare_id : id -> id -> int
 
   val pp_id : F.formatter -> id -> unit
 
@@ -48,13 +46,15 @@ module InstrNode : sig
 
   val compare : t -> t -> int
 
+  val equal : t -> t -> bool
+
   val to_instr : instr_index -> t -> t
 end = struct
-  type instr_index = int [@@deriving compare]
+  type instr_index = int [@@deriving compare, equal]
 
-  type t = Procdesc.Node.t * instr_index [@@deriving compare]
+  type t = Procdesc.Node.t * instr_index [@@deriving compare, equal]
 
-  type id = Procdesc.Node.id * instr_index [@@deriving compare]
+  type id = Procdesc.Node.id * instr_index [@@deriving compare, equal]
 
   let kind (t, _) = Procdesc.Node.get_kind t
 
@@ -91,7 +91,7 @@ end
 module DefaultNode : Node with type t = Procdesc.Node.t and type id = Procdesc.Node.id = struct
   type t = Procdesc.Node.t
 
-  type id = Procdesc.Node.id
+  type id = Procdesc.Node.id [@@deriving compare, equal]
 
   let kind = Procdesc.Node.get_kind
 
@@ -104,8 +104,6 @@ module DefaultNode : Node with type t = Procdesc.Node.t and type id = Procdesc.N
   let underlying_node t = t
 
   let of_underlying_node t = t
-
-  let compare_id = Procdesc.Node.compare_id
 
   let pp_id = Procdesc.Node.pp_id
 
@@ -152,6 +150,8 @@ module type S = sig
 
   val exit_node : t -> Node.t
 
+  val exn_sink_node : t -> Node.t option
+
   val proc_desc : t -> Procdesc.t
 
   val fold_nodes : (t, Node.t, 'accum) Container.fold
@@ -190,6 +190,8 @@ module Normal = struct
 
   let exit_node = Procdesc.get_exit_node
 
+  let exn_sink_node = Procdesc.get_exn_sink
+
   let proc_desc t = t
 
   let fold_nodes = Procdesc.fold_nodes
@@ -200,6 +202,12 @@ module Normal = struct
 
   let wto = Procdesc.get_wto
 end
+
+module type ExceptionalS =
+  S
+    with type t = Procdesc.t * DefaultNode.t list Procdesc.IdMap.t
+     and module Node = DefaultNode
+     and type instrs_dir = Instrs.not_reversed
 
 (** Forward CFG with exceptional control-flow *)
 module Exceptional = struct
@@ -279,6 +287,8 @@ module Exceptional = struct
 
   let exit_node (pdesc, _) = Procdesc.get_exit_node pdesc
 
+  let exn_sink_node (pdesc, _) = Procdesc.get_exn_sink pdesc
+
   let is_loop_head = Procdesc.is_loop_head
 
   module WTO = WeakTopologicalOrder.Bourdoncle_SCC (struct
@@ -298,6 +308,54 @@ module Exceptional = struct
   let wto (pdesc, _) = WTO.make pdesc
 end
 
+(** Forward CFG with exceptional control-flow, but no edge from exceptions sink to exit node. *)
+module ExceptionalNoSinkToExitEdge : ExceptionalS = struct
+  include Exceptional
+
+  (** Returns true iff the node [nd] is the exception sink. *)
+  let is_exn_sink (nd : Node.t) : bool =
+    Procdesc.Node.equal_nodekind (Procdesc.Node.get_kind nd) Procdesc.Node.exn_sink_kind
+
+
+  (** Returns true iff the node [nd] is the procedure's exit node. *)
+  let is_exit_node (nd : Node.t) : bool =
+    Procdesc.Node.equal_nodekind (Procdesc.Node.get_kind nd) Procdesc.Node.Exit_node
+
+
+  (** Redefines [fold_normal_succs] in the [Exceptional] module, such that if the node [n] is the
+      exceptions sink, then we filter out the exit node from the successors. *)
+  let fold_normal_succs _ n ~init ~f =
+    (let cfg_successors = Procdesc.Node.get_succs n in
+     if is_exn_sink n then
+       List.filter cfg_successors ~f:(fun (succ_node : Node.t) -> not (is_exit_node succ_node))
+     else cfg_successors )
+    |> List.fold ~init ~f
+
+
+  (** Redefines [fold_normal_preds] in the [Exceptional] module, such that if the node [n] is the
+      exit node, then we filter out the exceptions sink from the predecessors. *)
+  let fold_normal_preds _ n ~init ~f =
+    (let cfg_predecessors = Procdesc.Node.get_preds n in
+     if is_exit_node n then
+       List.filter cfg_predecessors ~f:(fun (pred_node : Node.t) -> not (is_exn_sink pred_node))
+     else cfg_predecessors )
+    |> List.fold ~init ~f
+
+
+  (** fold over all normal and exceptional successors of [n], but using the version of
+      [fold_normal_succs] defined by [ExceptionalNoSinkToExitEdge], instead of [Exceptional].
+      Redefines [fold_succs] in the [Exceptional] module. *)
+  let fold_succs t n ~init ~f =
+    fold_avoid_duplicates fold_normal_succs fold_normal_succs fold_exceptional_succs t n ~init ~f
+
+
+  (** fold over all normal and exceptional predecessors of [n], but using the version of
+      [fold_normal_preds] defined by [ExceptionalNoSinkToExitEdge], instead of [Exceptional].
+      Redefines [fold_preds] in the [Exceptional] module. *)
+  let fold_preds t n ~init ~f =
+    fold_avoid_duplicates fold_normal_preds fold_normal_preds fold_exceptional_preds t n ~init ~f
+end
+
 (** Wrapper that reverses the direction of the CFG *)
 module Backward (Base : S with type instrs_dir = Instrs.not_reversed) = struct
   include (
@@ -314,6 +372,8 @@ module Backward (Base : S with type instrs_dir = Instrs.not_reversed) = struct
   let start_node = Base.exit_node
 
   let exit_node = Base.start_node
+
+  let exn_sink_node = Base.exn_sink_node
 
   let fold_normal_succs = Base.fold_normal_preds
 
@@ -390,6 +450,8 @@ end = struct
   let start_node cfg = first_of_node (Base.start_node cfg)
 
   let exit_node cfg = last_of_node (Base.exit_node cfg)
+
+  let exn_sink_node cfg = Option.map (Base.exn_sink_node cfg) ~f:last_of_node
 
   let proc_desc = Base.proc_desc
 

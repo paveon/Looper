@@ -121,8 +121,6 @@ module Unsafe : sig
   val equal_to : IntLit.t -> t
 
   val not_equal_to : IntLit.t -> t
-
-  val ge_to : IntLit.t -> t
 end = struct
   type t = Between of Bound.t * Bound.t | Outside of IntLit.t * IntLit.t
   [@@deriving compare, equal]
@@ -143,10 +141,6 @@ end = struct
 
 
   let not_equal_to i = Outside (i, i)
-
-  let ge_to i =
-    let b = Bound.Int i in
-    Between (b, Bound.PlusInfinity)
 end
 
 include Unsafe
@@ -182,16 +176,23 @@ let is_not_equal_to_zero = function
       false
 
 
-let has_empty_intersection a1 a2 =
-  match (a1, a2) with
-  | Outside _, Outside _ ->
-      false
-  | Between (lower1, upper1), Between (lower2, upper2) ->
-      Bound.lt upper1 lower2 || Bound.lt upper2 lower1
-  | Between (lower1, upper1), Outside (l2, u2) | Outside (l2, u2), Between (lower1, upper1) ->
-      (* is \[l1, u1\] inside \[l2, u2\]? *)
-      Bound.le (Int l2) lower1 && Bound.ge (Int u2) upper1
+let is_non_pointer = function Between (Int _, Int _) -> true | _ -> false
 
+let intersection a1 a2 =
+  match (a1, a2) with
+  | Outside (lower1, upper1), Outside (lower2, upper2) ->
+      Some (outside (IntLit.min lower1 lower2) (IntLit.max upper1 upper2))
+  | Between (lower1, upper1), Between (lower2, upper2) ->
+      let lower = Bound.max lower1 lower2 in
+      let upper = Bound.min upper1 upper2 in
+      if Bound.lt upper lower then None else Some (between lower upper)
+  | Between (lower1, upper1), Outside (l2, u2) | Outside (l2, u2), Between (lower1, upper1) ->
+      let lower = if Bound.le lower1 (Int l2) then lower1 else Bound.max lower1 (Int u2) in
+      let upper = if Bound.ge upper1 (Int u2) then upper1 else Bound.min (Int l2) upper1 in
+      if Bound.lt upper lower then None else Some (between lower upper)
+
+
+let has_empty_intersection a1 a2 = Option.is_none (intersection a1 a2)
 
 let add_int a i =
   match a with
@@ -428,8 +429,6 @@ let abduce_binop_constraints ~negated (bop : Binop.t) (a1 : t) (a2 : t) =
       Satisfiable (None, None)
 
 
-let zero_inf = between (Int IntLit.zero) PlusInfinity
-
 let abduce_binop_is_true ~negated bop v1 v2 =
   Logging.d_printfln "abduce_binop_is_true ~negated:%b %s (%a) (%a)" negated (Binop.str Pp.text bop)
     (Pp.option pp) v1 (Pp.option pp) v2 ;
@@ -470,7 +469,8 @@ let binop (bop : Binop.t) a_lhs a_rhs =
   | MinusPI
   | MinusPP
   | Mult _
-  | Div
+  | DivI
+  | DivF
   | Mod
   | Shiftlt
   | Shiftrt

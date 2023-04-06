@@ -23,7 +23,7 @@ public class FilterOutputStreamLeaks {
 
   // FilterOutputStream  tests
 
-  public void filterOutputStreamNotClosedAfterWrite() {
+  public void filterOutputStreamNotClosedAfterWriteBad() {
     byte[] arr = {1, 2, 3};
     FileOutputStream fis;
     try {
@@ -35,7 +35,7 @@ public class FilterOutputStreamLeaks {
     }
   }
 
-  public void filterOutputStreamClosedAfterWrite() throws IOException {
+  public void filterOutputStreamClosedAfterWriteOk() throws IOException {
     byte[] arr = {1, 2, 3};
     FileOutputStream fis;
     FilterOutputStream fos = null;
@@ -51,7 +51,7 @@ public class FilterOutputStreamLeaks {
 
   // DataOutputStream  tests
 
-  public void dataOutputStreamNotClosedAfterWrite() {
+  public void dataOutputStreamNotClosedAfterWriteBad() {
     byte[] arr = {1, 2, 3};
     FileOutputStream fis;
     try {
@@ -63,7 +63,7 @@ public class FilterOutputStreamLeaks {
     }
   }
 
-  public void dataOutputStreamClosedAfterWrite() throws IOException {
+  public void dataOutputStreamClosedAfterWriteOk() throws IOException {
     byte[] arr = {1, 2, 3};
     FileOutputStream fis;
     DataOutputStream dos = null;
@@ -79,7 +79,7 @@ public class FilterOutputStreamLeaks {
 
   // BufferedOutputStream  tests
 
-  public void bufferedOutputStreamNotClosedAfterWrite() {
+  public void bufferedOutputStreamNotClosedAfterWriteBad() {
     byte[] arr = {1, 2, 3};
     FileOutputStream fis = null;
     try {
@@ -91,7 +91,7 @@ public class FilterOutputStreamLeaks {
     }
   }
 
-  public void bufferedOutputStreamClosedAfterWrite() throws IOException {
+  public void bufferedOutputStreamClosedAfterWriteOk() throws IOException {
     byte[] arr = {1, 2, 3};
     FileOutputStream fis;
     BufferedOutputStream bos = null;
@@ -107,7 +107,7 @@ public class FilterOutputStreamLeaks {
 
   // CheckedOutputStream  tests
 
-  public void checkedOutputStreamNotClosedAfterWrite() {
+  public void checkedOutputStreamNotClosedAfterWriteBad() {
     byte[] arr = {1, 2, 3};
     FileOutputStream fis;
     try {
@@ -119,7 +119,7 @@ public class FilterOutputStreamLeaks {
     }
   }
 
-  public void checkedOutputStreamClosedAfterWrite() throws IOException {
+  public void checkedOutputStreamClosedAfterWriteOk() throws IOException {
     byte[] arr = {1, 2, 3};
     FileOutputStream fis;
     CheckedOutputStream chos = null;
@@ -135,7 +135,7 @@ public class FilterOutputStreamLeaks {
 
   // CipherOutputStream  tests
 
-  public void cipherOutputStreamNotClosedAfterWrite() {
+  public void cipherOutputStreamNotClosedAfterWriteBad() {
     byte[] arr = {1, 2, 3};
     FileOutputStream fis;
     try {
@@ -147,7 +147,7 @@ public class FilterOutputStreamLeaks {
     }
   }
 
-  public void cipherOutputStreamClosedAfterWrite() throws IOException {
+  public void cipherOutputStreamClosedAfterWriteOk() throws IOException {
     byte[] arr = {1, 2, 3};
     FileOutputStream fis;
     CipherOutputStream cos = null;
@@ -163,7 +163,7 @@ public class FilterOutputStreamLeaks {
 
   // DeflaterOutputStream  tests
 
-  public void deflaterOutputStreamNotClosedAfterWrite() {
+  public void deflaterOutputStreamNotClosedAfterWriteBad() {
     byte[] arr = {1, 2, 3};
     FileOutputStream fis;
     try {
@@ -175,7 +175,7 @@ public class FilterOutputStreamLeaks {
     }
   }
 
-  public void deflaterOutputStreamClosedAfterWrite() throws IOException {
+  public void deflaterOutputStreamClosedAfterWriteOk() throws IOException {
     byte[] arr = {1, 2, 3};
     FileOutputStream fis;
     DeflaterOutputStream dos = null;
@@ -189,9 +189,29 @@ public class FilterOutputStreamLeaks {
     }
   }
 
+  public void deflaterOutputStreamWithArgNotClosedAfterWriteBad(FileOutputStream fis) {
+    byte[] arr = {1, 2, 3};
+    try {
+      DeflaterOutputStream dos = new DeflaterOutputStream(fis, null);
+      dos.write(arr);
+    } catch (IOException e) {
+    }
+  }
+
+  public void deflaterOutputStreamWithArgClosedAfterWriteOk(FileOutputStream fis)
+      throws IOException {
+    byte[] arr = {1, 2, 3};
+    DeflaterOutputStream dos = new DeflaterOutputStream(fis, null);
+    try {
+      dos.write(arr);
+    } finally {
+      dos.finish();
+    }
+  }
+
   // DigestOutputStream  tests
 
-  public void digestOutputStreamNotClosedAfterWrite() {
+  public void digestOutputStreamNotClosedAfterWriteBad() {
     byte[] arr = {1, 2, 3};
     FileOutputStream fis;
     try {
@@ -203,7 +223,7 @@ public class FilterOutputStreamLeaks {
     }
   }
 
-  public void digestOutputStreamClosedAfterWrite() throws IOException {
+  public void digestOutputStreamClosedAfterWriteOk() throws IOException {
     byte[] arr = {1, 2, 3};
     FileOutputStream fis;
     DigestOutputStream dos = null;
@@ -219,7 +239,7 @@ public class FilterOutputStreamLeaks {
 
   // InflaterOutputStream  tests
 
-  public void inflaterOutputStreamNotClosedAfterWrite() {
+  public void inflaterOutputStreamNotClosedAfterWriteBad() {
     byte[] arr = {1, 2, 3};
     FileOutputStream fis;
     try {
@@ -231,7 +251,7 @@ public class FilterOutputStreamLeaks {
     }
   }
 
-  public void inflaterOutputStreamClosedAfterWrite() throws IOException {
+  public void inflaterOutputStreamClosedAfterWriteOk() throws IOException {
     byte[] arr = {1, 2, 3};
     FileOutputStream fis;
     InflaterOutputStream ios = null;
@@ -247,7 +267,7 @@ public class FilterOutputStreamLeaks {
 
   // GZipOutputStream  tests
 
-  public void gzipOutputStreamNotClosedAfterFlush() {
+  public void gzipOutputStreamNotClosedAfterFlushBad() {
     FileOutputStream fos;
     try {
       fos = new FileOutputStream("file.txt");
@@ -258,7 +278,7 @@ public class FilterOutputStreamLeaks {
     }
   }
 
-  public void gzipOutputStreamClosedAfterWrite() throws IOException {
+  public void gzipOutputStreamClosedAfterWriteOk() throws IOException {
     byte[] arr = {1, 2, 3};
     FileOutputStream fos = null;
     GZIPOutputStream gzipOutputStream = null;
@@ -275,7 +295,7 @@ public class FilterOutputStreamLeaks {
 
   // PrintStream  tests
 
-  public void printStreamNotClosedAfterWrite() {
+  public void printStreamNotClosedAfterWriteBad() {
     byte[] arr = {1, 2, 3};
     FileOutputStream fis;
     try {
@@ -286,7 +306,7 @@ public class FilterOutputStreamLeaks {
     }
   }
 
-  public void printStreamClosedAfterWrite() throws IOException {
+  public void printStreamClosedAfterWriteOk() throws IOException {
     byte[] arr = {1, 2, 3};
     FileOutputStream fis;
     InflaterOutputStream printer = null;

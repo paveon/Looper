@@ -87,10 +87,10 @@ void iterator_pointer_arithmetic_ok(std::vector<Aggregate> v) {
 
 struct A {
   ~A();
-  int f(int i);
+  int f(int i) const;
 };
 
-A getA();
+const A getA();
 
 int struct_inside_loop_ok(std::vector<int> numbers) {
   int sum = 0;
@@ -125,7 +125,7 @@ int struct_inside_loop_continue_ok(std::vector<int> numbers) {
   return sum;
 }
 
-int return_from_inner_scope_ok(bool b) {
+void return_from_inner_scope_ok(bool b) {
   {
     A a = getA();
     if (b) {
@@ -157,3 +157,57 @@ struct UseAfterSelfDestruct {
     x_ = a_.f(x_);
   }
 };
+
+void call_builtin_add_overflow_ok() {
+  int res;
+  __builtin_add_overflow(2, 3, &res);
+  if (res == 42) {
+    int* q = nullptr;
+    *q = 42;
+  }
+}
+
+void call_builtin_add_overflow_bad() {
+  int res;
+  __builtin_add_overflow(2, 3, &res);
+  if (res == 5) {
+    int* q = nullptr;
+    *q = 42;
+  }
+}
+
+void call_builtin_mul_overflow_ok() {
+  int res;
+  __builtin_mul_overflow(2, 3, &res);
+  if (res == 42) {
+    int* q = nullptr;
+    *q = 42;
+  }
+}
+
+void call_builtin_mul_overflow_bad() {
+  int res;
+  __builtin_mul_overflow(2, 3, &res);
+  if (res == 6) {
+    int* q = nullptr;
+    *q = 42;
+  }
+}
+
+void call_builtin_sub_overflow_ok() {
+  int res;
+  __builtin_sub_overflow(3, 2, &res);
+  if (res == 42) {
+    int* q = nullptr;
+    *q = 42;
+  }
+}
+
+void call_builtin_sub_overflow_bad() {
+  int res;
+  __builtin_sub_overflow(3, 2, &res);
+  if (res == 1) {
+    int* q = nullptr;
+    *q = 42;
+  }
+}

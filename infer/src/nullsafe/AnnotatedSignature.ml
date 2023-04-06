@@ -26,7 +26,7 @@ and param_signature =
   { param_annotation_deprecated: Annot.Item.t
   ; mangled: Mangled.t
   ; param_annotated_type: AnnotatedType.t }
-[@@deriving compare]
+[@@deriving compare, equal]
 
 and kind = FirstParty | ThirdParty of third_party_model_source [@deriving compare]
 
@@ -132,8 +132,7 @@ let extract_for_params ~proc_name ~is_callee_in_trust_list ~nullsafe_mode ~is_th
 
 
 let get_impl ~is_callee_in_trust_list ~nullsafe_mode ~is_provisional_annotation_mode
-    ( {ProcAttributes.proc_name; ret_type; method_annotation= {return= ret_annotation}} as
-    proc_attributes ) : t =
+    ({ProcAttributes.proc_name; ret_type; ret_annots} as proc_attributes) : t =
   let proc_name =
     Procname.as_java_exn ~explanation:"AnnotatedSignature.get:: should call only for Java methods"
       proc_name
@@ -143,17 +142,14 @@ let get_impl ~is_callee_in_trust_list ~nullsafe_mode ~is_provisional_annotation_
       (ThirdPartyAnnotationGlobalRepo.get_repo ())
       proc_name
   in
-  let param_info =
-    ProcAttributes.get_annotated_formals proc_attributes
-    |> List.map ~f:(fun ((a, b), c) -> (a, b, c))
-  in
+  let param_info = ProcAttributes.get_formals proc_attributes in
   let params =
     extract_for_params ~proc_name ~is_callee_in_trust_list ~nullsafe_mode ~is_third_party
       ~is_provisional_annotation_mode param_info
   in
   let ret =
     extract_for_ret ~proc_name ~is_callee_in_trust_list ~nullsafe_mode ~is_third_party
-      ~is_provisional_annotation_mode ret_type ret_annotation params
+      ~is_provisional_annotation_mode ret_type ret_annots params
   in
   let kind = if is_third_party then ThirdParty Unregistered else FirstParty in
   {nullsafe_mode; kind; ret; params}
@@ -196,7 +192,7 @@ let pp proc_name fmt annotated_signature =
 let mk_ann_str s = {Annot.class_name= s; parameters= []}
 
 let mk_ia_nullable ia =
-  if Annotations.ia_is_nullable ia then ia else (mk_ann_str Annotations.nullable, true) :: ia
+  if Annotations.ia_is_nullable ia then ia else mk_ann_str Annotations.nullable :: ia
 
 
 let mark_ia_nullability ia x = if x then mk_ia_nullable ia else ia

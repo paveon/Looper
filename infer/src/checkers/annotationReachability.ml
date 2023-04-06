@@ -63,7 +63,7 @@ let method_overrides_annot annot tenv pname = method_overrides (method_has_annot
 
 let lookup_annotation_calls {InterproceduralAnalysis.analyze_dependency} annot pname =
   analyze_dependency pname
-  |> Option.bind ~f:(fun (_, astate) -> Domain.find_opt annot astate)
+  |> Option.bind ~f:(Domain.find_opt annot)
   |> Option.value ~default:Domain.SinkMap.empty
 
 
@@ -323,16 +323,7 @@ module CxxAnnotationSpecs = struct
         Format.asprintf "%s can reach %s:\n    %s%s%s\n" src_desc snk_desc src_pname_str call_str
           snk_pname_str
       in
-      let issue_type =
-        let doc_url =
-          Option.value_map ~default:""
-            ~f:(U.string_of_yojson ~src:(src ^ " -> doc_url"))
-            (List.Assoc.find ~equal:String.equal spec_cfg "doc_url")
-        in
-        let linters_def_file = Option.value_map ~default:"" ~f:Fn.id Config.inferconfig_file in
-        IssueType.register_dynamic ~id:spec_name ~doc_url ~linters_def_file:(Some linters_def_file)
-          Error AnnotationReachability
-      in
+      let issue_type = IssueType.register_dynamic ~id:spec_name Error AnnotationReachability in
       Reporting.log_issue proc_desc err_log ~loc ~ltr:final_trace AnnotationReachability issue_type
         description
     in
@@ -470,15 +461,7 @@ let annot_specs =
 
 
 let get_annot_specs pname =
-  let language =
-    match pname with
-    | Procname.Java _ ->
-        Language.Java
-    | Procname.ObjC_Cpp _ | Procname.C _ | Procname.Block _ ->
-        Language.Clang
-    | _ ->
-        L.die InternalError "Cannot find language for proc %s" (Procname.to_string pname)
-  in
+  let language = Procname.get_language pname in
   List.Assoc.find_exn ~equal:Language.equal annot_specs language
 
 
@@ -509,7 +492,7 @@ module MakeTransferFunctions (CFG : ProcCfg.S) = struct
     match analyze_dependency callee_pname with
     | None ->
         astate
-    | Some (_, callee_call_map) ->
+    | Some callee_call_map ->
         L.d_printf "Applying summary for `%a`@\n" Procname.pp callee_pname ;
         let add_call_site annot sink calls astate =
           if Domain.CallSites.is_empty calls then astate

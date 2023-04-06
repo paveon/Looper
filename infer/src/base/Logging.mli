@@ -30,7 +30,7 @@ val task_progress : f:(unit -> 'a) -> (F.formatter -> 'b -> unit) -> 'b -> 'a
 (** [task_progress ~f pp x] executes [f] and log progress [pp x] in the log file and also on the
     console unless there is an active task bar *)
 
-val result : ('a, F.formatter, unit) format -> 'a
+val result : ?style:ANSITerminal.style list -> ('a, F.formatter, unit) format -> 'a
 (** Emit a result to stdout. Use only if the output format is stable and useful enough that it may
     conceivably get piped to another program, ie, almost never (use [progress] instead otherwise). *)
 
@@ -38,6 +38,7 @@ val user_error : ('a, F.formatter, unit) format -> 'a
 (** bad input, etc. detected *)
 
 val user_warning : ('a, F.formatter, unit) format -> 'a
+(** the user may have done something wrong *)
 
 val internal_error : ('a, F.formatter, unit) format -> 'a
 (** huho, infer has a bug *)
@@ -47,7 +48,7 @@ val external_error : ('a, F.formatter, unit) format -> 'a
 
 val external_warning : ('a, F.formatter, unit) format -> 'a
 
-type debug_kind = Analysis | BufferOverrun | Capture | Linters | MergeCapture | TestDeterminator
+type debug_kind = Analysis | BufferOverrun | Capture | MergeCapture | TestDeterminator
 
 (** Level of verbosity for debug output. Each level enables all the levels before it. *)
 type debug_level =
@@ -62,7 +63,7 @@ val debug_dev : ('a, Format.formatter, unit) format -> 'a
   [@@deprecated
     "Only use to debug during development. If you want more permanent logging, use [Logging.debug] \
      instead."]
-  [@@warning "-32"]
+  [@@warning "-unused-value-declaration"]
 (** For debugging during development. *)
 
 (** Type of location in ml source: __POS__ *)
@@ -79,8 +80,11 @@ val pp_ocaml_pos_opt : F.formatter -> ocaml_pos option -> unit
 val setup_log_file : unit -> unit
 (** Set up logging to go to the log file. Call this once the results directory has been set up. *)
 
+val flush_formatters : unit -> unit
+(** Flushes the formatters used for logging. Call this in the parent before you fork(2). *)
+
 val reset_formatters : unit -> unit
-(** Reset the formatters used for logging. Call this when you fork(2). *)
+(** Reset the formatters used for logging. Call this in the child after you fork(2). *)
 
 (** Delayed printing (HTML debug, ...) *)
 

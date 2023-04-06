@@ -23,6 +23,19 @@ val map : ('a -> 'b) -> 'a t -> 'b t
 
 val bind : ('a -> 'b t) -> 'a t -> 'b t
 
+val sat : 'a t -> 'a option
+
+val of_option : 'a option -> 'a t
+
+val list_fold : 'a list -> init:'accum -> f:('accum -> 'a -> 'accum t) -> 'accum t
+
+val to_list : 'a t -> 'a list
+
+val filter : 'a t list -> 'a list
+(** keep only [Sat _] elements *)
+
+val seq_fold : 'a Caml.Seq.t -> init:'accum -> f:('accum -> 'a -> 'accum t) -> 'accum t
+
 module Import : sig
   include module type of Types
 

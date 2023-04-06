@@ -17,9 +17,11 @@ module F = Format
 (** Current formatter for the html output *)
 let curr_html_formatter = ref F.std_formatter
 
+let () = AnalysisGlobalState.register_ref ~init:(fun () -> F.std_formatter) curr_html_formatter
+
 (** Return true if the node was visited during analysis *)
 let is_visited node =
-  match Summary.OnDisk.get (Procdesc.Node.get_proc_name node) with
+  match Summary.OnDisk.get ~lazy_payloads:true (Procdesc.Node.get_proc_name node) with
   | None ->
       false
   | Some summary ->
@@ -92,7 +94,7 @@ end = struct
       pp_node_link_seq fmt (Procdesc.Node.get_exn node) ;
       F.fprintf fmt "<br>@\n" ;
       F.fprintf fmt "<LISTING class='%s'>%a</LISTING>" (Pp.color_string Green)
-        (Instrs.pp (Pp.html Green))
+        (Instrs.pp ~indent:false (Pp.html Green))
         (Procdesc.Node.get_instrs node) ) ;
     F.fprintf fmt "%a%a %t" Io_infer.Html.pp_hline ()
       (Io_infer.Html.pp_session_link source ~with_name:true [".."] ~proc_name)
@@ -131,7 +133,8 @@ end = struct
          [] )
       linenum ;
     pp_node_link_seq [] ~description:true fmt nodes ;
-    ( match Summary.OnDisk.get pname with
+    (* load payloads eagerly as we need them to print them all *)
+    ( match Summary.OnDisk.get ~lazy_payloads:false pname with
     | None ->
         ()
     | Some summary ->
@@ -174,18 +177,18 @@ end = struct
 
   let process_proc table_nodes_at_linenum global_err_log proc_desc =
     let proc_name = Procdesc.get_proc_name proc_desc in
-    let _ = (* Initializes wto_indexes *) Procdesc.get_wto proc_desc in
+    Procdesc.init_wto proc_desc ;
     let process_node n =
       let lnum = (Procdesc.Node.get_loc n).Location.line in
       let curr_nodes = try Hashtbl.find table_nodes_at_linenum lnum with Caml.Not_found -> [] in
       Hashtbl.replace table_nodes_at_linenum lnum (n :: curr_nodes)
     in
     List.iter ~f:process_node (Procdesc.get_nodes proc_desc) ;
-    match Summary.OnDisk.get proc_name with
+    match Summary.OnDisk.get ~lazy_payloads:true proc_name with
     | None ->
         ()
-    | Some summary ->
-        Errlog.update global_err_log (Summary.get_err_log summary)
+    | Some {err_log} ->
+        Errlog.update global_err_log err_log
 
 
   let write_html_file filename procs =
@@ -209,7 +212,7 @@ end = struct
               | Procdesc.Node.Start_node ->
                   let proc_name = Procdesc.Node.get_proc_name n in
                   let proc_name_escaped = Escape.escape_xml (Procname.to_string proc_name) in
-                  if Summary.OnDisk.get proc_name |> Option.is_some then (
+                  if Summary.OnDisk.get ~lazy_payloads:true proc_name |> Option.is_some then (
                     F.pp_print_char fmt ' ' ;
                     let label = F.asprintf "summary for %s" proc_name_escaped in
                     Io_infer.Html.pp_proc_link [fname_encoding] proc_name fmt label )

@@ -10,12 +10,11 @@ module F = Format
 
 type t = int AccessPath.BaseMap.t
 
-let make pdesc =
-  let pname = Procdesc.get_proc_name pdesc in
-  let attrs = Procdesc.get_attributes pdesc in
+let make attrs =
+  let pname = attrs.ProcAttributes.proc_name in
   let formals_with_nums =
     List.mapi
-      ~f:(fun index (name, typ) ->
+      ~f:(fun index (name, typ, _) ->
         let pvar = Pvar.mk name pname in
         (AccessPath.base_of_pvar pvar typ, index) )
       attrs.ProcAttributes.formals

@@ -158,7 +158,7 @@ module Call : sig
   include
     Common
       with type ('context, 'f, 'arg_payload) dispatcher =
-            'context -> Procname.t -> 'arg_payload FuncArg.t list -> 'f option
+        'context -> Procname.t -> 'arg_payload FuncArg.t list -> 'f option
 
   val merge_dispatchers :
        ('context, 'f, 'arg_payload) dispatcher
@@ -215,12 +215,16 @@ module Call : sig
   val any_arg_of_prim_typ : Typ.t -> ('context, unit, _, 'f, 'f, 'arg_payload) one_arg
   (** Eats one arg of the given primitive type *)
 
+  val capt_arg_payload_of_prim_typ :
+    Typ.t -> ('context, 'arg_payload, 'wrapped_arg, 'wrapped_arg -> 'f, 'f, 'arg_payload) one_arg
+  (** Captures the payload of one arg of the given primitive type *)
+
   val capt_exp_of_prim_typ :
     Typ.t -> ('context, Exp.t, 'wrapped_arg, 'wrapped_arg -> 'f, 'f, 'arg_payload) one_arg
   (** Captures one arg expression of the given primitive type *)
 
-  val capt_var_exn : ('context, Ident.t, 'wrapped_arg, 'wrapped_arg -> 'f, 'f, 'arg_payload) one_arg
-  (** Captures one arg Var. Fails with an internal error if the expression is not a Var *)
+  val capt_var : ('context, Ident.t, 'wrapped_arg, 'wrapped_arg -> 'f, 'f, 'arg_payload) one_arg
+  (** Captures one arg Var *)
 
   val ( $+ ) :
        ('context, 'f_in, 'f_proc_out, 'f_interm, 'arg_payload) args_matcher
@@ -337,4 +341,4 @@ module Call : sig
   (** Ends function arguments, accepts NO more function arguments. If the args do not match, raise
       an internal error. *)
 end
-[@@warning "-32"]
+[@@warning "-unused-value-declaration"]

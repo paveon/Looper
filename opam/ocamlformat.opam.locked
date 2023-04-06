@@ -1,0 +1,67 @@
+opam-version: "2.0"
+name: "ocamlformat"
+version: "0.25.1"
+synopsis: "Auto-formatter for OCaml code"
+description:
+  "OCamlFormat is a tool to automatically format OCaml code in a uniform style."
+maintainer: "OCamlFormat Team <ocamlformat-dev@lists.ocaml.org>"
+authors: "Josh Berdine <jjb@fb.com>"
+license: ["MIT" "LGPL-2.1-only WITH OCaml-LGPL-linking-exception"]
+homepage: "https://github.com/ocaml-ppx/ocamlformat"
+bug-reports: "https://github.com/ocaml-ppx/ocamlformat/issues"
+depends: [
+  "astring" {= "0.8.5"}
+  "base" {= "v0.15.1"}
+  "base-bigarray" {= "base"}
+  "base-bytes" {= "base"}
+  "base-threads" {= "base"}
+  "base-unix" {= "base"}
+  "camlp-streams" {= "5.0.1"}
+  "cmdliner" {= "1.1.1"}
+  "csexp" {= "1.5.1"}
+  "dune" {= "3.7.0"}
+  "dune-build-info" {= "3.4.1"}
+  "dune-configurator" {= "3.7.0"}
+  "either" {= "1.0.0"}
+  "fix" {= "20220121"}
+  "fpath" {= "0.7.3"}
+  "menhir" {= "20220210"}
+  "menhirLib" {= "20220210"}
+  "menhirSdk" {= "20220210"}
+  "ocaml" {= "4.14.0"}
+  "ocaml-config" {= "2"}
+  "ocaml-option-flambda" {= "1"}
+  "ocaml-variants" {= "4.14.0+options"}
+  "ocaml-version" {= "3.5.0"}
+  "ocamlbuild" {= "0.14.2"}
+  "ocamlfind" {= "1.9.6"}
+  "ocamlformat-lib" {= "0.25.1"}
+  "ocp-indent" {= "1.8.1"}
+  "re" {= "1.10.4"}
+  "result" {= "1.5"}
+  "seq" {= "base"}
+  "sexplib0" {= "v0.15.1"}
+  "stdio" {= "v0.15.0"}
+  "topkg" {= "1.0.7"}
+  "uucp" {= "15.0.0"}
+  "uuseg" {= "15.0.0"}
+  "uutf" {= "1.0.3"}
+]
+build: [
+  ["dune" "subst"] {dev}
+  [
+    "dune"
+    "build"
+    "-p"
+    name
+    "-j"
+    jobs
+    "@install"
+    "@runtest" {with-test}
+    "@doc" {with-doc}
+  ]
+]
+dev-repo: "git+https://github.com/ocaml-ppx/ocamlformat.git"
+url {
+  src: "git+https://github.com/ocaml-ppx/ocamlformat.git#0.25.1"
+}

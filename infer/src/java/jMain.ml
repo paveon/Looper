@@ -29,6 +29,9 @@ let do_source_file program tenv source_basename package_opt source_file =
   L.(debug Capture Medium) "@\nfilename: %a (%s)@." SourceFile.pp source_file source_basename ;
   init_global_state source_file ;
   let cfg = JFrontend.compute_source_icfg program tenv source_basename package_opt source_file in
+  ( if Config.dump_textual then
+      let filename = Filename.chop_extension (SourceFile.to_abs_path source_file) ^ ".sil" in
+      TextualSil.from_java ~filename tenv cfg ) ;
   store_icfg source_file cfg
 
 
@@ -40,13 +43,13 @@ let capture_libs program tenv =
     | Javalib.JClass _ when JFrontend.is_classname_cached cn ->
         ()
     | Javalib.JClass _ ->
-        let fake_source_file = SourceFile.from_abs_path (JFrontend.path_of_cached_classname cn) in
-        init_global_state fake_source_file ;
-        let cfg = JFrontend.compute_class_icfg fake_source_file program tenv node in
-        store_icfg fake_source_file cfg ;
+        let class_source_file = SourceFile.from_abs_path (JFrontend.classname_path cn) in
+        init_global_state class_source_file ;
+        let cfg = JFrontend.compute_class_icfg class_source_file program tenv node in
+        store_icfg class_source_file cfg ;
         JFrontend.cache_classname cn
   in
-  JBasics.ClassMap.iter (capture_class tenv) (JProgramDesc.get_classmap program)
+  JProgramDesc.Classmap.iter (capture_class tenv) (JProgramDesc.get_classmap program)
 
 
 (* load a stored global tenv if the file is found, and create a new one otherwise *)
@@ -70,7 +73,7 @@ let save_tenv tenv =
 let store_callee_attributes tenv program =
   let f proc_name cn ms =
     Option.iter
-      ~f:(Attributes.store ~proc_desc:None)
+      ~f:(Attributes.store ~proc_desc:None ~analysis:false)
       (JTrans.create_callee_attributes tenv program cn ms proc_name)
   in
   JProgramDesc.iter_missing_callees program ~f
@@ -81,12 +84,10 @@ let do_all_files sources program =
   let tenv = load_tenv () in
   let skip source_file =
     let is_path_matching path =
-      List.exists
-        ~f:(fun pattern -> Str.string_match (Str.regexp pattern) path 0)
-        Config.skip_analysis_in_path
+      Option.exists ~f:(fun re -> Str.string_match re path 0) Config.skip_analysis_in_path
     in
     is_path_matching (SourceFile.to_rel_path source_file)
-    || Inferconfig.skip_translation_matcher source_file Procname.empty_block
+    || Inferconfig.capture_block_list_file_matcher source_file
   in
   let translate_source_file basename package_opt source_file =
     if not (skip source_file) then do_source_file program tenv basename package_opt source_file

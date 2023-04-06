@@ -63,7 +63,7 @@ let verbose = Config.trace_error
 let find_struct_by_value_assignment node pvar =
   if Pvar.is_frontend_tmp pvar then
     let find_instr node = function
-      | Sil.Call (_, Const (Cfun pname), args, loc, cf) -> (
+      | Sil.Call (_, (Const (Cfun pname) | Closure {name= pname}), args, loc, cf) -> (
         match List.last args with
         | Some (Exp.Lvar last_arg, _) when Pvar.equal pvar last_arg ->
             Some (node, pname, loc, cf)
@@ -76,17 +76,6 @@ let find_struct_by_value_assignment node pvar =
   else None
 
 
-(** Find a program variable assignment to id in the current node or predecessors. *)
-let find_ident_assignment node id : (Procdesc.Node.t * Exp.t) option =
-  let find_instr node = function
-    | Sil.Load {id= id_; e} when Ident.equal id_ id ->
-        Some (node, e)
-    | _ ->
-        None
-  in
-  Procdesc.Node.find_in_node_or_preds node ~f:find_instr
-
-
 (** Find the Load instruction used to declare normal variable [id], and return the expression
     dereferenced to initialize [id] *)
 let rec find_normal_variable_load_ tenv (seen : Exp.Set.t) node id : DExp.t option =
@@ -97,14 +86,19 @@ let rec find_normal_variable_load_ tenv (seen : Exp.Set.t) node id : DExp.t opti
           Exp.d_exp e ;
           L.d_ln () ) ;
         exp_lv_dexp_ tenv seen node e
-    | Sil.Call ((id0, _), Exp.Const (Const.Cfun pn), (e, _) :: _, _, _)
+    | Sil.Call ((id0, _), (Exp.Const (Const.Cfun pn) | Closure {name= pn}), (e, _) :: _, _, _)
       when Ident.equal id id0 && Procname.equal pn (Procname.from_string_c_fun "__cast") ->
         if verbose then (
           L.d_str "find_normal_variable_load cast on " ;
           Exp.d_exp e ;
           L.d_ln () ) ;
         exp_rv_dexp_ tenv seen node e
-    | Sil.Call ((id0, _), (Exp.Const (Const.Cfun pname) as fun_exp), args, loc, call_flags)
+    | Sil.Call
+        ( (id0, _)
+        , ((Exp.Const (Const.Cfun pname) | Closure {name= pname}) as fun_exp)
+        , args
+        , loc
+        , call_flags )
       when Ident.equal id id0 ->
         if verbose then (
           L.d_str "find_normal_variable_load function call " ;
@@ -606,19 +600,19 @@ let vpath_find tenv prop exp_ : DExp.t option * Typ.t option =
   in
   let res = find [] prop.Prop.sigma exp_ in
   ( if verbose then
-    match res with
-    | None, _ ->
-        L.d_str "vpath_find: cannot find " ;
-        Exp.d_exp exp_ ;
-        L.d_ln ()
-    | Some de, typo -> (
-        L.d_printf "vpath_find: found %a :" DExp.pp de ;
-        match typo with
-        | None ->
-            L.d_str " No type"
-        | Some typ ->
-            Typ.d_full typ ;
-            L.d_ln () ) ) ;
+      match res with
+      | None, _ ->
+          L.d_str "vpath_find: cannot find " ;
+          Exp.d_exp exp_ ;
+          L.d_ln ()
+      | Some de, typo -> (
+          L.d_printf "vpath_find: found %a :" DExp.pp de ;
+          match typo with
+          | None ->
+              L.d_str " No type"
+          | Some typ ->
+              Typ.d_full typ ;
+              L.d_ln () ) ) ;
   res
 
 
@@ -802,7 +796,7 @@ let explain_dereference_access outermost_array is_nullable de_opt_ prop =
 
 
 (** Create a description of a dereference operation *)
-let create_dereference_desc proc_name tenv ?(use_buckets = false) ?(outermost_array = false)
+let create_dereference_desc proc_name _ ?(use_buckets = false) ?(outermost_array = false)
     ?(is_nullable = false) ?(is_premature_nil = false) de_opt deref_str prop loc =
   let value_str, access_opt = explain_dereference_access outermost_array is_nullable de_opt prop in
   let access_opt' =
@@ -816,12 +810,6 @@ let create_dereference_desc proc_name tenv ?(use_buckets = false) ?(outermost_ar
   let desc =
     if Language.curr_language_is Clang && not is_premature_nil then
       match de_opt with
-      | Some (DExp.Dpvar pvar) | Some (DExp.Dpvaraddr pvar) -> (
-        match Attribute.get_objc_null tenv prop (Exp.Lvar pvar) with
-        | Some (Apred (Aobjc_null, [_; vfs])) ->
-            Localise.parameter_field_not_null_checked_desc desc vfs
-        | _ ->
-            desc )
       | Some (DExp.Dretcall (Dconst (Cfun pname), this_dexp :: _, loc, _)) ->
           if is_vector_method pname then
             Localise.desc_empty_vector_access (Some pname) (DExp.to_string this_dexp) loc
@@ -912,7 +900,7 @@ let explain_access_ proc_name tenv ?(use_buckets = false) ?(outermost_array = fa
           Exp.d_exp e ;
           L.d_ln () ) ;
         Some e
-    | Some (Sil.Call (_, Exp.Const (Const.Cfun fn), [(e, _)], _, _))
+    | Some (Sil.Call (_, (Exp.Const (Const.Cfun fn) | Closure {name= fn}), [(e, _)], _, _))
       when List.exists ~f:(Procname.equal fn)
              [BuiltinDecl.free; BuiltinDecl.__delete; BuiltinDecl.__delete_array] ->
         if verbose then (

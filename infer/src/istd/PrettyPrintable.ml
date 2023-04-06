@@ -274,9 +274,17 @@ module type PPUniqRankSet = sig
 
   val remove : elt -> t -> t
 
+  val remove_by_rank : rank -> t -> t
+
   val mem : elt -> t -> bool
 
+  val update : elt -> t -> t
+
   val union_prefer_left : t -> t -> t
+
+  val filter : t -> f:(elt -> bool) -> t
+
+  val filter_map : t -> f:(elt -> elt option) -> t
 
   val pp : ?print_rank:bool -> F.formatter -> t -> unit
 end
@@ -347,11 +355,28 @@ module MakePPUniqRankSet
     if print_rank then Map.pp fmt map else pp_collection ~pp_item:Val.pp fmt (elements map)
 
 
-  let remove value map = Map.remove (Val.to_rank value) map
+  let remove_by_rank rank map = Map.remove rank map
+
+  let remove value map = remove_by_rank (Val.to_rank value) map
 
   let mem value map = Map.mem (Val.to_rank value) map
 
   let singleton value = add Map.empty value
 
+  let update value map = Map.update (Val.to_rank value) (fun _ -> Some value) map
+
   let union_prefer_left m1 m2 = Map.union (fun _rank value1 _value2 -> Some value1) m1 m2
+
+  let filter map ~f = Map.filter (fun _ v -> f v) map
+
+  let filter_map map ~f =
+    Map.filter_map
+      (fun rank value ->
+        match f value with
+        | None ->
+            None
+        | Some value' ->
+            assert (Rank.equal rank (Val.to_rank value')) ;
+            Some value' )
+      map
 end

@@ -17,6 +17,8 @@ let if_none_eval = value_default_f
 
 let exists2 x y ~f = match (x, y) with Some x, Some y -> f x y | _, _ -> false
 
+let iter2 x y ~f = match (x, y) with Some x, Some y -> f x y | _, _ -> ()
+
 let map_changed opt ~equal ~f =
   match opt with
   | None ->
@@ -24,6 +26,11 @@ let map_changed opt ~equal ~f =
   | Some x ->
       let x' = f x in
       if equal x x' then opt else Some x'
+
+
+let continue ~default opt f =
+  let v = Option.value opt ~default in
+  match f v with None -> opt | Some _ as res -> res
 
 
 module Let_syntax = struct

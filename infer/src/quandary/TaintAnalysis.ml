@@ -123,7 +123,7 @@ module Make (TaintSpecification : TaintSpec.S) = struct
           TaintDomain.bottom
         else
           match analyze_dependency pname with
-          | Some (_, summary) ->
+          | Some summary ->
               TaintSpecification.of_summary_access_tree summary
           | None ->
               TaintDomain.bottom
@@ -182,8 +182,7 @@ module Make (TaintSpecification : TaintSpec.S) = struct
                 match
                   List.find
                     ~f:(fun source ->
-                      [%compare.equal: Source.Kind.t] kind (Source.kind source)
-                      && not (is_recursive source) )
+                      Source.Kind.equal kind (Source.kind source) && not (is_recursive source) )
                     (Sources.Known.elements (sources trace).Sources.known)
                 with
                 | Some matching_source ->
@@ -209,9 +208,7 @@ module Make (TaintSpecification : TaintSpec.S) = struct
               (fun acc _ trace ->
                 match
                   List.find
-                    ~f:(fun sink ->
-                      [%compare.equal: Sink.Kind.t] kind (Sink.kind sink) && not (is_recursive sink)
-                      )
+                    ~f:(fun sink -> Sink.Kind.equal kind (Sink.kind sink) && not (is_recursive sink))
                     (Sinks.elements (sinks trace))
                 with
                 | Some matching_sink ->
@@ -253,9 +250,9 @@ module Make (TaintSpecification : TaintSpec.S) = struct
                 let base, _ = AccessPath.Abs.extract access_path in
                 F.fprintf fmt " with tainted data %a" AccessPath.Abs.pp
                   ( if Var.is_footprint (fst base) then
-                    (* TODO: resolve footprint identifier to formal name *)
-                    access_path
-                  else access_path )
+                      (* TODO: resolve footprint identifier to formal name *)
+                      access_path
+                    else access_path )
           in
           List.map
             ~f:(fun (access_path_opt, path_source) ->
@@ -641,7 +638,7 @@ module Make (TaintSpecification : TaintSpec.S) = struct
         match analyze_dependency callee_pname with
         | None ->
             handle_unknown_call callee_pname astate_with_direct_sources
-        | Some (_, summary) -> (
+        | Some summary -> (
             let ret_typ = snd ret_ap in
             let access_tree = TaintSpecification.of_summary_access_tree summary in
             match TaintSpecification.get_model callee_pname ret_typ actuals tenv access_tree with
@@ -784,7 +781,7 @@ module Make (TaintSpecification : TaintSpec.S) = struct
          directly with a formal. In Java this can't happen, so we only care if the formal flows to
          a sink *)
       ( if is_java then TraceDomain.Sinks.is_empty (TraceDomain.sinks trace)
-      else TraceDomain.is_bottom trace )
+        else TraceDomain.is_bottom trace )
       &&
       match tree with
       | TaintDomain.Subtree subtree ->
@@ -845,7 +842,7 @@ module Make (TaintSpecification : TaintSpec.S) = struct
         (TraceDomain.Source.get_tainted_formals pdesc tenv)
     in
     let initial = make_initial proc_desc in
-    let formal_map = FormalMap.make proc_desc in
+    let formal_map = FormalMap.make (Procdesc.get_attributes proc_desc) in
     let proc_data = {analysis_data; formal_map} in
     match Analyzer.compute_post proc_data ~initial proc_desc with
     | Some access_tree ->

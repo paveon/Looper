@@ -12,18 +12,17 @@ type t =
   | Biabduction
   | BufferOverrunAnalysis
   | BufferOverrunChecker
-  | ConfigChecksBetweenMarkers
   | ConfigImpactAnalysis
   | Cost
   | Looper
-  | DeadlockChecker
+  (* | DeadlockChecker *)
+  | Datalog
   | DisjunctiveDemo
   | Eradicate
   | FragmentRetainsView
   | ImmutableCast
   | Impurity
   | InefficientKeysetIterator
-  | Linters
   | LithoRequiredProps
   | Liveness
   | LoopHoisting
@@ -36,9 +35,11 @@ type t =
   | Quandary
   | RacerD
   | ResourceLeakLabExercise
-  | DOTNETResourceLeaks
+  | ScopeLeakage
   | SIOF
+  | SILValidation
   | SimpleLineage
+  | SimpleShape
   | SelfInBlock
   | Starvation
   | Topl

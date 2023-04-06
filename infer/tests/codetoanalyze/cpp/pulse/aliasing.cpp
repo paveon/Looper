@@ -52,6 +52,8 @@ void diverge_before_null_deref_ok(int* x) {
 }
 
 // this test makes more sense in an inter-procedural setting
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wtautological-pointer-compare"
 void stack_addresses_are_not_null_ok() {
   int x;
   if (&x == nullptr) {
@@ -59,6 +61,7 @@ void stack_addresses_are_not_null_ok() {
     *p = 42;
   }
 }
+#pragma clang diagnostic pop
 
 void stack_addresses_are_distinct_ok() {
   int x;
@@ -70,8 +73,8 @@ void stack_addresses_are_distinct_ok() {
 }
 
 // latent because of the condition "x==0" in the pre-condition
-void null_test_after_deref_latent(int* x) {
-  *x = 42; // latent error given that x is tested for null below
+void null_test_after_deref_latent_FN(int* x) {
+  *x = 42; // filtered out latent error given that x is tested for null below
   if (x == nullptr) {
     int* p = nullptr;
     *p = 42; // should be ignored as we can never get there

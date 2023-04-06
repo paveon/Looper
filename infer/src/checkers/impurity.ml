@@ -46,7 +46,7 @@ let ignore_array_index (access : BaseMemory.Access.t) : unit HilExp.Access.t =
 let add_invalid_and_modified ~pvar ~access ~check_empty attrs access_list acc =
   let modified =
     Attributes.get_written_to attrs
-    |> Option.value_map ~default:[] ~f:(fun modified -> [ImpurityDomain.WrittenTo modified])
+    |> Option.value_map ~default:[] ~f:(fun (_, modified) -> [ImpurityDomain.WrittenTo modified])
   in
   let invalid_and_modified =
     match Attributes.get_invalid attrs with
@@ -120,7 +120,7 @@ let add_to_modified pname ~pvar ~access ~addr pre_heap post modified_vars =
 
 
 let get_modified_params pname post_stack pre_heap post formals =
-  List.fold_left formals ~init:ImpurityDomain.ModifiedVarMap.bottom ~f:(fun acc (name, typ) ->
+  List.fold_left formals ~init:ImpurityDomain.ModifiedVarMap.bottom ~f:(fun acc (name, typ, _) ->
       let pvar = Pvar.mk name pname in
       match BaseStack.find_opt (Var.of_pvar pvar) post_stack with
       | Some (addr, _) when Typ.is_pointer typ -> (
@@ -155,21 +155,18 @@ let is_modeled_pure tenv pname =
 
 (** Given Pulse summary, extract impurity info, i.e. parameters and global variables that are
     modified by the function and skipped functions. *)
-let extract_impurity tenv pname formals (exec_state : ExecutionDomain.t) : ImpurityDomain.t =
+let extract_impurity tenv pname formals (exec_state : ExecutionDomain.summary) : ImpurityDomain.t =
   let astate, exited =
     match exec_state with
     | ExitProgram astate ->
-        ((astate :> AbductiveDomain.t), true)
-    | ContinueProgram astate ->
+        (astate, true)
+    | ContinueProgram astate | ExceptionRaised astate ->
         (astate, false)
-    | AbortProgram astate
-    | LatentAbortProgram {astate}
-    | LatentInvalidAccess {astate}
-    | ISLLatentMemoryError astate ->
-        ((astate :> AbductiveDomain.t), false)
+    | AbortProgram astate | LatentAbortProgram {astate} | LatentInvalidAccess {astate} ->
+        (astate, false)
   in
-  let pre_heap = (AbductiveDomain.get_pre astate).BaseDomain.heap in
-  let post = AbductiveDomain.get_post astate in
+  let pre_heap = (AbductiveDomain.Summary.get_pre astate).BaseDomain.heap in
+  let post = AbductiveDomain.Summary.get_post astate in
   let post_stack = post.BaseDomain.stack in
   let modified_params = get_modified_params pname post_stack pre_heap post formals in
   let modified_globals = get_modified_globals pname pre_heap post post_stack in
@@ -177,7 +174,7 @@ let extract_impurity tenv pname formals (exec_state : ExecutionDomain.t) : Impur
     SkippedCalls.filter
       (fun proc_name _ ->
         PurityChecker.should_report proc_name && not (is_modeled_pure tenv proc_name) )
-      astate.AbductiveDomain.skipped_calls
+      (AbductiveDomain.Summary.get_skipped_calls astate)
   in
   {modified_globals; modified_params; skipped_calls; exited}
 
@@ -248,11 +245,8 @@ let checker {IntraproceduralAnalysis.proc_desc; tenv; err_log}
       let formals = Procdesc.get_formals proc_desc in
       let proc_name = Procdesc.get_proc_name proc_desc in
       let impurity_astate =
-        List.fold pre_posts ~init:ImpurityDomain.pure
-          ~f:(fun acc (exec_state : ExecutionDomain.summary) ->
-            let impurity_astate =
-              extract_impurity tenv proc_name formals (exec_state :> ExecutionDomain.t)
-            in
+        List.fold pre_posts ~init:ImpurityDomain.pure ~f:(fun acc exec_state ->
+            let impurity_astate = extract_impurity tenv proc_name formals exec_state in
             ImpurityDomain.join acc impurity_astate )
       in
       if PurityChecker.should_report proc_name && not (ImpurityDomain.is_pure impurity_astate) then (

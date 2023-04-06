@@ -5,7 +5,11 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-int main() {
+#pragma clang diagnostic ignored "-Wfree-nonheap-object"
+
+int
+main()
+{
   int i;
   free(&i);
 }

@@ -9,7 +9,7 @@ module F = Format
 module L = Logging
 module MF = MarkupFormatter
 
-type access = HilExp.t option HilExp.Access.t [@@deriving compare]
+type access = HilExp.t option HilExp.Access.t [@@deriving compare, equal]
 
 let get_access_typ tenv prev_typ (access : access) =
   let lookup tn = Tenv.lookup tenv tn in
@@ -24,9 +24,7 @@ let get_access_typ tenv prev_typ (access : access) =
     match prev_typ with {Typ.desc= Tptr (typ, _)} -> Some typ | _ -> None )
 
 
-type access_list = access list [@@deriving compare]
-
-let equal_access_list = [%compare.equal: access_list]
+type access_list = access list [@@deriving compare, equal]
 
 let get_typ tenv ((_, base_typ), accesses) =
   let f acc access = match acc with Some typ -> get_access_typ tenv typ access | None -> None in
@@ -55,6 +53,8 @@ let pp_with_base pp_base fmt (base, accesses) =
     match (accesses, !Language.curr_language) with
     | _, Erlang ->
         L.internal_error "Erlang not supported"
+    | _, Hack ->
+        L.internal_error "Hack not supported"
     | [], _ ->
         pp_base fmt base
     | ArrayAccess _ :: rest, _ ->
@@ -70,6 +70,8 @@ let pp_with_base pp_base fmt (base, accesses) =
               "."
           | Erlang ->
               L.die InternalError "Erlang not supported"
+          | Hack ->
+              L.die InternalError "Hack not supported"
         in
         F.fprintf fmt "%a%s%a" pp_rev_accesses rest op Fieldname.pp field_name
     | FieldAccess field_name :: rest, _ ->

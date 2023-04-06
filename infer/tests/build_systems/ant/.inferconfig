@@ -1,8 +1,7 @@
 {
   "force-delete-results-dir": true,
-  "skip-translation": [
+  "capture-block-list": [
     {
-      "language": "Java",
       "source_contains": "_SHOULD_BE_SKIPPED_"
     }
   ]

@@ -8,7 +8,7 @@ TESTS_DIR = ../../..
 # see explanations in cpp/biabduction/Makefile for the custom isystem
 CLANG_OPTIONS = -x c++ -std=c++17 -nostdinc++ -isystem$(CLANG_INCLUDES)/c++/v1/ -c
 INFER_OPTIONS = --pulse-only --debug-exceptions --project-root $(TESTS_DIR) \
-  --pulse-report-latent-issues
+--pulse-report-issues-for-tests
 INFERPRINT_OPTIONS = --issues-tests
 
 SOURCES = $(wildcard *.cpp)

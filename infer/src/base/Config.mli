@@ -16,15 +16,17 @@ type os_type = Unix | Win32 | Cygwin
 type build_system =
   | BAnt
   | BBuck
+  | BBuck2
   | BClang
+  | BErlc
   | BGradle
+  | BHackc
   | BJava
   | BJavac
   | BMake
   | BMvn
   | BNdk
   | BRebar3
-  | BErlc
   | BXcode
 
 type scheduler = File | Restart | SyntacticCallGraph [@@deriving equal]
@@ -165,9 +167,29 @@ val bo_debug : int
 
 val bo_field_depth_limit : int option
 
+val bo_max_cfg_size : int
+
+val bo_sound_unknown_sets_join : bool
+
+val bo_bottom_as_default : bool
+
+val bo_context_sensitive_allocsites : bool
+
+val bo_assume_void : bool
+
+val bo_exit_frontend_gener_vars : bool
+
 val bootclasspath : string option
 
 val buck : bool
+
+val buck2_build_args : string list
+
+val buck2_build_args_no_inline : string list
+
+val buck2_bxl_target : string option
+
+val buck2_use_bxl : bool
 
 val buck_block_list : string list
 
@@ -178,6 +200,8 @@ val buck_build_args_no_inline : string list
 val buck_cache_mode : bool
 
 val buck_clang_use_toolchain_config : bool
+
+val buck_dependency_depth : int option
 
 val buck_java_flavor_suppress_config : bool
 
@@ -191,11 +215,19 @@ val buck_out : string
 
 val buck_out_gen : string
 
+val buck2_root : string
+
 val buck_targets_block_list : string list
+
+val bxl_file_capture : bool
 
 val capture : bool
 
-val capture_block_list : string option
+val capture_block_list : string * Yojson.Basic.t
+
+val capture_doli : string list
+
+val capture_textual : string list
 
 val censor_report : ((bool * Str.regexp) * (bool * Str.regexp) * string) list
 
@@ -229,6 +261,16 @@ val classpath : string option
 
 val command : InferCommand.t
 
+val compaction_if_heap_greater_equal_to_GB : int
+
+val compaction_minimum_interval_s : int
+
+val config_impact_config_field_patterns : Re.Str.regexp list
+
+val config_impact_config_function_patterns : Re.Str.regexp list
+
+val config_impact_config_param_patterns : Re.Str.regexp list
+
 val config_impact_current : string option
 
 val config_impact_data_file : string option
@@ -242,6 +284,10 @@ val config_impact_previous : string option
 val config_impact_strict_mode : bool
 
 val config_impact_strict_mode_paths : Str.regexp list
+
+val config_impact_strict_beta_mode_paths : Str.regexp list
+
+val config_impact_test_paths : Str.regexp list
 
 val continue_analysis : bool
 
@@ -273,13 +319,9 @@ val debug_level_analysis : int
 
 val debug_level_capture : int
 
-val debug_level_linters : int
-
 val debug_level_test_determinator : int
 
 val debug_mode : bool
-
-val default_linters : bool
 
 val dependency_mode : bool
 
@@ -293,6 +335,10 @@ val dotty_cfg_libs : bool
 
 val dump_duplicate_symbols : bool
 
+val dump_textual : bool
+
+val dynamic_dispatch_json_file_path : string option
+
 val eradicate_condition_redundant : bool
 
 val eradicate_field_over_annotated : bool
@@ -303,7 +349,11 @@ val eradicate_verbose : bool
 
 val erlang_ast_dir : string option
 
-val erlang_skip_rebar3 : bool
+val erlang_check_return : bool
+
+val erlang_skip_compile : bool
+
+val erlang_with_otp_specs : bool
 
 val erlang_list_unfold_depth : int
 
@@ -314,6 +364,8 @@ val fcp_apple_clang : string option
 val fcp_syntax_only : bool
 
 val file_renamings : string option
+
+val files_to_analyze_index : string option
 
 val filter_paths : bool
 
@@ -339,9 +391,11 @@ val generated_classes : string option
 
 val genrule_mode : bool
 
-val get_linter_doc_url : linter_id:string -> string option
-
 val global_tenv : bool
+
+val hack_naming_table : string option [@@warning "-unused-value-declaration"]
+
+val hackc_binary : string
 
 val help_checker : Checker.t list
 
@@ -364,9 +418,13 @@ val locking_error : bool
 
 val incremental_analysis : bool
 
+val inline_func_pointer_for_testing : string option
+
 val infer_is_clang : bool
 
 val infer_is_javac : bool
+
+val invalidate_only : bool
 
 val implicit_sdk_root : string option
 
@@ -386,6 +444,8 @@ val java_debug_source_file_info : string option
 
 val java_jar_compiler : string option
 
+val java_reflection : bool
+
 val java_source_parser_experimental : bool
 
 val java_version : int option
@@ -400,18 +460,6 @@ val keep_going : bool
 
 val kotlin_capture : bool
 
-val linter : string option
-
-val linters_def_file : string list
-
-val linters_def_folder : string list
-
-val linters_developer_mode : bool
-
-val linters_ignore_clang_failures : bool
-
-val linters_validate_syntax_only : bool
-
 val list_checkers : bool
 
 val list_issue_types : bool
@@ -422,6 +470,10 @@ val liveness_ignored_constant : string list
 
 val load_average : float option
 
+val margin_html : int
+
+val mark_unchanged_procs : bool
+
 val mask_sajwa_exceptions : bool
 
 val max_nesting : int option
@@ -430,13 +482,19 @@ val memtrace_analysis : bool
 
 val memtrace_sampling_rate : float
 
-val merge : bool
+val merge_capture : string list
 
 val merge_report : string list
 
+val merge_report_summaries : string list
+
 val method_decls_info : string option
 
+val modeled_expensive : string * Yojson.Basic.t
+
 val modified_lines : string option
+
+val never_returning_null : string * Yojson.Basic.t
 
 val no_censor_report : Str.regexp list
 
@@ -460,13 +518,11 @@ val oom_threshold : int option
 
 val only_cheap_debug : bool
 
-val patterns_modeled_expensive : string * Yojson.Basic.t
-
-val patterns_never_returning_null : string * Yojson.Basic.t
-
-val patterns_skip_translation : string * Yojson.Basic.t
+val parse_doli : string option
 
 val pmd_xml : bool
+
+val preanalysis_html : bool
 
 val print_active_checkers : bool
 
@@ -484,6 +540,8 @@ val procedures : bool
 
 val procedures_attributes : bool
 
+val procedures_call_graph : bool
+
 val procedures_cfg : bool
 
 val procedures_definedness : bool
@@ -498,6 +556,8 @@ val procedures_summary : bool
 
 val procedures_summary_json : bool
 
+val procedures_summary_skip_empty : bool
+
 val process_clang_ast : bool
 
 val profiler_samples : string option
@@ -508,17 +568,23 @@ val project_root : string
 
 val pulse_cut_to_one_path_procedures_pattern : Str.regexp option
 
+val pulse_force_continue : bool
+
+val pulse_inline_global_init_func_pointer : bool
+
 val pulse_intraprocedural_only : bool
 
-val pulse_isl : bool
-
-val pulse_manifest_emp : bool
+val pulse_max_cfg_size : int
 
 val pulse_max_disjuncts : int
+
+val pulse_max_heap : int option
 
 val pulse_model_abort : string list
 
 val pulse_model_alloc_pattern : Str.regexp option
+
+val pulse_model_cheap_copy_type : Str.regexp option
 
 val pulse_model_free_pattern : Str.regexp option
 
@@ -528,15 +594,25 @@ val pulse_model_realloc_pattern : Str.regexp option
 
 val pulse_model_release_pattern : Str.regexp option
 
+val pulse_model_returns_copy_pattern : Str.regexp option
+
 val pulse_model_return_first_arg : Str.regexp option
+
+val pulse_model_return_this : Str.regexp option
 
 val pulse_model_return_nonnull : Str.regexp option
 
 val pulse_model_skip_pattern : Str.regexp option
 
-val pulse_prune_unsupported_arithmetic : bool
+val pulse_models_for_erlang : string list
+
+val pulse_prevent_non_disj_top : bool
 
 val pulse_report_ignore_unknown_java_methods_patterns : Str.regexp option
+
+val pulse_report_flows_from_taint_source : string option
+
+val pulse_report_flows_to_taint_sink : string option
 
 val pulse_model_transfer_ownership_namespace : (string * string) list
 
@@ -544,15 +620,31 @@ val pulse_model_transfer_ownership : string list
 
 val pulse_report_latent_issues : bool
 
+val pulse_report_issues_for_tests : bool
+
+val pulse_sanity_checks : bool
+
 val pulse_recency_limit : int
 
 val pulse_scuba_logging : bool
 
 val pulse_skip_procedures : Str.regexp option
 
+type pulse_taint_config =
+  { sources: Pulse_config_t.matchers
+  ; sanitizers: Pulse_config_t.matchers
+  ; propagators: Pulse_config_t.matchers
+  ; sinks: Pulse_config_t.matchers
+  ; policies: Pulse_config_t.taint_policies
+  ; data_flow_kinds: string list }
+
+val pulse_taint_config : pulse_taint_config
+
 val pulse_widen_threshold : int
 
 val pulse_nullsafe_report_npe : bool
+
+val pulse_log_summary_count : bool
 
 val pure_by_default : bool
 
@@ -568,7 +660,11 @@ val quandary_sources : Yojson.Basic.t
 
 val quiet : bool
 
+val racerd_always_report_java : bool
+
 val racerd_guardedby : bool
+
+val racerd_ignore_classes : String.Set.t
 
 val reactive_mode : bool
 
@@ -610,6 +706,8 @@ val sarif : bool
 
 val scheduler : scheduler
 
+val scope_leakage_config : Yojson.Basic.t
+
 val scuba_logging : bool
 
 val scuba_normals : string String.Map.t
@@ -619,6 +717,16 @@ val scuba_tags : string list String.Map.t
 val select : [`All | `Select of int] option
 
 val show_buckets : bool
+
+val shrink_analysis_db : bool
+
+val simple_lineage_include_builtins : bool
+
+val simple_lineage_field_depth : int
+
+val simple_lineage_prevent_cycles : bool
+
+val simple_lineage_field_width : int option
 
 val simple_lineage_json_report : bool
 
@@ -634,7 +742,7 @@ val siof_check_iostreams : bool
 
 val siof_safe_methods : string list
 
-val skip_analysis_in_path : string list
+val skip_analysis_in_path : Str.regexp option
 
 val skip_analysis_in_path_skips_compilation : bool
 
@@ -645,6 +753,10 @@ val skip_non_capture_clang_commands : bool
 val skip_translation_headers : string list
 
 val source_files : bool
+
+val source_files_call_graph : bool
+
+val source_files_call_graph_partition : int option
 
 val source_files_cfg : bool
 
@@ -668,8 +780,6 @@ val sqlite_page_size : int
 
 val sqlite_lock_timeout : int
 
-val sqlite_vacuum : bool
-
 val sqlite_vfs : string option
 
 val starvation_skip_analysis : Yojson.Basic.t
@@ -680,7 +790,9 @@ val starvation_whole_program : bool
 
 val subtype_multirange : bool
 
-val summaries_caches_max_size : int
+val suffix_match_changed_files : bool
+
+val summaries_caches_max_size : int [@@warning "-unused-value-declaration"]
 
 val suppress_lint_ignore_types : bool
 
@@ -694,11 +806,17 @@ val testing_mode : bool
 
 val threadsafe_aliases : Yojson.Basic.t
 
+val timeout : float option
+
+val top_longest_proc_duration_size : int option
+
 val topl_max_conjuncts : int
 
 val topl_max_disjuncts : int
 
-val topl_properties : string list
+val topl_properties : ToplAst.t list
+
+val topl_report_latent_issues : bool
 
 val trace_absarray : bool
 
@@ -709,12 +827,6 @@ val trace_events : bool
 val trace_ondemand : bool
 
 val trace_topl : bool
-
-val tv_commit : string option
-
-val tv_limit : int
-
-val tv_limit_filtered : int
 
 val uninit_interproc : bool
 
@@ -734,16 +846,11 @@ val xcpretty : bool
 
 (** {2 Configuration values derived from command-line options} *)
 
-val dynamic_dispatch : bool
-
 val toplevel_results_dir : string
 (** In some integrations, eg Buck, infer subprocesses started by the build system (started by the
     toplevel infer process) will have their own results directory; this points to the results
     directory of the toplevel infer process, which can be useful for, eg, storing debug info. In
     other cases this is equal to {!results_dir}. *)
-
-val is_in_custom_symbols : string -> string -> bool
-(** Does named symbol match any prefix in the named custom symbol list? *)
 
 val java_package_is_external : string -> bool
 (** Check if a Java package is external to the repository *)

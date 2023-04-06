@@ -36,6 +36,14 @@ AC_CHECK_FILE([.facebook], [is_facebook_tree=yes], [is_facebook_tree=no])
 IS_FACEBOOK_TREE=$is_facebook_tree
 AC_SUBST([IS_FACEBOOK_TREE])
 
+AC_ARG_ENABLE(opam-pin-ocamlformat,
+  AS_HELP_STRING([--disable-opam-pin-ocamlformat],
+    [do not pin ocamlformat to the right version using opam and use the already-installed ocamlformat instead]),
+  ,
+  enable_opam_pin_ocamlformat=yes,)
+OPAM_PIN_OCAMLFORMAT=$enable_opam_pin_ocamlformat
+AC_SUBST([OPAM_PIN_OCAMLFORMAT])
+
 AC_ARG_VAR([PATH], [the shell's $PATH list of directories to search for executables])
 
 # to compile the facebook-clang-plugins
@@ -83,6 +91,11 @@ AS_IF([test x"$BUILD_PLATFORM" = x"Windows"], [WINDOWS_BUILD=yes])
 AC_MSG_RESULT([$WINDOWS_BUILD])
 AC_SUBST([WINDOWS_BUILD])
 
+AC_MSG_CHECKING([for realpath])
+AS_IF([test x"$BUILD_PLATFORM" = x"Darwin"], [REALPATH=grealpath], [REALPATH=realpath])
+AC_MSG_RESULT([$REALPATH])
+AC_SUBST([REALPATH])
+
 AC_ARG_VAR([PLATFORM_ENV], [Build and link binaries against this platform rather than system default (Linux only)])
 
 AC_ARG_ENABLE(c-analyzers,
@@ -100,6 +113,14 @@ AC_ARG_ENABLE(erlang-analyzers,
   enable_erlang_analyzers=yes)
 BUILD_ERLANG_ANALYZERS=$enable_erlang_analyzers
 AC_SUBST([BUILD_ERLANG_ANALYZERS])
+
+AC_ARG_ENABLE(hack-analyzers,
+  AS_HELP_STRING([--disable-hack-analyzers],
+    [do not build the Hack analyzers (default is to build them)]),
+  ,
+  enable_hack_analyzers=yes)
+BUILD_HACK_ANALYZERS=$enable_hack_analyzers
+AC_SUBST([BUILD_HACK_ANALYZERS])
 
 AC_ARG_ENABLE(java-analyzers,
   AS_HELP_STRING([--disable-java-analyzers],
@@ -284,6 +305,16 @@ if test "x$enable_erlang_analyzers" = "xyes"; then
 fi
 # end if($enable_erlang_analyzers)
 
+if test "x$enable_hack_analyzers" = "xyes"; then
+  if test "x$is_facebook_tree" = "xyes"; then
+    # Look for hackc in $PATH first, then fallback to the bundled version
+    AC_PATH_TOOL([HACKC], [hackc], [no], [$PATH$PATH_SEPARATOR$ac_pwd/facebook/dependencies/bin])
+  else
+    AC_PATH_TOOL([HACKC], [hackc], [no])
+  fi
+fi
+# end if($enable_hack_analyzers)
+
 if test "x$enable_java_analyzers" = "xyes"; then
   AC_CHECK_TOOL([JAVA], [java], [no])
   AC_CHECK_TOOL([JAVAC], [javac], [no])
@@ -393,7 +424,7 @@ if test x"$NDKBUILD" = x"no"; then
 # ndk-build not in $PATH, look into potential android NDK install paths and record the absolute path
 # to ndk-build
   AC_PATH_PROG([NDKBUILD], [ndk-build], [no],
-    [$PATH$PATH_SEPARATOR$ANDROID_NDK$PATH_SEPARATOR/opt/android_ndk/r15c])
+    [$PATH$PATH_SEPARATOR$ANDROID_NDK$PATH_SEPARATOR/opt/android_ndk/r20])
 fi
 
 AC_CHECK_TOOL([NINJA], [ninja], [no])
@@ -412,8 +443,18 @@ AS_IF([test "$SED" != "xno"], [
 ])
 AC_SUBST([GNU_SED])
 
-AC_CHECK_TOOL([BREW], [brew], [no])
+AC_ASSERT_PROG([diff], [$DIFF])
+AC_MSG_CHECKING([if diff supports --LTYPE-line-format=LFMT options])
+# there are several such options but just test one of them and hope for the best
+AS_IF([diff --unchanged-line-format=A /dev/null /dev/null 2>/dev/null], [
+  DIFF_CAN_FORMAT=yes
+], [
+  DIFF_CAN_FORMAT=no
+])
+AC_MSG_RESULT([$DIFF_CAN_FORMAT])
+AC_SUBST([DIFF_CAN_FORMAT])
 
+AC_CHECK_TOOL([BREW], [brew], [no])
 AC_CHECK_TOOL([INSTALL_NAME_TOOL], [install_name_tool], [no])
 AC_SUBST([INSTALL_NAME_TOOL])
 AC_CHECK_TOOL([LDD], [ldd], [no])

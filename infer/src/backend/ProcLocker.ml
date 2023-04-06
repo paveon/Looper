@@ -7,9 +7,9 @@
 
 open! IStd
 
-let log_lock_time = BackendStats.add_to_proc_locker_lock_time
+let log_lock_time = Stats.add_to_proc_locker_lock_time
 
-let log_unlock_time = BackendStats.add_to_proc_locker_unlock_time
+let log_unlock_time = Stats.add_to_proc_locker_unlock_time
 
 let record_time_of ~f ~log_f =
   let ExecutionDuration.{result; execution_duration} = ExecutionDuration.timed_evaluate ~f in
@@ -36,7 +36,7 @@ let lock_of_procname pname = lock_of_filename (Procname.to_filename pname)
 let unlock pname =
   record_time_of ~log_f:log_unlock_time ~f:(fun () ->
       try Unix.unlink (lock_of_procname pname)
-      with Unix.Unix_error (Unix.ENOENT, _, _) ->
+      with Unix.Unix_error (ENOENT, _, _) ->
         Die.die InternalError "Tried to unlock not-locked pname: %a@\n" Procname.pp pname )
 
 
@@ -45,11 +45,11 @@ let try_lock pname =
       try
         Unix.symlink ~target:locks_target ~link_name:(lock_of_procname pname) ;
         true
-      with Unix.Unix_error (Unix.EEXIST, _, _) -> false )
+      with Unix.Unix_error (EEXIST, _, _) -> false )
 
 
 let is_locked ~proc_filename =
   try
     ignore (Unix.lstat (lock_of_filename proc_filename)) ;
     true
-  with Unix.Unix_error (Unix.ENOENT, _, _) -> false
+  with Unix.Unix_error (ENOENT, _, _) -> false

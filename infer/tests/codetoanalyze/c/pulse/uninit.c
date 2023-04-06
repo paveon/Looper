@@ -5,6 +5,8 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+#include <stdlib.h>
+
 int dereference_bad() {
   int* p;
   return *p;
@@ -69,6 +71,7 @@ void interprocedural_uninit_in_callee_bad() {
   if (p) {
     int x = *p;
   }
+  free(p);
 }
 
 struct uninit_s {
@@ -131,14 +134,12 @@ void local_array_good() {
   char o[10];
   o[0] = 'a';
   char c = o[0];
-  free(o);
 }
 
 void local_array_bad_FN() {
   char o[10];
   o[0] = 'a';
   char c = o[1];
-  free(o);
 }
 
 struct uninit_nested {
@@ -172,4 +173,23 @@ void call_init_ptr_zero_good() {
   int x;
   init_ptr_zero(&x, 0);
   int y = x;
+}
+
+int uninit_if_zero_latent(int a) {
+  int x;
+  if (a == 0) {
+    int y = x + 1;
+    int z = 4;
+    return z;
+  }
+  return 10;
+}
+
+void uninit_interproc_manifest_bad() {
+  int x = uninit_if_zero_latent(0);
+  if (x == 4) {
+    int* p = NULL;
+    *p = 42; // NPE to test that uninit didn't terminate the symbolic execution
+    // currently FN as uninit does in fact terminate symbolic execution
+  }
 }

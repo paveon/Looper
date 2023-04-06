@@ -10,7 +10,13 @@ module L = Logging
 
 let log_issue ?proc_name ~issue_log ~loc ~severity ~nullsafe_extra issue_type error_message =
   let extras =
-    Jsonbug_t.{nullsafe_extra= Some nullsafe_extra; cost_polynomial= None; cost_degree= None}
+    Jsonbug_t.
+      { nullsafe_extra= Some nullsafe_extra
+      ; cost_polynomial= None
+      ; cost_degree= None
+      ; copy_type= None
+      ; config_usage_extra= None
+      ; taint_extra= None }
   in
   let proc_name = Option.value proc_name ~default:Procname.Linters_dummy_method in
   let trace = [Errlog.make_trace_element 0 loc error_message []] in
@@ -107,6 +113,7 @@ let make_meta_issue modes_and_issues top_level_class_mode top_level_class_name =
   let meta_issue_info =
     Jsonbug_t.
       { num_issues= currently_reportable_issue_count
+      ; num_fixmes= 0
       ; curr_nullsafe_mode= mode_to_json top_level_class_mode
       ; can_be_promoted_to= Option.map mode_to_promote_to ~f:mode_to_json }
   in
@@ -152,7 +159,9 @@ let make_meta_issue modes_and_issues top_level_class_mode top_level_class_name =
 
 
 let get_class_loc source_file Struct.{java_class_info} =
-  let default = {Location.file= source_file; line= 1; col= 0} in
+  let default =
+    {Location.file= source_file; line= 1; col= 0; macro_file_opt= None; macro_line= -1}
+  in
   match java_class_info with
   | Some {loc} ->
       (* In rare cases location is not present, fall back to the first line of the file *)

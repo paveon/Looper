@@ -16,7 +16,7 @@ type required_prop = Prop of string | VarProp of {prop: string; var_prop: string
 let get_required_props typename tenv =
   let is_required annot_list =
     List.exists
-      ~f:(fun (({Annot.parameters} as annot), _) ->
+      ~f:(fun ({Annot.parameters} as annot) ->
         Annotations.annot_ends_with annot Annotations.prop
         && (* Don't count as required if it's @Prop(optional = true) *)
         not
@@ -28,7 +28,7 @@ let get_required_props typename tenv =
   in
   let get_var_args annot_list =
     List.fold ~init:None
-      ~f:(fun acc (({Annot.parameters} as annot), _) ->
+      ~f:(fun acc ({Annot.parameters} as annot) ->
         if Annotations.annot_ends_with annot Annotations.prop then
           (* Pick up the parameter for varArg if it has the form
              @Prop(varArg = myProp). *)
@@ -64,13 +64,13 @@ let report_missing_required_prop proc_desc err_log prop parent_typename ~create_
     let prop_string =
       match prop with
       | Prop prop ->
-          F.asprintf "@Prop %s" prop
+          F.asprintf "`@Prop %s`" prop
       | VarProp {var_prop; prop} ->
-          F.asprintf "Either @Prop %s or @Prop(varArg = %s)" prop var_prop
+          F.asprintf "Either `@Prop %s` or `@Prop(varArg = %s)`" prop var_prop
     in
     F.asprintf
-      "%a is required for component %s, but is not set before the call to build(). Either set the \
-       missing @Prop or make @Prop(optional = true)."
+      "%a is required for component `%s`, but is not set before the call to `build()`. Either set \
+       the missing `@Prop` or make `@Prop(optional = true)`."
       MarkupFormatter.pp_bold prop_string (Typ.Name.name parent_typename)
   in
   let make_single_trace loc message = Errlog.make_trace_element 0 loc message [] in
@@ -301,9 +301,10 @@ module Analyzer = LowerHil.MakeAbstractInterpreter (TransferFunctions)
 
 let init_analysis_data ({InterproceduralAnalysis.analyze_dependency} as interproc) =
   let get_proc_summary_and_formals callee_pname =
-    analyze_dependency callee_pname
-    |> Option.map ~f:(fun (callee_pdesc, callee_summary) ->
-           (callee_summary, Procdesc.get_pvar_formals callee_pdesc) )
+    let open IOption.Let_syntax in
+    let* callee_summary = analyze_dependency callee_pname in
+    let+ callee_attrs = Attributes.load callee_pname in
+    (callee_summary, ProcAttributes.get_pvar_formals callee_attrs)
   in
   {interproc; get_proc_summary_and_formals}
 

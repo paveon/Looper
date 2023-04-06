@@ -10,12 +10,9 @@ open! IStd
 (** Module for Pattern matching. *)
 
 (** Holds iff the predicate holds on a supertype of the named type, including the type itself *)
-let rec supertype_exists tenv pred name =
-  match Tenv.lookup tenv name with
-  | Some ({supers} as struct_typ) ->
-      pred name struct_typ || List.exists ~f:(fun name -> supertype_exists tenv pred name) supers
-  | None ->
-      false
+let supertype_exists tenv pred name =
+  Tenv.mem_supers tenv name ~f:(fun name struct_opt ->
+      Option.exists struct_opt ~f:(fun str -> pred name str) )
 
 
 (** Holds iff the predicate holds on a protocol of the named type *)
@@ -27,16 +24,8 @@ let protocol_exists tenv pred name =
       false
 
 
-let rec supertype_find_map_opt tenv f name =
-  match f name with
-  | None -> (
-    match Tenv.lookup tenv name with
-    | Some {supers} ->
-        List.find_map ~f:(supertype_find_map_opt tenv f) supers
-    | None ->
-        None )
-  | result ->
-      result
+let supertype_find_map_opt tenv f name =
+  Tenv.find_map_supers tenv name ~f:(fun name _struct_opt -> f name)
 
 
 (** return true if [typ0] <: [typ1] *)
@@ -52,7 +41,7 @@ let is_subtype_of_str tenv cn1 classname_str =
 
 (** The type the method is invoked on *)
 let get_this_type_nonstatic_methods_only proc_attributes =
-  match proc_attributes.ProcAttributes.formals with (_, t) :: _ -> Some t | _ -> None
+  match proc_attributes.ProcAttributes.formals with (_, t, _) :: _ -> Some t | _ -> None
 
 
 let type_get_direct_supertypes tenv (typ : Typ.t) =
@@ -103,10 +92,24 @@ let get_field_type_name tenv (typ : Typ.t) (fieldname : Fieldname.t) : string op
       None
 
 
+module CSharp = struct
+  let implements interface tenv typename =
+    let is_interface s _ = String.equal interface (Typ.Name.name s) in
+    supertype_exists tenv is_interface (Typ.Name.CSharp.from_string typename)
+
+
+  let implements_one_of interfaces tenv typename =
+    List.exists interfaces ~f:(fun interface -> implements interface tenv typename)
+end
+
 module Java = struct
   let implements interface tenv typename =
     let is_interface s _ = String.equal interface (Typ.Name.name s) in
     supertype_exists tenv is_interface (Typ.Name.Java.from_string typename)
+
+
+  let implements_one_of interfaces tenv typename =
+    List.exists interfaces ~f:(fun interface -> implements interface tenv typename)
 
 
   let implements_lang class_name = implements ("java.lang." ^ class_name)
@@ -196,6 +199,8 @@ module Java = struct
 
   let implements_view_parent = implements "android.view.ViewParent"
 
+  let implements_kotlin_intrinsics = implements "kotlin.jvm.internal.Intrinsics"
+
   let initializer_classes =
     List.map ~f:Typ.Name.Java.from_string
       [ "android.app.Activity"
@@ -280,15 +285,11 @@ module Java = struct
 
 
   (** find superclasss with attributes (e.g., [@ThreadSafe]), including current class*)
-  let rec find_superclasses_with_attributes check tenv tname =
-    match Tenv.lookup tenv tname with
-    | Some struct_typ ->
-        let result_from_supers =
-          List.concat (List.map ~f:(find_superclasses_with_attributes check tenv) struct_typ.supers)
-        in
-        if check struct_typ.annots then tname :: result_from_supers else result_from_supers
-    | _ ->
-        []
+  let find_superclasses_with_attributes check tenv tname =
+    Tenv.fold_supers tenv tname ~init:[] ~f:(fun name struct_opt acc ->
+        Option.fold struct_opt ~init:acc ~f:(fun acc {Struct.annots} ->
+            if check annots then name :: acc else acc ) )
+    |> List.rev
 
 
   let is_override_of_lang_object_equals curr_pname =
@@ -473,14 +474,10 @@ let has_same_signature proc_name =
 
 let override_find ?(check_current_type = true) f tenv proc_name =
   let is_override = Staged.unstage (has_same_signature proc_name) in
-  let rec find_super_type super_class_name =
-    Tenv.lookup tenv super_class_name
-    |> Option.bind ~f:(fun {Struct.methods; supers} ->
-           match List.find ~f:(fun pname -> is_override pname && f pname) methods with
-           | None ->
-               List.find_map ~f:find_super_type supers
-           | pname_opt ->
-               pname_opt )
+  let find_super_type super_class_name =
+    Tenv.find_map_supers tenv super_class_name ~f:(fun _name struct_opt ->
+        Option.bind struct_opt ~f:(fun {Struct.methods} ->
+            List.find ~f:(fun pname -> is_override pname && f pname) methods ) )
   in
   let find_super_type type_name =
     List.find_map ~f:find_super_type (type_get_direct_supertypes tenv (Typ.mk (Tstruct type_name)))

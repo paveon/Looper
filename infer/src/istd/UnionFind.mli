@@ -23,12 +23,13 @@ module Make
     (XMap : Caml.Map.S with type key = X.t) : sig
   type t [@@deriving compare, equal]
 
-  val pp :
-    pp_empty:(F.formatter -> unit) -> (F.formatter -> X.t -> unit) -> F.formatter -> t -> unit
+  val pp : (F.formatter -> X.t -> unit) -> F.formatter -> t -> unit
 
   type repr = private X.t
 
   val empty : t
+
+  val is_empty : t -> bool
 
   val union : t -> X.t -> X.t -> t * (X.t * repr) option
   (** return the optional new equality added between the old representatives of the two items in the
@@ -52,7 +53,6 @@ module Make
       smallest representative not in the domain of [subst] for each class. Classes without any such
       elements are kept intact. *)
 
-  val filter_morphism : f:(X.t -> bool) -> t -> t
-  (** only keep items satisfying [f], assuming that [f] is invariant under the relation, i.e. that
-      if [f x] and [x=y] according to the relation then [f y] *)
+  val filter : f:(X.t -> bool) -> t -> t
+  (** only keep items satisfying [f] *)
 end

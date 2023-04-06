@@ -13,6 +13,8 @@ module L = Logging
     and which call in a branch we are analyzing *)
 let node_id = ref (-1)
 
+let () = AnalysisGlobalState.register_ref ~init:(fun () -> -1) node_id
+
 module DisjDomain = struct
   (** ["4";"goo2";"1";"foo1"], printed as "foo1.1.goo2.4", means we explored the first branch of foo
       followed by the 4th branch of goo *)
@@ -23,9 +25,17 @@ module DisjDomain = struct
   let leq ~lhs ~rhs = equal lhs rhs
 
   let equal_fast l1 l2 = equal l1 l2
+
+  let is_normal _ = true
+
+  let is_exceptional _ = false
+
+  let is_executable _ = true
+
+  let exceptional_to_normal _ = assert false (* no exceptional state anyway *)
 end
 
-module NonDisjDomain = AbstractDomain.BottomLifted (AbstractDomain.Empty)
+module NonDisjDomain = AbstractDomain.BottomTopLifted (AbstractDomain.Empty)
 
 module TransferFunctions = struct
   module CFG = ProcCfg.Normal
@@ -46,7 +56,7 @@ module TransferFunctions = struct
         match analysis_data.InterproceduralAnalysis.analyze_dependency proc_name with
         | None ->
             [astate]
-        | Some (_, (callee_summary, _)) ->
+        | Some (callee_summary, _) ->
             incr node_id ;
             List.map callee_summary ~f:(fun xs ->
                 xs @ (F.asprintf "%a%d" Procname.pp proc_name !node_id :: astate) ) )
@@ -75,7 +85,6 @@ type domain = DisjunctiveAnalyzer.TransferFunctions.Domain.t
 let pp_domain = DisjunctiveAnalyzer.TransferFunctions.Domain.pp
 
 let checker ({InterproceduralAnalysis.proc_desc} as analysis_data) =
-  node_id := -1 ;
   let result =
     DisjunctiveAnalyzer.compute_post analysis_data ~initial:([[]], NonDisjDomain.bottom) proc_desc
   in

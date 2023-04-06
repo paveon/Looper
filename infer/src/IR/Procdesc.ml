@@ -19,9 +19,6 @@ module NodeKey = struct
   let compute node ~simple_key ~succs ~preds =
     let v = (simple_key node, List.rev_map ~f:simple_key succs, List.rev_map ~f:simple_key preds) in
     Utils.better_hash v
-
-
-  let of_frontend_node_key = Utils.better_hash
 end
 
 (* =============== START of module Node =============== *)
@@ -36,7 +33,7 @@ module Node = struct
     | DestrScope
     | DestrTemporariesCleanup
     | DestrVirtualBase
-  [@@deriving compare]
+  [@@deriving compare, equal]
 
   let string_of_destruction_kind = function
     | DestrBreakStmt ->
@@ -91,6 +88,8 @@ module Node = struct
     | InitializeDynamicArrayLength
     | InitListExp
     | LoopBody
+    | LoopIterIncr
+    | LoopIterInit
     | MessageCall of string
     | MethodBody
     | MonitorEnter
@@ -100,13 +99,13 @@ module Node = struct
     | OutOfBound
     | ReturnStmt
     | Scope of string
-    | Skip of string
+    | Skip
     | SwitchStmt
     | ThisNotNull
     | Throw
     | ThrowNPE
     | UnaryOperator
-  [@@deriving compare]
+  [@@deriving compare, equal]
 
   type prune_node_kind =
     | PruneNodeKind_ExceptionHandler
@@ -116,7 +115,7 @@ module Node = struct
     | PruneNodeKind_MethodBody
     | PruneNodeKind_NotNull
     | PruneNodeKind_TrueBranch
-  [@@deriving compare]
+  [@@deriving compare, equal]
 
   type nodekind =
     | Start_node
@@ -126,9 +125,7 @@ module Node = struct
     | Prune_node of bool * Sil.if_kind * prune_node_kind
         (** (true/false branch, if_kind, comment) *)
     | Skip_node of string
-  [@@deriving compare]
-
-  let equal_nodekind = [%compare.equal: nodekind]
+  [@@deriving compare, equal]
 
   (** a node *)
   type t =
@@ -357,6 +354,10 @@ module Node = struct
         F.pp_print_string fmt "InitListExp"
     | LoopBody ->
         F.pp_print_string fmt "LoopBody"
+    | LoopIterIncr ->
+        F.pp_print_string fmt "LoopIterIncr"
+    | LoopIterInit ->
+        F.pp_print_string fmt "LoopIterInit"
     | MessageCall selector ->
         F.fprintf fmt "Message Call: %s" selector
     | MethodBody ->
@@ -375,8 +376,8 @@ module Node = struct
         F.pp_print_string fmt "Return Stmt"
     | Scope descr ->
         F.fprintf fmt "Scope(%s)" descr
-    | Skip reason ->
-        F.pp_print_string fmt reason
+    | Skip ->
+        F.pp_print_string fmt "Skip"
     | SwitchStmt ->
         F.pp_print_string fmt "SwitchStmt"
     | ThisNotNull ->
@@ -389,11 +390,22 @@ module Node = struct
         F.pp_print_string fmt "UnaryOperator"
 
 
-  let pp_instrs ~highlight pe0 f node =
+  let pp_instrs ?print_types ~highlight pe0 f node =
     let pe =
       match highlight with None -> pe0 | Some instr -> Pp.extend_colormap pe0 (Obj.repr instr) Red
     in
-    Instrs.pp pe f (get_instrs node)
+    Instrs.pp ?print_types pe f (get_instrs node)
+
+
+  let pp_with_instrs ?print_types f node =
+    (* Desired output
+       #n{id}:
+         instr1
+         instr2
+    *)
+    F.fprintf f "@[<v>#n%a:@;<0 2>%a@,@]" pp node
+      (pp_instrs ?print_types ~highlight:None Pp.text)
+      node
 
 
   let d_instrs ~highlight (node : t) = L.d_pp_with_pe ~color:Green (pp_instrs ~highlight) node
@@ -528,7 +540,11 @@ let get_proc_name pdesc = pdesc.attributes.proc_name
 (** Return name and type of formal parameters *)
 let get_formals pdesc = pdesc.attributes.formals
 
-let get_pvar_formals pdesc = Pvar.get_pvar_formals pdesc.attributes
+let get_pvar_formals pdesc = ProcAttributes.get_pvar_formals pdesc.attributes
+
+let get_passed_by_value_formals pdesc = ProcAttributes.get_passed_by_value_formals pdesc.attributes
+
+let get_passed_by_ref_formals pdesc = ProcAttributes.get_passed_by_ref_formals pdesc.attributes
 
 let get_loc pdesc = pdesc.attributes.loc
 
@@ -539,10 +555,6 @@ let is_local pdesc pvar =
   List.exists (get_locals pdesc) ~f:(fun {ProcAttributes.name} ->
       Mangled.equal name (Pvar.get_name pvar) )
 
-
-let has_added_return_param pdesc = pdesc.attributes.has_added_return_param
-
-let is_ret_type_pod pdesc = pdesc.attributes.is_ret_type_pod
 
 (** Return name and type of captured variables *)
 let get_captured pdesc = pdesc.attributes.captured
@@ -557,19 +569,18 @@ let get_ret_type pdesc = pdesc.attributes.ret_type
 
 let get_ret_var pdesc = Pvar.get_ret_pvar (get_proc_name pdesc)
 
-let get_ret_param_var pdesc = Pvar.get_ret_param_pvar (get_proc_name pdesc)
-
-let get_ret_type_from_signature pdesc =
-  if pdesc.attributes.has_added_return_param then
-    List.last pdesc.attributes.formals
-    |> Option.value_map
-         ~f:(fun (_, typ) ->
-           match typ.Typ.desc with Tptr (t, _) -> t | _ -> pdesc.attributes.ret_type )
-         ~default:pdesc.attributes.ret_type
-  else pdesc.attributes.ret_type
+let get_ret_param_type pdesc =
+  List.find_map pdesc.attributes.formals ~f:(fun (mangled, typ, _) ->
+      Option.some_if (Mangled.equal mangled Mangled.return_param) typ )
 
 
 let get_start_node pdesc = pdesc.start_node
+
+(** We search all the procedure's nodes to find the exception sink. *)
+let get_exn_sink pdesc =
+  List.find (get_nodes pdesc) ~f:(fun node ->
+      Node.equal_nodekind (Node.get_kind node) Node.exn_sink_kind )
+
 
 (** Return [true] iff the procedure is defined, and not just declared *)
 let is_defined pdesc = pdesc.attributes.is_defined
@@ -602,6 +613,8 @@ let get_static_callees pdesc =
         match instr with
         | Sil.Call (_, Exp.Const (Const.Cfun callee_pn), _, _, _) ->
             Procname.Set.add callee_pn acc
+        | Sil.Call (_, Exp.Closure {name}, _, _, _) ->
+            Procname.Set.add name acc
         | _ ->
             acc )
   in
@@ -728,7 +741,7 @@ let deep_copy_code_from_pdesc ~orig_pdesc ~dest_pdesc =
         L.die InternalError
           "Trying to deep copy pdesc from %a to %a. Node %a is not part of origin pdesc's nodes. \
            Origin pdesc might be empty or misconstructed"
-          Node.pp node Procname.pp node.Node.pname Procname.pp pname
+          Procname.pp node.Node.pname Procname.pp pname Node.pp node
     | Some node' ->
         node'
   in
@@ -774,19 +787,19 @@ end
 
 module WTO = WeakTopologicalOrder.Bourdoncle_SCC (PreProcCfg)
 
+let init_wto pdesc =
+  let wto = WTO.make pdesc in
+  let (_ : int) =
+    WeakTopologicalOrder.Partition.fold_nodes wto ~init:0 ~f:(fun idx node ->
+        node.Node.wto_index <- idx ;
+        idx + 1 )
+  in
+  pdesc.wto <- Some wto
+
+
 let get_wto pdesc =
-  match pdesc.wto with
-  | Some wto ->
-      wto
-  | None ->
-      let wto = WTO.make pdesc in
-      let (_ : int) =
-        WeakTopologicalOrder.Partition.fold_nodes wto ~init:0 ~f:(fun idx node ->
-            node.Node.wto_index <- idx ;
-            idx + 1 )
-      in
-      pdesc.wto <- Some wto ;
-      wto
+  if Option.is_none pdesc.wto then init_wto pdesc ;
+  Option.value_exn pdesc.wto
 
 
 (** Get loop heads for widening. It collects all target nodes of back-edges in a depth-first
@@ -836,16 +849,16 @@ let pp_variable_list fmt etl =
   if List.is_empty etl then Format.pp_print_string fmt "None"
   else
     List.iter
-      ~f:(fun (id, ty) -> Format.fprintf fmt " %a:%a" Mangled.pp id (Typ.pp_full Pp.text) ty)
+      ~f:(fun (id, ty, _) -> Format.fprintf fmt " %a:%a" Mangled.pp id (Typ.pp_full Pp.text) ty)
       etl
 
 
 let pp_captured_list fmt etl =
   List.iter
-    ~f:(fun {CapturedVar.name; typ; capture_mode} ->
+    ~f:(fun {CapturedVar.pvar; typ; capture_mode} ->
       Format.fprintf fmt " [%s] %a:%a"
         (CapturedVar.string_of_capture_mode capture_mode)
-        Mangled.pp name (Typ.pp_full Pp.text) typ )
+        (Pvar.pp Pp.text) pvar (Typ.pp_full Pp.text) typ )
     etl
 
 
@@ -863,22 +876,39 @@ let pp_signature fmt pdesc =
   let attributes = get_attributes pdesc in
   let pname = get_proc_name pdesc in
   let defined_string = match is_defined pdesc with true -> "defined" | false -> "undefined" in
-  Format.fprintf fmt "@[%a [%s, Return type: %a, %aFormals: %a, Locals: %a" Procname.pp pname
-    defined_string (Typ.pp_full Pp.text) (get_ret_type pdesc) pp_objc_accessor
+  Format.fprintf fmt "@[%a [%s, Return type: %a, %aFormals: %a, Locals: %a, is_deleted:%b"
+    Procname.pp pname defined_string (Typ.pp_full Pp.text) (get_ret_type pdesc) pp_objc_accessor
     attributes.ProcAttributes.objc_accessor pp_variable_list (get_formals pdesc) pp_locals_list
-    (get_locals pdesc) ;
+    (get_locals pdesc) attributes.ProcAttributes.is_cpp_deleted ;
   if not (List.is_empty (get_captured pdesc)) then
     Format.fprintf fmt ", Captured: %a" pp_captured_list (get_captured pdesc) ;
-  let method_annotation = attributes.ProcAttributes.method_annotation in
-  ( if not (Annot.Method.is_empty method_annotation) then
-    let pname_string = Procname.to_string pname in
-    Format.fprintf fmt ", Annotation: %a" (Annot.Method.pp pname_string) method_annotation ) ;
+  let ret_annots = attributes.ProcAttributes.ret_annots in
+  if not (Annot.Item.is_empty ret_annots) then
+    Format.fprintf fmt ", Return annotations: %a" Annot.Item.pp ret_annots ;
   Format.fprintf fmt "]@]@;"
+
+
+let pp_with_instrs ?print_types fmt pdesc =
+  (* Desired output:
+     {signature}
+       {instrs}
+  *)
+  F.fprintf fmt "%a@;<0 4>@[<v>" ProcAttributes.pp (get_attributes pdesc) ;
+  let wto = get_wto pdesc in
+  WeakTopologicalOrder.Partition.iter_nodes wto ~f:(fun node ->
+      F.fprintf fmt "%a" (Node.pp_with_instrs ?print_types) node ) ;
+  F.fprintf fmt "@,@]"
 
 
 let is_specialized pdesc =
   let attributes = get_attributes pdesc in
   attributes.ProcAttributes.is_specialized
+
+
+let is_kotlin pdesc =
+  let attributes = get_attributes pdesc in
+  let source = attributes.ProcAttributes.translation_unit in
+  SourceFile.has_extension ~ext:Config.kotlin_source_extension source
 
 
 (* true if pvar is a captured variable of a cpp lambda or objc block *)
@@ -888,7 +918,7 @@ let is_captured_pvar procdesc pvar =
   let pvar_local_matches (var_data : ProcAttributes.var_data) =
     Mangled.equal var_data.name pvar_name
   in
-  let pvar_matches (name, _) = Mangled.equal name pvar_name in
+  let pvar_matches (name, _, _) = Mangled.equal name pvar_name in
   let is_captured_var_cpp_lambda =
     (* var is captured if the procedure is a lambda and the var is not in the locals or formals *)
     Procname.is_cpp_lambda procname
@@ -896,13 +926,15 @@ let is_captured_pvar procdesc pvar =
          ( List.exists ~f:pvar_local_matches (get_locals procdesc)
          || List.exists ~f:pvar_matches (get_formals procdesc) )
   in
-  let pvar_matches_in_captured {CapturedVar.name} = Mangled.equal name pvar_name in
-  let is_captured_var_objc_block =
-    (* var is captured if the procedure is a objc block and the var is in the captured *)
-    Procname.is_objc_block procname
+  let pvar_matches_in_captured {CapturedVar.pvar= captured} =
+    Mangled.equal (Pvar.get_name captured) pvar_name
+  in
+  let is_captured_var_objc_block_erlang =
+    (* var is captured if the procedure is a objc block / erlang and the var is in the captured *)
+    (Procname.is_objc_block procname || Procname.is_erlang procname)
     && List.exists ~f:pvar_matches_in_captured (get_captured procdesc)
   in
-  is_captured_var_cpp_lambda || is_captured_var_objc_block
+  is_captured_var_cpp_lambda || is_captured_var_objc_block_erlang
 
 
 let is_captured_var procdesc var =
@@ -924,17 +956,96 @@ let size pdesc =
   fold_nodes pdesc ~init:0 ~f
 
 
+let is_too_big checker ~max_cfg_size pdesc =
+  let proc_size = size pdesc in
+  if proc_size > max_cfg_size then (
+    L.internal_error "Skipped large procedure (%a, size:%d) in %s.@\n" Procname.pp
+      (get_proc_name pdesc) proc_size (Checker.get_id checker) ;
+    true )
+  else false
+
+
 module SQLite = SqliteUtils.MarshalledNullableDataNOTForComparison (struct
   type nonrec t = t
 end)
 
 let load =
-  let load_statement =
-    ResultsDatabase.register_statement "SELECT cfg FROM procedures WHERE proc_uid = :k"
+  let load_statement db =
+    Database.register_statement db "SELECT cfg FROM procedures WHERE proc_uid = :k"
   in
+  let load_statement_adb = load_statement AnalysisDatabase in
+  let load_statement_cdb = load_statement CaptureDatabase in
   fun pname ->
-    ResultsDatabase.with_registered_statement load_statement ~f:(fun db stmt ->
-        Sqlite3.bind stmt 1 (Sqlite3.Data.TEXT (Procname.to_unique_id pname))
-        |> SqliteUtils.check_result_code db ~log:"load bind proc_uid" ;
-        SqliteUtils.result_single_column_option ~finalize:false ~log:"Procdesc.load" db stmt
-        |> Option.bind ~f:SQLite.deserialize )
+    let run_query stmt =
+      Database.with_registered_statement stmt ~f:(fun db stmt ->
+          Sqlite3.bind stmt 1 (Sqlite3.Data.TEXT (Procname.to_unique_id pname))
+          |> SqliteUtils.check_result_code db ~log:"load bind proc_uid" ;
+          SqliteUtils.result_single_column_option ~finalize:false ~log:"Procdesc.load" db stmt
+          |> Option.bind ~f:SQLite.deserialize )
+    in
+    (* Since the procedure table can be updated in the analysis phase,
+       we need to query both databases, analysisdb first *)
+    IOption.if_none_evalopt
+      ~f:(fun () -> run_query load_statement_cdb)
+      (run_query load_statement_adb)
+
+
+let load_exn procname = load procname |> Option.value_exn
+
+let mark_if_unchanged ~old_pdesc ~new_pdesc =
+  (* map from exp names in [old_pdesc] to exp names in [new_pdesc] *)
+  let exp_map = ref Exp.Map.empty in
+  (* map from node IDs in [old_pdesc] to to node IDs in [new_pdesc] *)
+  let node_map = ref NodeMap.empty in
+  (* Formals are compared by type only *)
+  let formals_eq = List.equal (fun (_, typ, _) (_, typ', _) -> Typ.equal typ typ') in
+  (* two nodes are the same if they have the same ID, instructions, and succs/preds up to renaming with [exp_map] and [node_map] *)
+  let node_eq n n' =
+    let equal_id n n' =
+      match NodeMap.find_opt n !node_map with
+      | Some mapped_n ->
+          Node.equal mapped_n n'
+      | None ->
+          (* assume IDs are equal and add to [node_map] *)
+          node_map := NodeMap.add n n' !node_map ;
+          true
+    in
+    let instrs_eq instrs instrs' =
+      Array.equal
+        (fun i i' ->
+          let equal, exp_map' = Sil.equal_structural_instr i i' !exp_map in
+          exp_map := exp_map' ;
+          equal )
+        (Instrs.get_underlying_not_reversed instrs)
+        (Instrs.get_underlying_not_reversed instrs')
+    in
+    equal_id n n'
+    &&
+    let open Node in
+    List.equal equal (get_succs n) (get_succs n')
+    && List.equal equal (get_preds n) (get_preds n')
+    && instrs_eq (get_instrs n) (get_instrs n')
+  in
+  let nodes_eq ns ns' =
+    try List.for_all2_exn ~f:node_eq ns ns' with Invalid_argument _ -> false
+  in
+  let old_attrs = get_attributes old_pdesc in
+  let new_attrs = get_attributes new_pdesc in
+  let is_structurally_equal =
+    Bool.equal old_attrs.is_defined new_attrs.is_defined
+    && Typ.equal old_attrs.ret_type new_attrs.ret_type
+    && formals_eq old_attrs.formals new_attrs.formals
+    && nodes_eq (get_nodes old_pdesc) (get_nodes new_pdesc)
+  in
+  let changed =
+    (* in continue_capture mode keep the old changed bit *)
+    (Config.continue_capture && (get_attributes old_pdesc).changed) || not is_structurally_equal
+  in
+  if not (Bool.equal new_attrs.changed changed) then (
+    new_attrs.changed <- changed ;
+    let pname = new_attrs.proc_name in
+    let proc_uid = Procname.to_unique_id pname in
+    let proc_attributes = ProcAttributes.SQLite.serialize new_attrs in
+    let cfg = SQLite.serialize (Some new_pdesc) in
+    let callees = get_static_callees new_pdesc |> Procname.SQLiteList.serialize in
+    DBWriter.replace_attributes ~proc_uid ~proc_attributes ~cfg ~callees ~analysis:true )

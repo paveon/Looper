@@ -7,10 +7,10 @@
 open! IStd
 module F = Format
 
-let is_block_param attributes name =
+let is_block_param formals name =
   List.exists
-    ~f:(fun (formal, typ) -> Mangled.equal formal name && Typ.is_pointer_to_function typ)
-    attributes.ProcAttributes.formals
+    ~f:(fun (formal, typ, _) -> Mangled.equal formal name && Typ.is_pointer_to_function typ)
+    formals
 
 
 module DomainData = struct
@@ -43,7 +43,9 @@ module TraceData = struct
     | Execute ->
         F.asprintf "Executing `%a`" Mangled.pp arg
     | Parameter proc_name ->
-        F.asprintf "Parameter `%a` of %a" Mangled.pp arg Procname.pp proc_name
+        F.asprintf "Parameter `%a` of %a" Mangled.pp arg
+          (Procname.pp_simplified_string ~withclass:false)
+          proc_name
 
 
   let pp fmt {arg; loc; usage} =
@@ -78,10 +80,11 @@ module Mem = struct
         astate
 
 
-  let load attributes id pvar _ astate =
+  let load formals_not_captured id pvar _ astate =
     let name = Pvar.get_name pvar in
     let vars =
-      if is_block_param attributes name then Vars.add id {arg= name} astate.vars else astate.vars
+      if is_block_param formals_not_captured name then Vars.add id {arg= name} astate.vars
+      else astate.vars
     in
     {astate with vars}
 
@@ -142,7 +145,9 @@ module Domain = struct
 
   let exec_null_check_id id loc astate = map (Mem.exec_null_check_id id loc) astate
 
-  let load attributes id pvar loc astate = map (Mem.load attributes id pvar loc) astate
+  let load formals_not_captured id pvar loc astate =
+    map (Mem.load formals_not_captured id pvar loc) astate
+
 
   let store pvar e loc astate = map (Mem.store pvar e loc) astate
 
@@ -163,7 +168,7 @@ module TransferFunctions = struct
     let attributes = Procdesc.get_attributes proc_desc in
     match instr with
     | Load {id; e= Lvar pvar; loc} ->
-        Domain.load attributes id pvar loc astate
+        Domain.load attributes.ProcAttributes.formals id pvar loc astate
     | Store {e1= Lvar pvar; e2; loc} ->
         Domain.store pvar e2 loc astate
     | Prune (Var id, loc, _, _) ->
@@ -188,36 +193,29 @@ end
 
 module Analyzer = AbstractInterpreter.MakeWTO (TransferFunctions)
 
-let init_block_params attributes initBlockParams =
-  let add_non_nullable_block blockParams annotation (formal, _) =
-    if is_block_param attributes formal && Annotations.ia_is_nonnull annotation then
+let init_block_params formals =
+  let add_non_nullable_block blockParams (formal, _, annotation) =
+    if is_block_param formals formal && Annotations.ia_is_nonnull annotation then
       BlockParams.add formal blockParams
     else blockParams
   in
-  let annotations = attributes.ProcAttributes.method_annotation.params in
-  let formals = attributes.ProcAttributes.formals in
-  match List.fold2 annotations formals ~init:initBlockParams ~f:add_non_nullable_block with
-  | List.Or_unequal_lengths.Ok blockParams ->
-      blockParams
-  | List.Or_unequal_lengths.Unequal_lengths ->
-      initBlockParams
+  List.fold formals ~init:BlockParams.empty ~f:add_non_nullable_block
 
 
-let init_block_param_trace_info attributes traceInfo =
-  let formals = attributes.ProcAttributes.formals in
-  let add_trace_info_block traceInfo (formal, _) =
-    if is_block_param attributes formal then
+let init_block_param_trace_info attributes =
+  let add_trace_info_block traceInfo (formal, _, _) =
+    if is_block_param attributes.ProcAttributes.formals formal then
       let usage = TraceData.Parameter attributes.ProcAttributes.proc_name in
       {TraceData.arg= formal; loc= attributes.ProcAttributes.loc; usage} :: traceInfo
     else traceInfo
   in
-  List.fold formals ~init:traceInfo ~f:add_trace_info_block
+  List.fold attributes.ProcAttributes.formals ~init:[] ~f:add_trace_info_block
 
 
 let checker ({IntraproceduralAnalysis.proc_desc} as analysis_data) =
   let attributes = Procdesc.get_attributes proc_desc in
-  let initial_blockParams = init_block_params attributes BlockParams.empty in
-  let initTraceInfo = init_block_param_trace_info attributes [] in
+  let initial_blockParams = init_block_params attributes.ProcAttributes.formals in
+  let initTraceInfo = init_block_param_trace_info attributes in
   let initial =
     Domain.singleton
       {Mem.vars= Vars.empty; blockParams= initial_blockParams; traceInfo= initTraceInfo}

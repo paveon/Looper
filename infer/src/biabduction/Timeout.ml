@@ -36,10 +36,8 @@ let set_alarm nsecs =
   match Config.os_type with
   | Config.Unix | Config.Cygwin ->
       ignore
-        (Unix.setitimer Unix.ITIMER_REAL
-           { Unix.it_interval= 3.0
-           ; (* try again after 3 seconds if the signal is lost *)
-             Unix.it_value= nsecs } )
+        (Unix.setitimer ITIMER_REAL
+           {it_interval= 3.0 (* try again after 3 seconds if the signal is lost *); it_value= nsecs} )
   | Config.Win32 ->
       SymOp.set_wallclock_alarm nsecs
 
@@ -54,9 +52,9 @@ let unset_alarm () =
 
 let get_seconds_remaining () =
   match Config.os_type with
-  | Config.Unix | Config.Cygwin ->
-      (Unix.getitimer Unix.ITIMER_REAL).Unix.it_value
-  | Config.Win32 ->
+  | Unix | Cygwin ->
+      (Unix.getitimer ITIMER_REAL).it_value
+  | Win32 ->
       SymOp.get_remaining_wallclock_time ()
 
 
@@ -110,6 +108,15 @@ let suspend_existing_timeout ~keep_symop_total =
 let resume_previous_timeout () =
   let status_opt = unwind () in
   Option.iter ~f:set_status status_opt
+
+
+let () =
+  AnalysisGlobalState.register
+    ~save:(fun () ->
+      (* use a new global counter for the callee *)
+      suspend_existing_timeout ~keep_symop_total:false )
+    ~restore:resume_previous_timeout
+    ~init:(fun () -> ())
 
 
 let exe_timeout f x =

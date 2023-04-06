@@ -39,7 +39,7 @@ type trans_state =
             statement is trying to initialize, if any *)
   ; opaque_exp: (Exp.t * Typ.t) option  (** needed for translating [OpaqueValueExpr] nodes *)
   ; is_fst_arg_objc_instance_method_call: bool
-  ; passed_as_noescape_block_to: Procname.t option }
+  ; block_as_arg_attributes: ProcAttributes.block_as_arg_attributes option }
 
 val pp_trans_state : F.formatter -> trans_state -> unit
 
@@ -72,12 +72,16 @@ type trans_result =
             at the same time we get the [this] object that contains the method. The [this] instance
             object is returned as the [return] field, while the method to call is filled in here.
             This field is [None] in all other cases. *)
+  ; method_signature: CMethodSignature.t option
+        (** in the specific case of translating a function call, we get the method signature. This
+            field is [None] in all other cases. *)
   ; is_cpp_call_virtual: bool }
 
 val empty_control : control
 
 val mk_trans_result :
-     ?method_name:BuiltinDecl.t
+     ?method_name:Procname.t
+  -> ?method_signature:CMethodSignature.t
   -> ?is_cpp_call_virtual:bool
   -> Exp.t * Typ.t
   -> control

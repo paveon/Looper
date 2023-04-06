@@ -24,7 +24,7 @@ end
 
 let should_report_on_type t =
   match t.Typ.desc with
-  | Tptr (_, Pk_reference) ->
+  | Tptr (_, (Pk_lvalue_reference | Pk_rvalue_reference)) ->
       false
   | Tint _ | Tfloat _ | Tvoid | Tptr _ ->
       true
@@ -105,7 +105,7 @@ module TransferFunctions (CFG : ProcCfg.S) = struct
 
 
   let function_expects_a_pointer_as_nth_param callee_formals idx =
-    match List.nth callee_formals idx with Some (_, typ) -> Typ.is_pointer typ | _ -> false
+    match List.nth callee_formals idx with Some (_, typ, _) -> Typ.is_pointer typ | _ -> false
 
 
   let is_struct_field_passed_by_ref callee_formals t access_expr idx =
@@ -145,7 +145,7 @@ module TransferFunctions (CFG : ProcCfg.S) = struct
   let is_dummy_constructor_of_a_struct call =
     let is_dummy_constructor_of_struct =
       match get_formals call with
-      | Some [(_, {Typ.desc= Typ.Tptr ({Typ.desc= Tstruct _}, _)})] ->
+      | Some [(_, {Typ.desc= Typ.Tptr ({Typ.desc= Tstruct _}, _)}, _)] ->
           true
       | _ ->
           false
@@ -167,7 +167,7 @@ module TransferFunctions (CFG : ProcCfg.S) = struct
     match nth_formal_param callee_pname idx with
     | None ->
         None
-    | Some (fparam, t) ->
+    | Some (fparam, t, _) ->
         let var_fparam = Var.of_pvar (Pvar.mk fparam callee_pname) in
         if
           D.exists
@@ -182,7 +182,7 @@ module TransferFunctions (CFG : ProcCfg.S) = struct
   let remove_initialized_params {InterproceduralAnalysis.analyze_dependency} call maybe_uninit_vars
       idx access_expr remove_fields =
     match analyze_dependency call with
-    | Some (_, {UninitDomain.pre= init_formals; post= _}) -> (
+    | Some {UninitDomain.pre= init_formals; post= _} -> (
       match init_nth_actual_param call idx init_formals with
       | Some var_formal ->
           let maybe_uninit_vars = MaybeUninitVars.remove access_expr maybe_uninit_vars in
@@ -200,7 +200,7 @@ module TransferFunctions (CFG : ProcCfg.S) = struct
   (* true if a function initializes at least a param or a field of a struct param *)
   let function_initializes_some_formal_params {InterproceduralAnalysis.analyze_dependency} call =
     match analyze_dependency call with
-    | Some (_, {UninitDomain.pre= initialized_formal_params; post= _}) ->
+    | Some {UninitDomain.pre= initialized_formal_params; post= _} ->
         not (D.is_empty initialized_formal_params)
     | _ ->
         false
@@ -348,7 +348,7 @@ let checker ({InterproceduralAnalysis.proc_desc; tenv} as analysis_data) =
     ; prepost= {UninitDomain.pre= D.empty; post= D.empty} }
   in
   let proc_data =
-    let formals = FormalMap.make proc_desc in
+    let formals = FormalMap.make (Procdesc.get_attributes proc_desc) in
     {analysis_data; formals}
   in
   Analyzer.compute_post proc_data ~initial proc_desc

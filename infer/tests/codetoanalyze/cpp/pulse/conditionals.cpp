@@ -32,21 +32,19 @@ bool equal_explicit(size_t x, size_t y) {
 }
 
 // need relational domain to give this a good spec
-bool equal(size_t x, size_t y) {
-  return x == y;
-}
+bool equal(size_t x, size_t y) { return x == y; }
 
 void unreachable_interproc_compare_ok(int* x, size_t y) {
   if (equal(y, 0)) {
     free(x);
   }
-  if (equal_explicit(y,1)) {
+  if (equal_explicit(y, 1)) {
     free(x);
   }
 }
 
-void compare_deref_ok(int *x) {
-  if (!equal((size_t) x,0)) {
+void compare_deref_ok(int* x) {
+  if (!equal((size_t)x, 0)) {
     *x = 42;
   }
 }
@@ -115,6 +113,21 @@ void add_test6_bad_FNish(int* x, int n, int step) {
 void minus_test_ok(int* x) {
   free(x);
   if (-1 + 3 - 2 != 0) { // always false
+    *x = 42;
+  }
+}
+
+void binary_and_ok(int* x) {
+  free(x);
+  if (10 & 9) {
+  } else {
+    *x = 42;
+  }
+}
+
+void binary_and_bad(int* x) {
+  free(x);
+  if (10 & 9) {
     *x = 42;
   }
 }

@@ -25,15 +25,15 @@ LLVM_OCAML_SENTINEL=vendor/llvm-dune/src/llvm/common/dune
 
 # Note that llvm-config is broken and does not correctly detect llvm
 # shared libraries. A filthy workaround seems to be to create the
-# libLLVM-11.dylib file llvm-config looks for as a symbolic link to
+# libLLVM-12.dylib file llvm-config looks for as a symbolic link to
 # libLLVM.dylib.
 link_llvm_dylib:
 	@set -e ;\
 	LLVMLIB=$$($$(opam var conf-llvm:config) --libdir) ;\
-	ln -s $$LLVMLIB/libLLVM.dylib $$LLVMLIB/libLLVM-11.dylib
+	ln -s $$LLVMLIB/libLLVM.dylib $$LLVMLIB/libLLVM-12.dylib
 
 $(LLVM_OCAML_SENTINEL): $(LLVM_OCAML_SRC)
-	cd vendor/llvm-dune; ./setup.sh $$(opam var conf-llvm:config) # &>/dev/null
+	cd vendor/llvm-dune; ./setup.sh $$(opam var conf-llvm:config)
 
 clean_llvm:
 	rm -rf vendor/llvm-dune/{src,llvm_*.opam}
@@ -43,7 +43,7 @@ setup: $(LLVM_OCAML_SENTINEL)
 
 .PHONY: check
 check: setup
-	dune build @check
+	OCAML_ERROR_STYLE=short dune build @check --display=quiet
 
 .PHONY: exes
 exes: setup
@@ -71,9 +71,9 @@ release: setup
 watch: setup
 	dune build --watch --terminal-persistence=clear-on-rebuild $(TARGETS)
 
-.PHONY: watch
+.PHONY: watch-test
 watch-test: setup
-	dune build --watch @_build/debug/runtest --auto-promote $(DEBUG_TARGETS)
+	dune build --watch @_build/debug/runtest @_build/debug/fmt --auto-promote $(DEBUG_TARGETS)
 
 .PHONY: test
 test:
@@ -81,8 +81,10 @@ test:
 	dune build @_build/debug/fmt --auto-promote 2>/dev/null
 
 .PHONY: ci-test
-ci-test:
-	dune build @_build/debug/fmt @_build/debug/runtest
+ci-test: exes
+	dune build @_build/debug/fmt @_build/debug/runtest _build/release/sledge-help.txt
+	git diff --quiet sledge-help.txt
+	$(MAKE) --no-print-directory -C test ci-test
 
 .PHONY: clean
 clean:
@@ -102,6 +104,10 @@ OCAMLFORMAT_ARGS=
 .PHONY: fmt_all
 fmt_all:
 	parallel $(OCAMLFORMAT_EXE) $(OCAMLFORMAT_ARGS) -i ::: $(shell find * \( -name _build -or -name vendor \) -prune -or \( -name '*'.ml -or -name '*'.mli \) -print 2>/dev/null)
+
+dep.pdf: release
+	${MAKE} -C ../facebook/dependencies/cmgraph
+	cmgraph _build/release/ -e 'Llvm_' -e 'NS' -e '_intf' -e 'Dbg' -f Sledge_cli -r -o dep.pdf
 
 # print any variable for Makefile debugging
 print-%:

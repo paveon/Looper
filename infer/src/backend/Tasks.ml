@@ -10,7 +10,7 @@ open! IStd
 type ('a, 'b) doer = 'a -> 'b option
 
 let with_new_db_connection ~f () =
-  ResultsDatabase.new_database_connection () ;
+  Database.new_database_connection () ;
   f ()
 
 
@@ -19,8 +19,8 @@ module Runner = struct
 
   let create ~jobs ~child_prologue ~f ~child_epilogue ~tasks =
     PerfEvent.(
-      log (fun logger -> log_begin_event logger ~categories:["sys"] ~name:"fork prepare" ())) ;
-    ResultsDatabase.db_close () ;
+      log (fun logger -> log_begin_event logger ~categories:["sys"] ~name:"fork prepare" ()) ) ;
+    Database.db_close () ;
     let pool =
       ProcessPool.create ~jobs ~f ~child_epilogue ~tasks:(with_new_db_connection ~f:tasks)
         ~child_prologue:

@@ -31,8 +31,19 @@ module type S = sig
     -> initial:TransferFunctions.Domain.t
     -> Procdesc.t
     -> TransferFunctions.Domain.t option
-  (** compute and return the postcondition for the given {!Procdesc.t} starting from [initial].
+  (** compute and return the postcondition for the given {!IR.Procdesc.t} starting from [initial].
       [pp_instr] is used for the debug HTML and passed as a hook to handle both SIL and HIL CFGs. *)
+
+  val compute_post_including_exceptional :
+       ?do_narrowing:bool
+    -> ?pp_instr:(TransferFunctions.Domain.t -> Sil.instr -> (Format.formatter -> unit) option)
+    -> TransferFunctions.analysis_data
+    -> initial:TransferFunctions.Domain.t
+    -> Procdesc.t
+    -> TransferFunctions.Domain.t option * TransferFunctions.Domain.t option
+  (** compute and return the postconditions of the exit node and the exceptions sink node for the
+      given {!IR.Procdesc.t} starting from [initial] [pp_instr] is used for the debug HTML and
+      passed as a hook to handle both SIL and HIL CFGs. *)
 
   val exec_cfg :
        ?do_narrowing:bool
@@ -82,3 +93,35 @@ module MakeDisjunctive
     with type TransferFunctions.analysis_data = T.analysis_data
      and module TransferFunctions.CFG = T.CFG
      and type TransferFunctions.Domain.t = T.DisjDomain.t list * T.NonDisjDomain.t
+
+module type TransferFunctionsWithExceptions = sig
+  include TransferFunctions.SIL
+
+  val join_all : Domain.t list -> into:Domain.t option -> Domain.t option
+  (** Joins the abstract states from predecessors. It returns [None] when the given list is empty
+      and [into] is [None]. *)
+
+  val filter_normal : Domain.t -> Domain.t
+  (** Refines the abstract state to select non-exceptional concrete states. Should return bottom if
+      no such states exist *)
+
+  val filter_exceptional : Domain.t -> Domain.t
+  (** Refines the abstract state to select exceptional concrete states. Should return bottom if no
+      such states exist *)
+
+  val transform_on_exceptional_edge : Domain.t -> Domain.t
+  (** Change the nature normal/exceptional when flowing through an exceptional edge. For a forward
+      analysis, it should turn an exceptional state into normal. For a backward analysis, it should
+      turn an normal state into exceptional. *)
+end
+
+module type MakeExceptional = functor (T : TransferFunctionsWithExceptions) ->
+  S with module TransferFunctions = T
+
+(* Create an intraprocedural backward abstract interpreter from transfer functions using the reverse
+   post-order scheduler. Dispatch properly exceptional flows backward. *)
+module MakeBackwardRPO : MakeExceptional
+
+(* Create an intraprocedural backward abstract interpreter from transfer functions using the weak
+   topological order scheduler. Dispatch properly exceptional flows backward. *)
+module MakeBackwardWTO : MakeExceptional

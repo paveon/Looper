@@ -17,7 +17,9 @@ let clang_to_sil_location default_source_file clang_loc =
     Option.value_map ~default:default_source_file ~f:SourceFile.from_abs_path
       clang_loc.Clang_ast_t.sl_file
   in
-  Location.{line; col; file}
+  let macro_file_opt = Option.map ~f:SourceFile.from_abs_path clang_loc.Clang_ast_t.sl_macro_file in
+  let macro_line = Option.value ~default:(-1) clang_loc.Clang_ast_t.sl_macro_line in
+  Location.{line; col; file; macro_file_opt; macro_line}
 
 
 let matches_skip_translation_headers =
@@ -36,22 +38,13 @@ let source_file_in_project source_file =
   file_in_project && not file_should_be_skipped
 
 
-let should_do_frontend_check translation_unit (loc_start, _) =
-  match Option.map ~f:SourceFile.from_abs_path loc_start.Clang_ast_t.sl_file with
-  | Some source_file ->
-      SourceFile.equal translation_unit source_file
-      || (source_file_in_project source_file && not Config.testing_mode)
-  | None ->
-      false
-
-
 (** We translate by default the instructions in the current file. In C++ development, we also
     translate the headers that are part of the project. However, in testing mode, we don't want to
     translate the headers because the dot files in the frontend tests should contain nothing else
     than the source file to avoid conflicts between different versions of the libraries. *)
 let should_translate translation_unit (loc_start, loc_end) decl_trans_context ~translate_when_used =
   let map_file_of pred loc =
-    match Option.map ~f:SourceFile.from_abs_path loc.Clang_ast_t.sl_file with
+    match Option.map ~f:SourceFile.create loc.Clang_ast_t.sl_file with
     | Some f ->
         pred f
     | None ->
@@ -64,7 +57,7 @@ let should_translate translation_unit (loc_start, loc_end) decl_trans_context ~t
   let equal_header_of_current_source maybe_header =
     (* SourceFile.of_header will cache calls to filesystem *)
     let source_of_header_opt = SourceFile.of_header maybe_header in
-    Option.value_map ~f:equal_current_source ~default:false source_of_header_opt
+    Option.exists ~f:equal_current_source source_of_header_opt
   in
   let file_in_project =
     map_file_of source_file_in_project loc_end || map_file_of source_file_in_project loc_start
@@ -86,11 +79,8 @@ let should_translate_lib translation_unit source_range decl_trans_context ~trans
 
 
 let is_file_block_listed file =
-  let paths = Config.skip_analysis_in_path in
-  let is_file_block_listed =
-    List.exists ~f:(fun path -> Str.string_match (Str.regexp ("^.*/" ^ path)) file 0) paths
-  in
-  is_file_block_listed
+  Option.exists ~f:(fun re -> Str.string_match re file 0) Config.skip_analysis_in_path
+  || Inferconfig.capture_block_list_file_matcher (SourceFile.create file)
 
 
 let location_of_source_range ?(pick_location = `Start) default_source_file source_range =

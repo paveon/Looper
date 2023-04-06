@@ -89,15 +89,14 @@ and translate a : Annot.t =
 
 (** Translate an item annotation. *)
 let translate_item avlist : Annot.Item.t =
-  let trans_vis = function Javalib.RTVisible -> true | Javalib.RTInvisible -> false in
-  let trans (a, v) = (translate a, trans_vis v) in
+  let trans (a, _) = translate a in
   List.map ~f:trans avlist
 
 
-(** Translate a method annotation. *)
-let translate_method ann : Annot.Method.t =
+(** Translate annotations for a method. *)
+let translate_method ann : Annot.Item.t * Annot.Item.t list =
   let global_ann = ann.Javalib.ma_global in
   let param_ann = ann.Javalib.ma_parameters in
-  let return = translate_item global_ann in
+  let ret_annots = translate_item global_ann in
   let params = List.map ~f:translate_item param_ann in
-  {return; params}
+  (ret_annots, params)

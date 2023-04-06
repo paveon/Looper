@@ -19,7 +19,8 @@ module ReportSummary = struct
   let pp fmt {n_issues= _; issue_type_counts} =
     let string_of_issue ~issue_type ~issue_type_hum =
       let shortDescription = {Sarifbug_j.text= issue_type_hum} in
-      let rule = {Sarifbug_j.id= issue_type; shortDescription} in
+      let help_uri = "https://fbinfer.com" ^ Help.abs_url_of_issue_type issue_type in
+      let rule = {Sarifbug_j.id= issue_type; shortDescription; helpUri= help_uri} in
       Sarifbug_j.string_of_rule rule
     in
     IssueHash.to_seq issue_type_counts
@@ -69,15 +70,14 @@ let pp_results_header fmt =
 let loc_trace_to_sarifbug_record trace_list =
   let file_loc filename =
     let absolute_source_name = Config.project_root ^/ filename in
-    {Sarifbug_j.uri= filename; Sarifbug_j.uriBaseId= absolute_source_name}
+    let file_path = "file:" ^ filename in
+    {Sarifbug_j.uri= file_path; Sarifbug_j.uriBaseId= absolute_source_name}
   in
   let message description = {Sarifbug_j.text= description} in
   let region line_number column_number =
-    match column_number with
-    | -1 ->
-        {Sarifbug_j.startLine= line_number; startColumn= 1}
-    | _ ->
-        {Sarifbug_j.startLine= line_number; startColumn= column_number}
+    let line_num = match line_number with -1 | 0 -> 1 | _ -> line_number in
+    let column_num = match column_number with -1 | 0 -> 1 | _ -> column_number in
+    {Sarifbug_j.startLine= line_num; startColumn= column_num}
   in
   let physical_location filename line_number column_number =
     {Sarifbug_j.artifactLocation= file_loc filename; region= region line_number column_number}
@@ -93,12 +93,14 @@ let loc_trace_to_sarifbug_record trace_list =
   List.map ~f:trace_item_to_record trace_list
 
 
-let pp_jsonbug fmt {Jsonbug_t.file; severity; bug_type; qualifier; line; column; bug_trace} =
+let pp_jsonbug fmt
+    {Jsonbug_t.file; severity; bug_type; qualifier; line; column; bug_trace; hash; key} =
   let message = {Sarifbug_j.text= qualifier} in
   let level = String.lowercase severity in
   let ruleId = bug_type in
   let absolute_source_name = Config.project_root ^/ file in
-  let file_loc = {Sarifbug_j.uri= file; uriBaseId= absolute_source_name} in
+  let file_path = "file:" ^ file in
+  let file_loc = {Sarifbug_j.uri= file_path; uriBaseId= absolute_source_name} in
   let region =
     match column with
     | -1 ->
@@ -113,8 +115,14 @@ let pp_jsonbug fmt {Jsonbug_t.file; severity; bug_type; qualifier; line; column;
   let thread_flow =
     if trace_list_length > 0 then Some [{Sarifbug_j.threadFlows= thread_flow_locs}] else None
   in
+  let fingerprints = {Sarifbug_j.hashV1= hash; key} in
   let result =
-    {Sarifbug_j.message; level; ruleId; codeFlows= thread_flow; locations= file_location_to_record}
+    { Sarifbug_j.message
+    ; level
+    ; ruleId
+    ; codeFlows= thread_flow
+    ; locations= file_location_to_record
+    ; fingerprints }
   in
   F.pp_print_string fmt (Sarifbug_j.string_of_sarifbug result)
 

@@ -7,7 +7,7 @@
 
 open! IStd
 
-type t [@@deriving compare, sexp_of]
+type t [@@deriving compare, sexp, hash]
 
 (** Maps from source_file *)
 module Map : Caml.Map.S with type key = t
@@ -15,7 +15,10 @@ module Map : Caml.Map.S with type key = t
 (** Set of source files *)
 module Set : Caml.Set.S with type elt = t
 
+(** Mutable hash tables and sets keyed on source files *)
 module Hash : Caml.Hashtbl.S with type key = t
+
+module HashSet : HashSet.S with type elt = t
 
 val is_invalid : t -> bool
 (** Is the source file the invalid source file? *)
@@ -23,6 +26,10 @@ val is_invalid : t -> bool
 val read_config_changed_files : unit -> Set.t option
 (** return the list of changed files as read from Config.changed_files_index. NOTE: it may include
     extra source_files if --changed-files-index contains paths to header files. *)
+
+val read_config_files_to_analyze : unit -> Set.t option
+(** return the list of files as read from Config.files_to_analyze_index. NOTE: it may include extra
+    source_files if --changed-files-index contains paths to header files. *)
 
 val invalid : string -> t
 (** Invalid source file *)
@@ -34,10 +41,11 @@ val from_abs_path : ?warn_on_error:bool -> string -> t
 (** create source file from absolute path. WARNING: If warn_on_error is false, no warning will be
     shown whenever an error occurs for the given path (e.g. if it does not exist). *)
 
-val create : ?warn_on_error:bool -> string -> t
+val create : ?check_abs_path:bool -> ?check_rel_path:bool -> string -> t
 (** Create a SourceFile from a given path. If relative, it assumes it is w.r.t. project root.
-    WARNING: If warn_on_error is false, no warning will be shown whenever an error occurs for the
-    given path (e.g. if it does not exist). *)
+    WARNING: if check_abs_path (check_rel_path) is true then a warning message is shown if the
+    provided path is absolute (relative) and an error occurs when resolving (e.g. if it does not
+    exist). *)
 
 val is_under_project_root : t -> bool
 (** Returns true if the file is under the project root or the workspace directory if it exists *)

@@ -9,7 +9,7 @@
 open! IStd
 module F = Format
 
-type field = Fieldname.t * Typ.t * Annot.Item.t [@@deriving compare]
+type field = Fieldname.t * Typ.t * Annot.Item.t [@@deriving compare, equal]
 
 type fields = field list
 
@@ -22,7 +22,7 @@ type java_class_info =
             source file *) }
 
 (** Type for a structured value. *)
-type t =
+type t = private
   { fields: fields  (** non-static fields *)
   ; statics: fields  (** static fields *)
   ; supers: Typ.Name.t list  (** superclasses *)
@@ -31,7 +31,8 @@ type t =
   ; exported_objc_methods: Procname.t list  (** methods in ObjC interface, subset of [methods] *)
   ; annots: Annot.Item.t  (** annotations *)
   ; java_class_info: java_class_info option  (** present if and only if the class is Java *)
-  ; dummy: bool  (** dummy struct for class including static method *) }
+  ; dummy: bool  (** dummy struct for class including static method *)
+  ; source_file: SourceFile.t option  (** source file containing this struct's declaration *) }
 
 type lookup = Typ.Name.t -> t option
 
@@ -51,7 +52,8 @@ val internal_mk_struct :
   -> ?annots:Annot.Item.t
   -> ?java_class_info:java_class_info
   -> ?dummy:bool
-  -> unit
+  -> ?source_file:SourceFile.t
+  -> Typ.name
   -> t
 (** Construct a struct_typ, normalizing field types *)
 
@@ -62,6 +64,9 @@ type field_info = {typ: Typ.t; annotations: Annot.Item.t; is_static: bool}
 
 val get_field_info : lookup:lookup -> Fieldname.t -> Typ.t -> field_info option
 (** Lookup for info associated with the field [fn]. None if [typ] has no field named [fn] *)
+
+val fld_typ_opt : lookup:lookup -> Fieldname.t -> Typ.t -> Typ.t option
+(** If a struct type with field f, return Some (the type of f). If not, return None. *)
 
 val fld_typ : lookup:lookup -> default:Typ.t -> Fieldname.t -> Typ.t -> Typ.t
 (** If a struct type with field f, return the type of f. If not, return the default type if given,
@@ -77,5 +82,7 @@ val merge : Typ.Name.t -> newer:t -> current:t -> t
 val is_not_java_interface : t -> bool
 (** check that a struct either defines a non-java type, or a non-java-interface type (abstract or
     normal class) *)
+
+val get_source_file : t -> SourceFile.t option
 
 module Normalizer : HashNormalizer.S with type t = t

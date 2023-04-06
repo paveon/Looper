@@ -11,9 +11,10 @@ module L = Logging
 (* ocamlc gets confused by [module rec]: https://caml.inria.fr/mantis/view.php?id=6714 *)
 (* it also ignores the warning suppression at toplevel, hence the [include struct ... end] trick *)
 include struct
-  [@@@warning "-60"]
+  [@@@warning "-unused-module"]
 
   module rec CTransImpl : CModule_type.CTranslation = CTrans.CTrans_funct (CFrontend_declImpl)
+
   and CFrontend_declImpl : CModule_type.CFrontend = CFrontend_decl.CFrontend_decl_funct (CTransImpl)
 end
 
@@ -41,6 +42,13 @@ let init_global_state_capture () =
   CFrontend_config.reset_block_counter ()
 
 
+let do_objc_preanalyses cfg tenv =
+  CAddImplicitDeallocImpl.process cfg tenv ;
+  CAddImplicitGettersSetters.process cfg tenv ;
+  CReplaceDynamicDispatch.process cfg ;
+  CViewControllerLifecycle.process cfg tenv
+
+
 let do_source_file (translation_unit_context : CFrontend_config.translation_unit_context) ast =
   let tenv = Tenv.create () in
   CType_decl.add_predefined_types tenv ;
@@ -50,10 +58,14 @@ let do_source_file (translation_unit_context : CFrontend_config.translation_unit
   L.(debug Capture Verbose)
     "@\n Start building call/cfg graph for '%a'....@\n" SourceFile.pp source_file ;
   let cfg = compute_icfg translation_unit_context tenv ast in
-  CAddImplicitDeallocImpl.process cfg tenv ;
-  CAddImplicitGettersSetters.process cfg tenv ;
+  Config.inline_func_pointer_for_testing
+  |> Option.iter ~f:(fun prefix -> CMockPointerSubst.process cfg prefix) ;
+  ( match translation_unit_context.CFrontend_config.lang with
+  | CFrontend_config.ObjC | CFrontend_config.ObjCPP ->
+      do_objc_preanalyses cfg tenv
+  | _ ->
+      () ) ;
   L.(debug Capture Verbose) "@\n End building call/cfg graph for '%a'.@\n" SourceFile.pp source_file ;
-  NullabilityPreanalysis.analysis cfg tenv ;
   SourceFiles.add source_file cfg (Tenv.FileLocal tenv) (Some integer_type_widths) ;
   if Config.debug_mode then Tenv.store_debug_file_for_source source_file tenv ;
   if

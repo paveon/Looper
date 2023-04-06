@@ -11,8 +11,3 @@ open! IStd
 (** Main module for the analysis after the capture phase *)
 
 val main : changed_files:SourceFile.Set.t option -> unit
-
-val register_active_checkers : unit -> unit
-
-val invalidate_changed_procedures : SourceFile.Set.t option -> unit
-(** Invalidate specs files for procedures that have changed. Used for incremental analysis. *)

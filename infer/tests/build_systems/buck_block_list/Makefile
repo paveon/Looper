@@ -10,7 +10,7 @@ ANALYZER = checkers
 BUCK_TARGET = //src:hello @buck_target.txt
 SOURCES = $(wildcard src/*.c) $(wildcard src/subtarget1/*.c) $(wildcard src/subtarget2/*.c)
 OBJECTS = buck-out/gen/src/hello\#compile-hello.c.o1f717d69,default/hello.c.o
-INFER_OPTIONS = --report-custom-error --developer-mode --no-linters
+INFER_OPTIONS = --report-custom-error --developer-mode
 INFERPRINT_OPTIONS = --issues-tests
 CLEAN_EXTRA = buck-out
 
@@ -26,4 +26,4 @@ infer-out/report.json: $(CLANG_DEPS) $(SOURCES) $(MAKEFILE_LIST)
 	$(INFER_BIN) $(INFER_OPTIONS) capture --buck-clang --results-dir $(CURDIR)/infer-out \
 	  @block_list.txt --buck-block-list '.*src/hello2\.c' \
 	  -- $(BUCK) build --no-cache $(BUCK_TARGET) &&\
-	$(INFER_BIN) $(INFER_OPTIONS) --merge analyze)
+	$(INFER_BIN) $(INFER_OPTIONS) analyze)

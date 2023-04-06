@@ -72,7 +72,7 @@ let check_access access_opt de_opt =
         in
         fun pvar ->
           let name = Pvar.get_name pvar in
-          List.exists ~f:(fun (formal_name, _) -> Mangled.equal name formal_name) formals
+          List.exists ~f:(fun (formal_name, _, _) -> Mangled.equal name formal_name) formals
       in
       let process_formal_letref = function
         | Sil.Load {id; e= Exp.Lvar pvar} ->
@@ -151,7 +151,7 @@ let check_access access_opt de_opt =
 
 let classify_access desc access_opt de_opt is_nullable =
   let default_bucket = if is_nullable then Localise.BucketLevel.b1 else Localise.BucketLevel.b5 in
-  let tmp_var = Option.value_map de_opt ~default:false ~f:DExp.has_tmp_var in
+  let tmp_var = Option.exists de_opt ~f:DExp.has_tmp_var in
   let bucket =
     if tmp_var then Localise.BucketLevel.b5
     else check_access access_opt de_opt |> Option.value ~default:default_bucket

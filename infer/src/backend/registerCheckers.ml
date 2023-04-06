@@ -14,7 +14,7 @@ module F = Format
 type callback_fun =
   | Procedure of Callbacks.proc_callback_t
   | DynamicDispatch of Callbacks.proc_callback_t
-  | File of {callback: Callbacks.file_callback_t; issue_dir: ResultsDirEntryName.id}
+  | File of Callbacks.file_callback_t
 
 let interprocedural payload_field checker =
   Procedure (CallbackOfChecker.interprocedural_with_field payload_field checker)
@@ -24,14 +24,19 @@ let dynamic_dispatch payload_field checker =
   DynamicDispatch (CallbackOfChecker.interprocedural_with_field payload_field checker)
 
 
+let interprocedural_with_field_dependency ~dep_field payload_field checker =
+  Procedure
+    (CallbackOfChecker.interprocedural_with_field_dependency ~dep_field payload_field checker)
+
+
 (** For checkers that read two separate payloads. Assumes that [checker] produces payloads for
     [payload_field1] *)
 let interprocedural2 payload_field1 payload_field2 checker =
   Procedure
-    (CallbackOfChecker.interprocedural
-       ~f_analyze_dep:(fun proc_desc payloads -> Some (proc_desc, payloads))
+    (CallbackOfChecker.interprocedural ~f_analyze_dep:Option.some
        ~get_payload:(fun payloads ->
-         (Field.get payload_field1 payloads, Field.get payload_field2 payloads) )
+         ( Field.get payload_field1 payloads |> Lazy.force
+         , Field.get payload_field2 payloads |> Lazy.force ) )
        ~set_payload:(fun payloads payload1 -> Field.fset payload_field1 payloads payload1)
        checker )
 
@@ -39,18 +44,15 @@ let interprocedural2 payload_field1 payload_field2 checker =
 (** For checkers that read three separate payloads. *)
 let interprocedural3 payload_field1 payload_field2 payload_field3 ~set_payload checker =
   Procedure
-    (CallbackOfChecker.interprocedural
-       ~f_analyze_dep:(fun proc_desc payloads -> Some (proc_desc, payloads))
+    (CallbackOfChecker.interprocedural ~f_analyze_dep:Option.some
        ~get_payload:(fun payloads ->
-         ( Field.get payload_field1 payloads
-         , Field.get payload_field2 payloads
-         , Field.get payload_field3 payloads ) )
+         ( Field.get payload_field1 payloads |> Lazy.force
+         , Field.get payload_field2 payloads |> Lazy.force
+         , Field.get payload_field3 payloads |> Lazy.force ) )
        ~set_payload checker )
 
 
-let file issue_dir payload_field checker =
-  File {callback= CallbackOfChecker.interprocedural_file payload_field checker; issue_dir}
-
+let file payload_field checker = File (CallbackOfChecker.interprocedural_file payload_field checker)
 
 let intraprocedural checker = Procedure (CallbackOfChecker.intraprocedural checker)
 
@@ -100,9 +102,7 @@ let all_checkers =
   ; { checker= Starvation
     ; callbacks=
         (let starvation = interprocedural Payloads.Fields.starvation Starvation.analyze_procedure in
-         let starvation_file_reporting =
-           file StarvationIssues Payloads.Fields.starvation Starvation.reporting
-         in
+         let starvation_file_reporting = file Payloads.Fields.starvation Starvation.reporting in
          [ (starvation, Java)
          ; (starvation_file_reporting, Java)
          ; (starvation, Clang)
@@ -111,7 +111,7 @@ let all_checkers =
     ; callbacks=
         (let hoisting =
            interprocedural3
-             ~set_payload:(fun payloads () ->
+             ~set_payload:(fun payloads (_ : unit Lazy.t) ->
                (* this analysis doesn't produce additional payloads *) payloads )
              Payloads.Fields.buffer_overrun_analysis Payloads.Fields.purity Payloads.Fields.cost
              Hoisting.checker
@@ -148,14 +148,10 @@ let all_checkers =
                interprocedural later on *)
             interprocedural Payloads.Fields.lab_resource_leaks ResourceLeaks.checker
           , Java ) ] }
-  ; (* .NET resource analysis, based on the toy resource analysis in the infer lab *)
-    { checker= DOTNETResourceLeaks
-    ; callbacks=
-        [(interprocedural Payloads.Fields.dotnet_resource_leaks ResourceLeaksCS.checker, CIL)] }
   ; { checker= RacerD
     ; callbacks=
         (let racerd_proc = interprocedural Payloads.Fields.racerd RacerDProcAnalysis.analyze in
-         let racerd_file = file RacerDIssues Payloads.Fields.racerd RacerDFileAnalysis.analyze in
+         let racerd_file = file Payloads.Fields.racerd RacerDFileAnalysis.analyze in
          [ (racerd_proc, Clang)
          ; (racerd_proc, Java)
          ; (racerd_proc, CIL)
@@ -172,7 +168,11 @@ let all_checkers =
   ; { checker= Pulse
     ; callbacks=
         (let pulse = interprocedural Payloads.Fields.pulse Pulse.checker in
-         [(pulse, Clang); (pulse, Erlang); (pulse, Java); (pulse, CIL)] ) }
+         [(pulse, Clang); (pulse, Erlang); (pulse, Hack); (pulse, Java); (pulse, CIL)] ) }
+  ; { checker= Datalog
+    ; callbacks=
+        (let datalog = intraprocedural DatalogAnalysis.checker in
+         [(datalog, Java)] ) }
   ; { checker= Impurity
     ; callbacks=
         (let impurity =
@@ -192,8 +192,7 @@ let all_checkers =
   ; { checker= Eradicate
     ; callbacks=
         [ (intraprocedural_with_payload Payloads.Fields.nullsafe Eradicate.analyze_procedure, Java)
-        ; (file NullsafeFileIssues Payloads.Fields.nullsafe FileLevelAnalysis.analyze_file, Java) ]
-    }
+        ; (file Payloads.Fields.nullsafe FileLevelAnalysis.analyze_file, Java) ] }
   ; { checker= Biabduction
     ; callbacks=
         (let biabduction =
@@ -206,13 +205,6 @@ let all_checkers =
            interprocedural Payloads.Fields.annot_map AnnotationReachability.checker
          in
          [(annot_reach, Java); (annot_reach, Clang)] ) }
-  ; { checker= ConfigChecksBetweenMarkers
-    ; callbacks=
-        (let checker =
-           interprocedural Payloads.Fields.config_checks_between_markers
-             ConfigChecksBetweenMarkers.checker
-         in
-         [(checker, Clang); (checker, Java)] ) }
   ; { checker= ConfigImpactAnalysis
     ; callbacks=
         (let checker =
@@ -222,10 +214,27 @@ let all_checkers =
              Payloads.Fields.cost ConfigImpactAnalysis.checker
          in
          [(checker, Clang); (checker, Java)] ) }
+  ; { checker= SimpleShape
+    ; callbacks=
+        (let checker = interprocedural Payloads.Fields.simple_shape SimpleShape.checker in
+         [(checker, Erlang)] ) }
   ; { checker= SimpleLineage
     ; callbacks=
-        (let checker = interprocedural Payloads.Fields.simple_lineage SimpleLineage.checker in
-         [(checker, Erlang)] ) } ]
+        (let checker =
+           interprocedural_with_field_dependency ~dep_field:Payloads.Fields.simple_shape
+             Payloads.Fields.simple_lineage SimpleLineage.checker
+         in
+         [(checker, Erlang)] ) }
+  ; { checker= ScopeLeakage
+    ; callbacks=
+        (let checker = interprocedural Payloads.Fields.scope_leakage ScopeLeakage.checker in
+         [(checker, Java)] ) }
+  ; { checker= SILValidation
+    ; callbacks=
+        (let java_validator = intraprocedural (SilValidation.checker Language.Java) in
+         let clang_validator = intraprocedural (SilValidation.checker Language.Clang) in
+         let erlang_validator = intraprocedural (SilValidation.checker Language.Erlang) in
+         [(java_validator, Java); (clang_validator, Clang); (erlang_validator, Erlang)] ) } ]
 
 
 let get_active_checkers () =
@@ -235,16 +244,14 @@ let get_active_checkers () =
 
 let register checkers =
   let register_one {checker; callbacks} =
-    let name = Checker.get_id checker in
     let register_callback (callback, language) =
       match callback with
       | Procedure procedure_cb ->
-          Callbacks.register_procedure_callback ~checker_name:name language procedure_cb
+          Callbacks.register_procedure_callback checker language procedure_cb
       | DynamicDispatch procedure_cb ->
-          Callbacks.register_procedure_callback ~checker_name:name ~dynamic_dispatch:true language
-            procedure_cb
-      | File {callback; issue_dir} ->
-          Callbacks.register_file_callback ~checker_name:name language callback ~issue_dir
+          Callbacks.register_procedure_callback checker ~dynamic_dispatch:true language procedure_cb
+      | File callback ->
+          Callbacks.register_file_callback checker language callback
     in
     List.iter ~f:register_callback callbacks
   in

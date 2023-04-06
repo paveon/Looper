@@ -18,7 +18,7 @@ type t = Builtin.registered
 let execute___builtin_va_arg {Builtin.analysis_data; prop_; path; args; loc} : Builtin.ret_typ =
   match args with
   | [(lexp3, typ3)] ->
-      let instr' = Sil.Store {e1= lexp3; root_typ= typ3; typ= typ3; e2= Exp.zero; loc} in
+      let instr' = Sil.Store {e1= lexp3; typ= typ3; e2= Exp.zero; loc} in
       SymExec.instrs ~mask_errors:true analysis_data (Instrs.singleton instr') [(prop_, path)]
   | _ ->
       raise (Exceptions.Wrong_argument_number __POS__)
@@ -263,12 +263,11 @@ let execute___instanceof_cast ~instof
   | [(val1_, typ1); (texp2_, _)] ->
       let val1, prop__ = check_arith_norm_exp analysis_data val1_ prop_ in
       let texp2, prop = check_arith_norm_exp analysis_data texp2_ prop__ in
-      let is_cast_to_reference =
-        match typ1.desc with Typ.Tptr (_, Typ.Pk_reference) -> true | _ -> false
-      in
       (* In Java, we throw an exception, in C++ we return 0 in case of a cast to a pointer, *)
       (* and throw an exception in case of a cast to a reference. *)
-      let should_throw_exception = Language.curr_language_is Java || is_cast_to_reference in
+      let should_throw_exception =
+        Language.curr_language_is Java || Language.curr_language_is CIL || Typ.is_reference typ1
+      in
       let deal_with_failed_cast val1 texp1 texp2 =
         raise (Tabulation.create_cast_exception tenv __POS__ None texp1 texp2 val1)
       in
@@ -607,12 +606,7 @@ let execute___cxx_typeid ({Builtin.analysis_data; prop_; args; loc} as r) : Buil
           in
           let typ_string = Typ.to_string typ in
           let set_instr =
-            Sil.Store
-              { e1= field_exp
-              ; root_typ= StdTyp.void
-              ; typ= StdTyp.void
-              ; e2= Exp.Const (Const.Cstr typ_string)
-              ; loc }
+            Sil.Store {e1= field_exp; typ= StdTyp.void; e2= Exp.Const (Const.Cstr typ_string); loc}
           in
           SymExec.instrs ~mask_errors:true analysis_data (Instrs.singleton set_instr) res
       | _ ->
@@ -652,8 +646,8 @@ let execute_pthread_create
               (* no precondition to check, skip *)
               [(prop_, path)]
           | Some callee_summary ->
-              SymExec.proc_call callee_summary {builtin_args with args= [(routine_arg, snd arg)]} )
-      )
+              SymExec.proc_call pname callee_summary
+                {builtin_args with args= [(routine_arg, snd arg)]} ) )
   | _ ->
       raise (Exceptions.Wrong_argument_number __POS__)
 
@@ -752,7 +746,6 @@ let execute___infer_fail {Builtin.analysis_data= {tenv} as analysis_data; prop_;
   let set_instr =
     Sil.Store
       { e1= Exp.Lvar Predicates.custom_error
-      ; root_typ= StdTyp.void
       ; typ= StdTyp.void
       ; e2= Exp.Const (Const.Cstr error_str)
       ; loc }
@@ -772,7 +765,6 @@ let execute___assert_fail {Builtin.analysis_data; prop_; path; args; loc} : Buil
   let set_instr =
     Sil.Store
       { e1= Exp.Lvar Predicates.custom_error
-      ; root_typ= StdTyp.void
       ; typ= StdTyp.void
       ; e2= Exp.Const (Const.Cstr error_str)
       ; loc }
@@ -828,6 +820,12 @@ let __array_access = Builtin.register BuiltinDecl.__array_access execute_skip
 
 let __assert_fail = Builtin.register BuiltinDecl.__assert_fail execute___assert_fail
 
+let __builtin_add_overflow = Builtin.register BuiltinDecl.__builtin_add_overflow execute_skip
+
+let __builtin_mul_overflow = Builtin.register BuiltinDecl.__builtin_mul_overflow execute_skip
+
+let __builtin_sub_overflow = Builtin.register BuiltinDecl.__builtin_sub_overflow execute_skip
+
 let __builtin_va_arg = Builtin.register BuiltinDecl.__builtin_va_arg execute___builtin_va_arg
 
 let __builtin_va_copy = Builtin.register BuiltinDecl.__builtin_va_copy execute_skip
@@ -875,6 +873,9 @@ let __infer_skip = Builtin.register BuiltinDecl.__infer_skip execute_skip
 (* [__instanceof(val,typ)] implements java's [val instanceof typ] *)
 let __instanceof = Builtin.register BuiltinDecl.__instanceof execute___instanceof
 
+(* Throw is not handled via this builtin by biabduction *)
+let __java_throw = Builtin.register BuiltinDecl.__java_throw execute_skip
+
 let __method_set_ignore_attribute =
   Builtin.register BuiltinDecl.__method_set_ignore_attribute execute___method_set_ignore_attribute
 
@@ -891,6 +892,10 @@ let __objc_alloc_no_fail =
 let __objc_dictionary_literal =
   Builtin.register BuiltinDecl.__objc_dictionary_literal execute___objc_dictionary_literal
 
+
+let __objc_get_ref_count = Builtin.register BuiltinDecl.__objc_get_ref_count execute_skip
+
+let __objc_set_ref_count = Builtin.register BuiltinDecl.__objc_set_ref_count execute_skip
 
 let __placement_delete = Builtin.register BuiltinDecl.__placement_delete execute_skip
 

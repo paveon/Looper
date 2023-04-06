@@ -17,14 +17,18 @@ type op1 =
           it two's-complement--decodes the low [n] bits of the infinite
           two's-complement encoding of [arg]. The injection into [dst] is a
           no-op, so [dst] must be an integer type with bitwidth at least
-          [n]. *)
+          [n]. This expression can also be lifted to operate element-wise
+          over arrays. When [dst] is an array [arg] must also be an array of
+          the same length, with element types satisfying the aforementioned
+          constraints on integer types. *)
   | Unsigned of {bits: int}
       (** [Ap1 (Unsigned {bits= n}, dst, arg)] is [arg] interpreted as an
           [n]-bit unsigned integer and injected into the [dst] type. That
           is, it unsigned-binary--decodes the low [n] bits of the infinite
           two's-complement encoding of [arg]. The injection into [dst] is a
           no-op, so [dst] must be an integer type with bitwidth greater than
-          [n]. *)
+          [n]. This expression can be lifted to arrays, as described for
+          [Signed] just above. *)
   | Convert of {src: Typ.t}
       (** [Ap1 (Convert {src}, dst, arg)] is [arg] converted from type [src]
           to type [dst], possibly with loss of information. The [src] and
@@ -74,7 +78,7 @@ type opN = Record  (** Record (array / struct) constant *)
 type t = private
   | Reg of {id: int; name: string; typ: Typ.t}  (** Virtual register *)
   | Global of {name: string; typ: Typ.t [@ignore]}  (** Global constant *)
-  | Function of {name: string; typ: Typ.t [@ignore]}  (** Function name *)
+  | FuncName of {name: string; typ: Typ.t [@ignore]}  (** Function name *)
   | Label of {parent: string; name: string}
       (** Address of named code block within parent function *)
   | Integer of {data: Z.t; typ: Typ.t}  (** Integer constant *)
@@ -106,6 +110,9 @@ module Reg : sig
 
     val pp : t pp
   end
+
+  module Map : Map.S with type key := t
+  module Tbl : HashTable.S with type key := t
 
   val pp : t pp
 
@@ -144,8 +151,8 @@ module Global : sig
   val typ : t -> Typ.t
 end
 
-(** Exp.Function is re-exported as Function *)
-module Function : sig
+(** Exp.FuncName is re-exported as FuncName *)
+module FuncName : sig
   type exp := t
   type t = private exp [@@deriving compare, equal, sexp]
 
@@ -160,9 +167,9 @@ module Function : sig
   val mk : Typ.t -> string -> t
 
   val counterfeit : string -> t
-  (** [compare] ignores [Function.typ], so it is possible to construct
-      [Function] names using a dummy type that compare equal to their
-      genuine counterparts. *)
+  (** [compare] ignores [FuncName.typ], so it is possible to construct
+      [FuncName]s using a dummy type that compare equal to their genuine
+      counterparts. *)
 
   val name : t -> string
   val typ : t -> Typ.t
@@ -174,7 +181,7 @@ end
 val reg : Reg.t -> t
 
 (* constants *)
-val function_ : Function.t -> t
+val funcname : FuncName.t -> t
 val global : Global.t -> t
 val label : parent:string -> name:string -> t
 val null : t
@@ -242,3 +249,4 @@ val fold_regs : t -> 's -> f:(Reg.t -> 's -> 's) -> 's
 
 val is_true : t -> bool
 val is_false : t -> bool
+val typ_of : t -> Typ.t

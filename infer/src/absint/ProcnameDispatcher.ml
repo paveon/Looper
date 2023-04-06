@@ -23,6 +23,8 @@ type typ = Typ.t
 
 type c = Procname.C.t
 
+type csharp = Procname.CSharp.t
+
 type objc_cpp = Procname.ObjC_Cpp.t
 
 type erlang = Procname.Erlang.t
@@ -45,11 +47,8 @@ let template_args_of_template_spec_info = function
 let templated_name_of_class_name class_name =
   let open Typ in
   match class_name with
-  | CStruct qual_name | CUnion qual_name | ObjcProtocol qual_name ->
+  | CStruct qual_name | CUnion qual_name | ObjcProtocol qual_name | ObjcClass qual_name ->
       (qual_name, [])
-  | ObjcClass (qual_name, protocol_names) ->
-      let protocols = F.asprintf "%a" (Typ.pp_protocols Pp.text) protocol_names in
-      (QualifiedCppName.append_protocols qual_name ~protocols, [])
   | CppClass {name= qual_name; template_spec_info} ->
       (qual_name, template_args_of_template_spec_info template_spec_info)
   | JavaClass mangled_name ->
@@ -58,6 +57,8 @@ let templated_name_of_class_name class_name =
       (QualifiedCppName.of_list [CSharpClassName.to_string mangled_name], [])
   | ErlangType mangled_name ->
       (QualifiedCppName.of_list [ErlangTypeName.to_string mangled_name], [])
+  | HackClass mangled_name ->
+      (QualifiedCppName.of_list (HackClassName.components mangled_name), [])
 
 
 let templated_name_of_java java =
@@ -417,6 +418,8 @@ module Call = struct
 
     let arg_payload {arg_payload} = arg_payload
 
+    let is_var {exp} = match exp with Var _ -> true | _ -> false
+
     let get_var_exn {exp; typ} =
       match exp with
       | Exp.Var v ->
@@ -429,7 +432,8 @@ module Call = struct
     { on_objc_cpp: 'context -> 'f_in -> objc_cpp -> 'f_out option
     ; on_c: 'context -> 'f_in -> c -> 'f_out option
     ; on_java: 'context -> 'f_in -> java -> 'f_out option
-    ; on_erlang: 'context -> 'f_in -> erlang -> 'f_out option }
+    ; on_erlang: 'context -> 'f_in -> erlang -> 'f_out option
+    ; on_csharp: 'context -> 'f_in -> csharp -> 'f_out option }
 
   type ('context, 'f_in, 'f_out, 'arg_payload) on_args =
     'context -> 'f_in * 'arg_payload FuncArg.t list -> ('f_out * 'arg_payload FuncArg.t list) option
@@ -460,7 +464,8 @@ module Call = struct
     { on_objc_cpp: 'context -> objc_cpp -> 'arg_payload FuncArg.t list -> 'f option
     ; on_c: 'context -> c -> 'arg_payload FuncArg.t list -> 'f option
     ; on_java: 'context -> java -> 'arg_payload FuncArg.t list -> 'f option
-    ; on_erlang: 'context -> erlang -> 'arg_payload FuncArg.t list -> 'f option }
+    ; on_erlang: 'context -> erlang -> 'arg_payload FuncArg.t list -> 'f option
+    ; on_csharp: 'context -> csharp -> 'arg_payload FuncArg.t list -> 'f option }
 
   type ('context, 'f, 'arg_payload) pre_result =
     | DoesNotMatch
@@ -502,6 +507,12 @@ module Call = struct
         -> 'f_in
         -> erlang
         -> 'arg_payload FuncArg.t list
+        -> ('context, 'f_out, 'arg_payload) pre_result
+    ; on_csharp:
+           'context
+        -> 'f_in
+        -> csharp
+        -> 'arg_payload FuncArg.t list
         -> ('context, 'f_out, 'arg_payload) pre_result }
 
   type ('context, 'f, 'arg_payload) dispatcher =
@@ -523,8 +534,11 @@ module Call = struct
       let on_erlang context f (erlang : erlang) =
         on_templated_name context f (templated_name_of_erlang erlang)
       in
+      let on_csharp context f (csharp : csharp) =
+        on_templated_name context f (templated_name_of_csharp csharp)
+      in
       let on_objc_cpp context f objc_cpp = on_objc_cpp context f objc_cpp in
-      let on_proc : _ proc_matcher = {on_objc_cpp; on_c; on_java; on_erlang} in
+      let on_proc : _ proc_matcher = {on_objc_cpp; on_c; on_java; on_erlang; on_csharp} in
       {on_proc; on_args}
 
 
@@ -544,7 +558,7 @@ module Call = struct
       -> ('context, 'f_proc_out, 'f_out, 'arg_payload) func_args_end
       -> ('context, 'f_in, 'f_out, 'arg_payload) all_args_matcher =
    fun m func_args_end ->
-    let {on_proc= {on_c; on_java; on_erlang; on_objc_cpp}; on_args} = m in
+    let {on_proc= {on_c; on_java; on_erlang; on_csharp; on_objc_cpp}; on_args} = m in
     let on_c context f c args =
       on_c context f c |> pre_bind_opt ~f:(func_args_end ~on_args context args)
     in
@@ -554,10 +568,13 @@ module Call = struct
     let on_erlang context f erlang args =
       on_erlang context f erlang |> pre_bind_opt ~f:(func_args_end ~on_args context args)
     in
+    let on_csharp context f csharp args =
+      on_csharp context f csharp |> pre_bind_opt ~f:(func_args_end ~on_args context args)
+    in
     let on_objc_cpp context f objc_cpp args =
       on_objc_cpp context f objc_cpp |> pre_bind_opt ~f:(func_args_end ~on_args context args)
     in
-    {on_c; on_java; on_erlang; on_objc_cpp}
+    {on_c; on_java; on_erlang; on_csharp; on_objc_cpp}
 
 
   let make_matcher :
@@ -565,7 +582,7 @@ module Call = struct
       -> 'f_in
       -> ('context, 'f_out, 'arg_payload) matcher =
    fun m f ->
-    let ({on_c; on_java; on_erlang; on_objc_cpp} : (_, _, _, _) all_args_matcher) = m in
+    let ({on_c; on_java; on_erlang; on_csharp; on_objc_cpp} : (_, _, _, _) all_args_matcher) = m in
     let on_objc_cpp context objc_cpp args =
       match on_objc_cpp context f objc_cpp args with
       | DoesNotMatch ->
@@ -602,7 +619,16 @@ module Call = struct
       | RetryWith {on_erlang} ->
           on_erlang context erlang args
     in
-    {on_objc_cpp; on_c; on_java; on_erlang}
+    let on_csharp context csharp args =
+      match on_csharp context f csharp args with
+      | DoesNotMatch ->
+          None
+      | Matches res ->
+          Some res
+      | RetryWith {on_csharp} ->
+          on_csharp context csharp args
+    in
+    {on_objc_cpp; on_c; on_java; on_erlang; on_csharp}
 
 
   (** Simple implementation of a dispatcher, could be optimized later *)
@@ -622,6 +648,9 @@ module Call = struct
     let on_erlang context erlang args =
       List.find_map matchers ~f:(fun (matcher : _ matcher) -> matcher.on_erlang context erlang args)
     in
+    let on_csharp context csharp args =
+      List.find_map matchers ~f:(fun (matcher : _ matcher) -> matcher.on_csharp context csharp args)
+    in
     fun context procname args ->
       let rec match_procname procname =
         match (procname : Procname.t) with
@@ -633,7 +662,9 @@ module Call = struct
             on_java context java args
         | Erlang erlang ->
             on_erlang context erlang args
-        | WithBlockParameters (procname, _) ->
+        | CSharp csharp ->
+            on_csharp context csharp args
+        | WithFunctionParameters (procname, _) ->
             match_procname procname
         | _ ->
             None
@@ -658,6 +689,12 @@ module Call = struct
   (** Matches any arg *)
   let match_any_arg : _ one_arg_matcher =
     let match_arg _context _arg = true in
+    {match_arg}
+
+
+  (** Matches var *)
+  let match_var_arg : _ one_arg_matcher =
+    let match_arg _context arg = FuncArg.is_var arg in
     {match_arg}
 
 
@@ -783,9 +820,8 @@ module Call = struct
     {one_arg_matcher= match_any_arg; capture= capture_arg_exp}
 
 
-  let capt_var_exn : ('context, Ident.t, 'wrapped_arg, 'wrapped_arg -> 'f, 'f, 'arg_payload) one_arg
-      =
-    {one_arg_matcher= match_any_arg; capture= capture_arg_var_exn}
+  let capt_var : ('context, Ident.t, 'wrapped_arg, 'wrapped_arg -> 'f, 'f, 'arg_payload) one_arg =
+    {one_arg_matcher= match_var_arg; capture= capture_arg_var_exn}
 
 
   let any_arg_of_typ m = {one_arg_matcher= match_typ (m <...>! ()); capture= no_capture}
@@ -805,6 +841,10 @@ module Call = struct
 
   let any_arg_of_prim_typ typ =
     {one_arg_matcher= one_arg_matcher_of_prim_typ typ; capture= no_capture}
+
+
+  let capt_arg_payload_of_prim_typ typ =
+    {one_arg_matcher= one_arg_matcher_of_prim_typ typ; capture= capture_arg_val}
 
 
   let capt_exp_of_prim_typ typ =
@@ -857,7 +897,8 @@ module Call = struct
     let on_java _context java _args = on_procname (Java java) in
     let on_erlang _context erlang _args = on_procname (Erlang erlang) in
     let on_objc_cpp _context objc_cpp _args = on_procname (ObjC_Cpp objc_cpp) in
-    {on_c; on_java; on_erlang; on_objc_cpp}
+    let on_csharp _context csharp _args = on_procname (CSharp csharp) in
+    {on_c; on_java; on_erlang; on_csharp; on_objc_cpp}
 
 
   let ( $! ) path_matcher () = args_begin path_matcher

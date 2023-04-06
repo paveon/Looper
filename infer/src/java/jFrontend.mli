@@ -9,7 +9,7 @@
 open! IStd
 open Javalib_pack
 
-val path_of_cached_classname : JBasics.class_name -> string
+val classname_path : JBasics.class_name -> string
 (** [path_of_cached_classname cn] returns the path of a cached classname *)
 
 val cache_classname : JBasics.class_name -> unit
@@ -19,7 +19,7 @@ val is_classname_cached : JBasics.class_name -> bool
 (** [is_classname_cached cn] *)
 
 val compute_source_icfg :
-  JProgramDesc.t -> Tenv.t -> string -> string option -> SourceFile.t -> Cfg.t
+  JProgramDesc.t -> Tenv.t -> string -> string list option -> SourceFile.t -> Cfg.t
 (** [compute_cfg linereader program tenv source_basename source_file] create the control flow graph
     for the file [source_file] by translating all the classes in [program] originating from
     [source_file] *)

@@ -10,7 +10,7 @@ open! IStd
 module F = Format
 
 (** signed and unsigned integer literals *)
-type t [@@deriving yojson_of]
+type t [@@deriving yojson_of, sexp, hash]
 
 exception OversizedShift
 
@@ -32,7 +32,7 @@ val equal : t -> t -> bool
 
 val of_int : int -> t
 
-val of_big_int : Z.t -> t [@@warning "-32"]
+val of_big_int : Z.t -> t [@@warning "-unused-value-declaration"]
 
 val of_int32 : int32 -> t
 
@@ -42,7 +42,7 @@ val of_string : string -> t
 
 val geq : t -> t -> bool
 
-val gt : t -> t -> bool [@@warning "-32"]
+val gt : t -> t -> bool [@@warning "-unused-value-declaration"]
 
 val isminusone : t -> bool
 
