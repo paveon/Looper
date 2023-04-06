@@ -41,7 +41,7 @@ let empty_updates = {
 
 type cache = {
   updates: norm_updates EdgeExp.Map.t;
-  variable_bounds: EdgeExp.T.t EdgeExp.Map.t;
+  upper_bounds: EdgeExp.T.t EdgeExp.Map.t;
   lower_bounds: EdgeExp.T.t EdgeExp.Map.t;
   reset_chains: ResetGraph.Chain.Set.t EdgeExp.Map.t;
   positivity: bool EdgeExp.Map.t;
@@ -49,7 +49,7 @@ type cache = {
 
 let empty_cache = { 
   updates = EdgeExp.Map.empty; 
-  variable_bounds = EdgeExp.Map.empty;
+  upper_bounds = EdgeExp.Map.empty;
   lower_bounds = EdgeExp.Map.empty;
   reset_chains = EdgeExp.Map.empty;
   positivity = EdgeExp.Map.empty;
@@ -70,12 +70,51 @@ and transition = {
   calls: call list
 }
 
-and t = {
+type t = {
   formal_map: FormalMap.t;
   bounds: transition list;
-  return_bound: (EdgeExp.T.t * EdgeExp.T.t) option;
-  formal_bounds: (EdgeExp.T.t * EdgeExp.T.t) EdgeExp.Map.t
+  
+  return_bound: (EdgeExp.ValuePair.pair) option;
+  return_monotonicity_map : (
+    Monotonicity.t AccessExpressionMap.t * 
+    Monotonicity.t AccessExpressionMap.t
+  );
+
+  formal_bounds: (EdgeExp.ValuePair.pair) EdgeExp.Map.t;
+  formal_monotonicity_map : (
+    Monotonicity.t AccessExpressionMap.t *
+    Monotonicity.t AccessExpressionMap.t
+  );
 }
+
+(* module ComplexityDegree = struct
+  type t =
+    | Linear
+    | Log
+    | Linearithmic
+end *)
+
+module Model = struct
+  type t = {
+    (* args: EdgeExp.ValuePair.t list; *)
+    (* complexity: EdgeExp.ComplexityDegree.t; *)
+    name: string;
+    complexity: EdgeExp.ValuePair.t;
+    return_bound: EdgeExp.ValuePair.t option;
+  }
+
+  let pp fmt model = 
+    F.fprintf fmt "complexity: %a" EdgeExp.ValuePair.pp model.complexity
+end
+
+(* type model = {
+  complexity: ComplexityDegree.t;
+  args: EdgeExp.ValuePair.t list;
+} *)
+
+type model_summary =
+  | Real of t
+  | Model of Model.t
 
 
 let total_bound transitions =
@@ -115,7 +154,13 @@ let total_bound transitions =
   if List.is_empty costs then EdgeExp.zero else List.reduce_exn costs ~f:EdgeExp.add
 
 
-let instantiate (summary : t) args ~upper_bound ~lower_bound tenv active_prover cache =
+let instantiate 
+  (summary : t) 
+  args 
+  ~variable_bound
+  tenv 
+  active_prover
+  cache =
   let maximize_argument_exp arg_exp arg_monotonicity_map cache =
     (* Bound increases with the increasing value of this parameter.
       * Maximize value of the argument expression *)
@@ -123,10 +168,10 @@ let instantiate (summary : t) args ~upper_bound ~lower_bound tenv active_prover 
       let var_monotony = AccessExpressionMap.find arg_access arg_monotonicity_map in
       match var_monotony with
       | Monotonicity.NonDecreasing -> (
-        upper_bound (EdgeExp.T.Access arg_access) cache_acc
+        variable_bound ~bound_type:BoundType.Upper (EdgeExp.T.Access arg_access) cache_acc
       )
       | Monotonicity.NonIncreasing -> (
-        lower_bound (EdgeExp.T.Access arg_access) cache_acc
+        variable_bound ~bound_type:BoundType.Lower (EdgeExp.T.Access arg_access) cache_acc
       )
       | Monotonicity.NotMonotonic -> assert(false);
     ) cache
@@ -142,10 +187,10 @@ let instantiate (summary : t) args ~upper_bound ~lower_bound tenv active_prover 
       let var_monotony = AccessExpressionMap.find arg_access arg_monotonicity_map in
       match var_monotony with
       | Monotonicity.NonDecreasing -> (
-        lower_bound (EdgeExp.T.Access arg_access) cache_acc
+        variable_bound ~bound_type:BoundType.Lower (EdgeExp.T.Access arg_access) cache_acc
       )
       | Monotonicity.NonIncreasing -> (
-        upper_bound (EdgeExp.T.Access arg_access) cache_acc
+        variable_bound ~bound_type:BoundType.Upper (EdgeExp.T.Access arg_access) cache_acc
       )
       | Monotonicity.NotMonotonic -> assert(false);
     ) cache
@@ -271,7 +316,7 @@ let instantiate (summary : t) args ~upper_bound ~lower_bound tenv active_prover 
   else (
     debug_log "@[<v2>[Determine monotonicity of argument expressions]@,";
     let arg_monotonicity_maps = List.map args ~f:(fun (arg_exp, arg_typ) ->
-      if Typ.is_int arg_typ && (EdgeExp.is_const arg_exp |> not)
+      if EdgeExp.is_integral_typ arg_typ && (EdgeExp.is_const arg_exp |> not)
       then Some (EdgeExp.determine_monotonicity arg_exp tenv active_prover)
       else None
     )
@@ -346,7 +391,7 @@ let to_graph (summary : t) procname loc =
       let transition_node = TreeGraph.Node.TransitionNode (trans.src_node, trans.bound, trans.dst_node) in
       TreeGraph.add_vertex graph transition_node;
       TreeGraph.add_edge graph root transition_node;
-      List.iter trans.calls ~f:(fun call ->
+      List.iter trans.calls ~f:(fun (call : call) ->
         let call_node = TreeGraph.Node.CallNode (call.name, call.loc) in
         TreeGraph.add_vertex graph call_node;
         TreeGraph.add_edge graph transition_node call_node;

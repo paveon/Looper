@@ -10,6 +10,13 @@ let debug_log : ('a, Format.formatter, unit) format -> 'a = fun fmt -> F.fprintf
 
 let console_log : ('a, Format.formatter, unit) format -> 'a = fun fmt -> F.printf fmt
 
+module ComplexityDegree = struct
+  type t =
+    | Linear
+    | Log
+    | Linearithmic
+    [@@deriving compare]
+end
 
 module rec T : sig
   type call = Typ.t * Procname.t * (t * Typ.t) list * Location.t
@@ -24,6 +31,7 @@ module rec T : sig
   | Max of Set.t
   | Min of Set.t
   | Inf
+  | Symbolic of ComplexityDegree.t * t
   [@@deriving compare]
 
   val equal : t -> t -> bool
@@ -41,6 +49,7 @@ end = struct
   | Max of Set.t
   | Min of Set.t
   | Inf
+  | Symbolic of ComplexityDegree.t * t
   [@@deriving compare]
 
   let equal e1 e2 = Int.equal (compare e1 e2) 0
@@ -87,32 +96,269 @@ and to_string exp =
   | Max args -> process_min_max args "max" ~f:(fun str -> F.sprintf "[%s]" str)
   | Min args -> process_min_max args "min" ~f:(fun str -> F.sprintf "min(%s)" str)
   | Inf -> "Infinity"
+  | Symbolic (degree, value) -> (
+    let degree_str = match degree with
+    | ComplexityDegree.Linear -> "N"
+    | ComplexityDegree.Linearithmic -> "LogN"
+    | ComplexityDegree.Log -> "Log"
+    in
+    F.asprintf "%s(%s)" degree_str (to_string value)
+  )
 
 
 let pp fmt exp = F.fprintf fmt "%s" (to_string exp)
 
 let pp_call fmt call = F.fprintf fmt "%s" (call_to_string call)
 
+let pp_list name pp_func fmt list = if not (List.is_empty list) then (
+  F.fprintf fmt "@[<v2>%s: {" name;
+  List.iter list ~f:(fun cond -> F.fprintf fmt "@,%a" pp_func cond);
+  F.fprintf fmt "}@]"
+)
+else F.fprintf fmt "%s: {}" name
 
-type value_pair =
-  | Value of T.t
-  | Pair of (T.t * T.t)
-  [@@deriving compare]
+let list_to_string set name pp_func = F.asprintf "%a" (pp_list name pp_func) set
 
-let value_pair_to_string value_pair = match value_pair with
-  | Value rhs_value -> to_string rhs_value
-  | Pair (lb, ub) -> F.asprintf "(%s; %s)" (to_string lb) (to_string ub)
+let eval_consts op c1 c2 = match op with
+  | Binop.PlusA _ | Binop.PlusPI -> IntLit.add c1 c2
+  | Binop.MinusA _ -> IntLit.sub c1 c2
+  | Binop.Mult _ -> IntLit.mul c1 c2
+  | Binop.Div -> IntLit.div c1 c2
+  | Binop.Ne -> if IntLit.eq c1 c2 then IntLit.zero else IntLit.one
+  | Binop.Eq -> if IntLit.eq c1 c2 then IntLit.one else IntLit.zero
+  | Binop.Shiftrt -> IntLit.shift_right c1 c2
+  | Binop.Shiftlt -> IntLit.shift_left c1 c2
+  | _ -> L.(die InternalError)"[EdgeExp.eval_consts] Unsupported operator %a %s %a" 
+          IntLit.pp c1 (Binop.str Pp.text op) IntLit.pp c2
 
-let pp_value_pair fmt exp = F.fprintf fmt "%s" (value_pair_to_string exp)
+let zero = Const (Const.Cint IntLit.zero)
 
-module ValuePairSet = Caml.Set.Make(struct
-  type nonrec t = value_pair
-  let compare = compare_value_pair
-end)
+let try_eval op e1 e2 = match e1, e2 with
+  | Const (Const.Cint c1), Const (Const.Cint c2) -> Const (Const.Cint (eval_consts op c1 c2))
+  | Const (Const.Cint c), exp when IntLit.iszero c -> (
+    match op with
+    | Binop.PlusA _ -> exp
+    | Binop.MinusA _ -> UnOp (Unop.Neg, exp, None)
+    | Binop.Mult _ | Binop.Div -> zero
+    | _ -> BinOp (op, e1, e2)
+  )
+  | exp, Const (Const.Cint c) when IntLit.iszero c -> (
+    match op with
+    | Binop.PlusA _ -> exp | Binop.MinusA _ -> exp
+    | Binop.Mult _ -> zero
+    | Binop.Div -> assert(false)
+    | _ -> BinOp (op, e1, e2)
+  )
+  | _ -> BinOp (op, e1, e2)
+
+let rec evaluate_const_exp exp = 
+  let rec get_min_max op args = match args with
+  | [] -> None
+  | [x] -> evaluate_const_exp x
+  | x::xs -> (
+    match evaluate_const_exp x, get_min_max op xs with
+    | Some x, Some y -> Some (op x y)
+    | _ -> None
+  )
+  in
+
+  match exp with
+  | Const (Const.Cint x) -> Some x
+  | BinOp (op, lexp, rexp) -> (
+    let lconst_opt = evaluate_const_exp lexp in
+    let rconst_opt = evaluate_const_exp rexp in
+    match lconst_opt, rconst_opt with
+    | Some lconst, Some rconst -> Some (eval_consts op lconst rconst)
+    | _ -> None
+  )
+  | UnOp (Unop.Neg, exp, _) -> (
+    match evaluate_const_exp exp with
+    | Some value -> Some (IntLit.neg value)
+    | None -> None
+  )
+  | Max args -> get_min_max IntLit.max (Set.elements args)
+  | Min args -> get_min_max IntLit.min (Set.elements args)
+  | _ -> None
 
 
+let is_const exp = Option.is_some (evaluate_const_exp exp)
 
-type call_pair =
+module ValuePair = struct
+  type pair = (T.t * T.t)
+    [@@deriving compare]
+
+  type t =
+    | V of T.t
+    | P of pair
+    [@@deriving compare]
+
+  let to_string value_pair = match value_pair with
+    | V rhs_value -> to_string rhs_value
+    | P (lb, ub) -> F.asprintf "(%s; %s)" (to_string lb) (to_string ub)
+
+  let pp fmt exp = F.fprintf fmt "%s" (to_string exp)
+
+  let make_pair exp = P (exp, exp)
+
+  let make_list lbs ubs =
+    List.map2_exn lbs ubs ~f:(fun lb ub -> 
+      if T.equal lb ub then V lb else P (lb, ub)
+    )
+
+  let map value_pair ~f = match value_pair with
+    | V value -> V (f value)
+    | P (lb, ub) -> P (f lb, f ub)
+
+  let merge p1 p2 = match p1, p2 with
+    | V lb, V ub -> P (lb, ub)
+    | V lb, P (ub_lb, ub_ub) -> (
+      let lb_set = Set.add ub_lb (Set.singleton lb) in
+      let ub_set = Set.add ub_ub (Set.singleton lb) in
+      P (T.Min lb_set, T.Max ub_set)
+    )
+    | P (lb_lb, lb_ub), V ub -> (
+      let lb_set = Set.add lb_lb (Set.singleton ub) in
+      let ub_set = Set.add lb_ub (Set.singleton ub) in
+      P (T.Min lb_set, T.Max ub_set)
+    )
+    | P (lb_lb, lb_ub), P (ub_lb, ub_ub) -> (
+      let lb_set = Set.add ub_lb (Set.singleton lb_lb) in
+      let ub_set = Set.add ub_ub (Set.singleton lb_ub) in
+      P (T.Min lb_set, T.Max ub_set)
+    )
+  
+  let create_binop op lexp rexp =
+    match lexp, rexp with
+    | V lexp_value, V rexp_value -> (
+      V (try_eval op lexp_value rexp_value)
+    )
+    | P (lexp_lb, lexp_ub), V rexp_value -> (
+      P (try_eval op lexp_lb rexp_value, try_eval op lexp_ub rexp_value)
+    )
+    | V lexp_value, P (rexp_lb, rexp_ub) -> (
+      match op with
+      | Binop.PlusA _ | Binop.PlusPI | Binop.Mult _ | Binop.Shiftlt ->
+          P (try_eval op lexp_value rexp_lb, try_eval op lexp_value rexp_ub)
+      | Binop.MinusA _ | Binop.MinusPI | Binop.MinusPP | Binop.Div | Binop.Shiftrt ->
+          P (try_eval op lexp_value rexp_ub, try_eval op lexp_value rexp_lb)
+      | _ -> L.die InternalError "[EdgeExp.create_value_pair_binop] Merge for operator '%a'
+        not implemented" Binop.pp op
+    )
+    | P (lexp_lb, lexp_ub), P (rexp_lb, rexp_ub) -> (
+      (* TODO: Shouldn't we introduce min/max expressions here
+       to ensure we truly get lower/upper bounds? This seems incorrect *)
+      match op with
+      | Binop.PlusA _ | Binop.PlusPI | Binop.Mult _ | Binop.Shiftlt ->
+          P (try_eval op lexp_lb rexp_lb, try_eval op lexp_ub rexp_ub)
+      | Binop.MinusA _ | Binop.MinusPI | Binop.MinusPP | Binop.Div | Binop.Shiftrt ->
+          P (try_eval op lexp_lb rexp_ub, try_eval op lexp_ub rexp_lb)
+      | _ -> L.die InternalError "[EdgeExp.create_value_pair_binop] Merge for operator '%a'
+        not implemented" Binop.pp op
+    )
+  
+  let map_accesses bound ~f =
+    let rec aux bound =
+      let process_min_max args ~f ~g=
+        let lb_args, ub_args = Set.fold (fun arg (lb_args, ub_args) ->
+          match aux arg with
+          | V value -> Set.add value lb_args, Set.add value ub_args
+          | P (lb, ub) -> Set.add lb lb_args, Set.add ub ub_args
+        ) args (Set.empty, Set.empty) in
+  
+        let check_const args = if Set.for_all is_const args then f args else g args in
+  
+        if Set.equal lb_args ub_args then V (check_const lb_args)
+        else P (check_const lb_args, check_const ub_args)
+        (* let args = Set.fold (fun arg args -> Set.add (aux arg) args) args Set.empty in
+    
+        if Set.for_all is_const args then (
+          let args = match Set.cardinal args with
+          | 1 -> Set.add zero args
+          | _ -> args
+          in
+          f args
+        )
+        else g args *)
+      in
+  
+  
+      match bound with
+      | Access access -> (
+        match f access with
+        | V value -> V value
+        | P (lb, ub) ->
+          if equal lb ub then V lb
+          else P (lb, ub)
+      )
+      | BinOp (op, lexp, rexp) -> create_binop op (aux lexp) (aux rexp)
+      | Cast (typ, subexp) -> (
+        match aux subexp with
+        | V value -> V (Cast (typ, value))
+        | P (lb, ub) -> P (Cast (typ, lb), Cast (typ, ub))
+      )
+      | UnOp (Unop.Neg, exp, typ) -> (
+        let process_value value = match value with
+        | UnOp (Unop.Neg, _, _) -> value
+        | Const (Const.Cint const) -> Const (Const.Cint (IntLit.neg const))
+        | _ -> UnOp (Unop.Neg, value, typ)
+        in
+  
+        match aux exp with
+        | V value -> V (process_value value)
+        | P (lb, ub) -> P (process_value lb, process_value ub)
+      )
+      | UnOp _ -> assert(false)
+      | Max args -> process_min_max args ~f:Set.max_elt ~g:(fun args -> Max args)
+      | Min args -> process_min_max args ~f:Set.min_elt ~g:(fun args -> Min args)
+      | _ -> V bound
+  
+  
+      (* | UnOp (Unop.Neg, exp, typ) -> (
+        let exp = aux exp in
+        match exp with
+        | UnOp (Unop.Neg, _, _) -> exp
+        | Const (Const.Cint const) -> Const (Const.Cint (IntLit.neg const))
+        | _ ->  UnOp (Unop.Neg, exp, typ)
+      )
+      | UnOp (_, _, _) -> assert(false)
+      | Max args -> process_min_max args ~f:Set.max_elt ~g:(fun args -> Max args)
+      | Min args -> process_min_max args ~f:Set.min_elt ~g:(fun args -> Min args)
+      | _ -> bound *)
+    in
+    aux bound
+  
+  module Set = Caml.Set.Make(struct
+    type nonrec t = t
+    let compare = compare
+  end)
+end
+
+module CallPair = struct
+  type pair = (T.call * T.call)
+    [@@deriving compare]
+
+  type t =
+    | V of T.call
+    | P of pair
+    [@@deriving compare]
+
+  let to_string call_pair = match call_pair with
+  | V call_value -> call_to_string call_value
+  | P (lb_call, ub_call) -> 
+      F.asprintf "(%s; %s)" 
+        (call_to_string lb_call) 
+        (call_to_string ub_call)
+
+  let pp fmt call_pair = F.fprintf fmt "%s" (to_string call_pair)
+
+  module Set = Caml.Set.Make(struct
+    type nonrec t = t
+    let compare = compare
+  end)
+end
+
+
+(* type call_pair =
   | CallValue of T.call
   | CallPair of (T.call * T.call)
   [@@deriving compare]
@@ -127,7 +373,7 @@ let pp_call_pair fmt call_pair = F.fprintf fmt "%s" (call_pair_to_string call_pa
 module CallPairSet = Caml.Set.Make(struct
   type nonrec t = call_pair
   let compare = compare_call_pair
-end)
+end) *)
 
 let compare = T.compare
 
@@ -157,8 +403,6 @@ let equal = [%compare.equal: T.t]
 
 let one = Const (Const.Cint IntLit.one)
 
-let zero = Const (Const.Cint IntLit.zero)
-
 let of_int value = Const (Const.Cint (IntLit.of_int value))
 
 let of_int32 value = Const (Const.Cint (IntLit.of_int32 value))
@@ -173,6 +417,7 @@ let is_zero = function
 
 let is_one = function Const (Const.Cint const) -> IntLit.isone const | _ -> false
 
+let is_integral_typ typ = Typ.is_int typ || Typ.is_pointer typ
 
 let rec is_formal_variable norm formals tenv = match norm with
   | Max args when Int.equal (Set.cardinal args) 1 -> (
@@ -180,7 +425,7 @@ let rec is_formal_variable norm formals tenv = match norm with
   )
   | Access ae -> (
     let access_base = HilExp.AccessExpression.get_base ae in
-    if AccessPath.BaseSet.mem access_base formals then (
+    AccessPath.BaseSet.mem access_base formals && (
       (* TODO: hack for now? We want to treat pointer formals as variables
        * so we can derive DCs for them and track their value so we can then
        * calculate their variable bounds later on to track function side-effects *)
@@ -189,13 +434,10 @@ let rec is_formal_variable norm formals tenv = match norm with
       match ae with
       | HilExp.AccessExpression.FieldOffset (Dereference _, _)
       | HilExp.AccessExpression.Dereference _ -> (
-        match HilExp.AccessExpression.get_typ ae tenv with
-        | Some access_typ -> Typ.is_int access_typ || Typ.is_pointer access_typ
-        | None -> false
+        Option.exists (HilExp.AccessExpression.get_typ ae tenv) ~f:is_integral_typ
       )
       | _ -> false
     )
-    else false
   )
   | _ -> false
 
@@ -204,7 +446,7 @@ let is_variable norm formals tenv =
   let rec traverse_exp = function
   | Access ae -> (
     let access_base = HilExp.AccessExpression.get_base ae in
-    if AccessPath.BaseSet.mem access_base formals then (
+    not (AccessPath.BaseSet.mem access_base formals) || (
       (* TODO: hack for now? We want to treat pointer formals as variables
        * so we can derive DCs for them and track their value so we can then
        * calculate their variable bounds later on to track function side-effects *)
@@ -213,13 +455,9 @@ let is_variable norm formals tenv =
       match ae with
       | HilExp.AccessExpression.FieldOffset (Dereference _, _)
       | HilExp.AccessExpression.Dereference _ -> (
-        match HilExp.AccessExpression.get_typ ae tenv with
-        | Some access_typ -> Typ.is_int access_typ || Typ.is_pointer access_typ
-        | None -> false
+        Option.exists (HilExp.AccessExpression.get_typ ae tenv) ~f:is_integral_typ
       )
       | _ -> false
-    ) else (
-      true
     )
     (* not (AccessPath.BaseSet.mem access_base formals) *)
     (* match Var.get_pvar base_var with
@@ -241,16 +479,16 @@ let rec is_int exp type_map tenv = match exp with
   | BinOp (_, lexp, rexp) -> is_int lexp type_map tenv && is_int rexp type_map tenv
   | UnOp (_, exp, typ) -> (
     match typ with
-    | Some typ -> Typ.is_int typ
+    | Some typ -> is_integral_typ typ
     | None -> is_int exp type_map tenv
   )
   | Access access -> (
     match HilExp.AccessExpression.get_typ access tenv with
-    | Some typ -> Typ.is_int typ
+    | Some typ -> is_integral_typ typ
     | _ -> false
   )
   | Const Const.Cint _ -> true
-  | Call (ret_typ, _, _, _) -> Typ.is_int ret_typ
+  | Call (ret_typ, _, _, _) -> is_integral_typ ret_typ
   | _ -> false
 
 
@@ -281,18 +519,17 @@ let rec get_typ tenv = function
   | Cast (typ, _) -> Some typ
   | _ -> None
 
-
 let is_integer_condition tenv = function
   | BinOp ((Lt | Gt | Le | Ge | Eq | Ne | LAnd | LOr), lhs, rhs) -> (
     match get_typ tenv lhs, get_typ tenv rhs with
-    | Some lhs_typ, Some rhs_typ -> Typ.is_int lhs_typ && Typ.is_int rhs_typ
+    | Some lhs_typ, Some rhs_typ -> is_integral_typ lhs_typ && is_integral_typ rhs_typ
     | Some typ, None
-    | None, Some typ -> Typ.is_int typ
+    | None, Some typ -> is_integral_typ typ
     | _ -> false
   )
   | exp -> (
     match get_typ tenv exp with
-    | Some typ -> Typ.is_int typ
+    | Some typ -> is_integral_typ typ
     | None -> false
   )
 
@@ -305,39 +542,6 @@ let rec is_return exp = match exp with
   | Max args when Int.equal (Set.cardinal args) 1 -> 
     is_return (Set.min_elt args)
   | _ -> false
-
-
-let eval_consts op c1 c2 = match op with
-  | Binop.PlusA _ | Binop.PlusPI -> IntLit.add c1 c2
-  | Binop.MinusA _ -> IntLit.sub c1 c2
-  | Binop.Mult _ -> IntLit.mul c1 c2
-  | Binop.Div -> IntLit.div c1 c2
-  | Binop.Ne -> if IntLit.eq c1 c2 then IntLit.zero else IntLit.one
-  | Binop.Eq -> if IntLit.eq c1 c2 then IntLit.one else IntLit.zero
-  | Binop.Shiftrt -> IntLit.shift_right c1 c2
-  | Binop.Shiftlt -> IntLit.shift_left c1 c2
-  | _ -> L.(die InternalError)"[EdgeExp.eval_consts] Unsupported operator %a %s %a" 
-          IntLit.pp c1 (Binop.str Pp.text op) IntLit.pp c2
-
-
-let try_eval op e1 e2 = match e1, e2 with
-  | Const (Const.Cint c1), Const (Const.Cint c2) -> Const (Const.Cint (eval_consts op c1 c2))
-  | Const (Const.Cint c), exp when IntLit.iszero c -> (
-    match op with
-    | Binop.PlusA _ -> exp
-    | Binop.MinusA _ -> UnOp (Unop.Neg, exp, None)
-    | Binop.Mult _ | Binop.Div -> zero
-    | _ -> BinOp (op, e1, e2)
-  )
-  | exp, Const (Const.Cint c) when IntLit.iszero c -> (
-    match op with
-    | Binop.PlusA _ -> exp | Binop.MinusA _ -> exp
-    | Binop.Mult _ -> zero
-    | Binop.Div -> assert(false)
-    | _ -> BinOp (op, e1, e2)
-  )
-  | _ -> BinOp (op, e1, e2)
-
 
 let rec evaluate exp value_map default_value = 
   let eval_min_max args f =
@@ -448,7 +652,12 @@ let merge_exp_parts parts = Option.value (List.reduce parts ~f:(fun lhs rhs ->
 
 
 let rec separate exp = 
-  (* debug_log "Separate: %a\n" pp exp; *)
+  let symmetric_op binop = match binop with
+  | Binop.PlusA ikind_opt -> Binop.MinusA ikind_opt
+  | Binop.MinusA ikind_opt -> Binop.PlusA ikind_opt
+  | _ -> assert(false)
+  in
+
   match exp with
   | Access _ -> exp, None
   | Const (Const.Cint c) -> zero, Some (Binop.PlusA None, c)
@@ -462,7 +671,9 @@ let rec separate exp =
       | Some (l_op, l_const), Some (r_op, r_const) -> (
         match l_op, r_op with
         | Binop.PlusA _, Binop.PlusA _ -> lexp_derived, rexp_derived, Some (l_op, IntLit.add l_const r_const)
-        | Binop.MinusA _, Binop.PlusA _ -> lexp_derived, rexp_derived, Some (r_op, IntLit.sub r_const l_const)
+        | Binop.MinusA _, Binop.PlusA _ -> (
+          lexp_derived, rexp_derived, Some (r_op, IntLit.sub r_const l_const)
+        )
         | Binop.MinusA _, Binop.MinusA _ -> lexp_derived, rexp_derived, Some (l_op, IntLit.add r_const l_const)        
         | Binop.PlusA _, Binop.Mult _ -> lexp_derived, merge rexp_derived r_const_opt, Some (l_op, r_const)
         | Binop.Shiftrt, Binop.PlusA _
@@ -497,19 +708,39 @@ let rec separate exp =
       match l_const_opt, r_const_opt with
       | Some (l_op, l_const), Some (r_op, r_const) -> (
         match l_op, r_op with
-        | Binop.PlusA _, Binop.PlusA _ -> lexp_derived, rexp_derived, Some (Binop.PlusA None, IntLit.sub l_const r_const)
-        | Binop.MinusA _, Binop.PlusA _ -> lexp_derived, rexp_derived, Some (Binop.MinusA typ_opt, IntLit.add l_const r_const)
-        | _ -> assert(false)
+        | Binop.PlusA _, Binop.PlusA _ -> 
+          lexp_derived, rexp_derived, Some (l_op, IntLit.sub l_const r_const)
+        | Binop.MinusA _, Binop.PlusA _
+        | Binop.PlusA _, Binop.MinusA _ ->
+          lexp_derived, rexp_derived, Some (l_op, IntLit.add l_const r_const)
+        | Binop.MinusA _, Binop.MinusA _ -> (
+          let const = IntLit.add (IntLit.neg l_const) r_const in
+          let const_op = if IntLit.isnegative const then Binop.MinusA typ_opt
+          else Binop.PlusA typ_opt in
+          lexp_derived, rexp_derived, Some (const_op, const)
+        )
+        | Binop.Mult _, Binop.PlusA _
+        | Binop.Mult _, Binop.MinusA _ ->
+          merge lexp_derived l_const_opt, rexp_derived, Some (symmetric_op r_op, r_const)
+        | Binop.PlusA _, Binop.Mult _
+        | Binop.MinusA _, Binop.Mult _ ->
+          lexp_derived, merge rexp_derived r_const_opt, Some (l_op, l_const)
+        | _ -> (
+          L.die InternalError "l_op: %a, r_op: %a" Binop.pp l_op Binop.pp r_op
+        )
       )
       | Some (l_op, l_const), None -> (
         match l_op with
         | Binop.PlusA _ | Binop.MinusA _ -> lexp_derived, rexp_derived, Some (l_op, l_const)
+        | Binop.Mult _ | Binop.Div | Binop.Shiftlt | Binop.Shiftrt ->
+          merge lexp_derived l_const_opt, rexp_derived, None
         | _ -> assert(false)
       )
       | None, Some (r_op, r_const) -> (
         match r_op with
-        | Binop.PlusA typ_opt -> lexp_derived, rexp_derived, Some (Binop.MinusA typ_opt, r_const)
-        | Binop.MinusA typ_opt -> lexp_derived, rexp_derived, Some (Binop.PlusA typ_opt, r_const)
+        | Binop.PlusA _ | Binop.MinusA _ -> lexp_derived, rexp_derived, Some (symmetric_op r_op, r_const)
+        | Binop.Mult _ | Binop.Div | Binop.Shiftlt | Binop.Shiftrt ->
+          lexp_derived, merge rexp_derived r_const_opt, None
         | _ -> assert(false)
       )
       | None, None -> lexp_derived, rexp_derived, None
@@ -822,43 +1053,9 @@ let rec remove_casts_of_consts exp integer_widths = match exp with
     let args = (List.map args ~f:(fun (arg, typ) -> remove_casts_of_consts arg integer_widths, typ)) in
     Call (typ, procname, args, loc)
   )
-  | Max args | Min args ->
-    Max (Set.map (fun arg -> remove_casts_of_consts arg integer_widths) args)
+  | Max args -> Max (Set.map (fun arg -> remove_casts_of_consts arg integer_widths) args)
+  | Min args -> Min (Set.map (fun arg -> remove_casts_of_consts arg integer_widths) args)
   | _ -> exp
-
-
-let rec evaluate_const_exp exp = 
-  let rec get_min_max op args = match args with
-  | [] -> None
-  | [x] -> evaluate_const_exp x
-  | x::xs -> (
-    match evaluate_const_exp x, get_min_max op xs with
-    | Some x, Some y -> Some (op x y)
-    | _ -> None
-  )
-  in
-
-  match exp with
-  | Const (Const.Cint x) -> Some x
-  | BinOp (op, lexp, rexp) -> (
-    let lconst_opt = evaluate_const_exp lexp in
-    let rconst_opt = evaluate_const_exp rexp in
-    match lconst_opt, rconst_opt with
-    | Some lconst, Some rconst -> Some (eval_consts op lconst rconst)
-    | _ -> None
-  )
-  | UnOp (Unop.Neg, exp, _) -> (
-    match evaluate_const_exp exp with
-    | Some value -> Some (IntLit.neg value)
-    | None -> None
-  )
-  | Max args -> get_min_max IntLit.max (Set.elements args)
-  | Min args -> get_min_max IntLit.min (Set.elements args)
-  | _ -> None
-
-
-let is_const exp = Option.is_some (evaluate_const_exp exp)
-
 
 let rec transform_shifts exp = match exp with
   | Max args when Int.equal (Set.cardinal args) 1 -> (
@@ -944,7 +1141,7 @@ let rec transform_shifts exp = match exp with
   aux exp *)
 
 
-let rec of_hil_exp exp id_resolver = match exp with
+(* let rec of_hil_exp exp id_resolver = match exp with
   | HilExp.AccessExpression access -> (
     let base_var = HilExp.AccessExpression.get_base access |> fst in
     match Var.get_ident base_var with
@@ -975,11 +1172,15 @@ let rec of_hil_exp exp id_resolver = match exp with
     match nbytes with
     | Some size -> Const (Const.Cint (IntLit.of_int size))
     | None -> L.die InternalError "TODO: HilExp.Sizeof missing size information"
-    (* match nbytes with
-    | Some size -> Const (Const.Cint (IntLit.of_int size))
-    | _ -> assert(false) *)
   )
-  | _ -> L.(die InternalError)"[EdgeExp.of_exp] Unsupported expression %a!" HilExp.pp exp
+  | _ -> L.(die InternalError)"[EdgeExp.of_exp] Unsupported expression %a!" HilExp.pp exp *)
+
+
+let base_of_id id typ = (Var.of_id id, typ)
+
+let base_of_pvar pvar typ = (Var.of_pvar pvar, typ)
+
+let of_pvar pvar typ = HilExp.AccessExpression.address_of_base (base_of_pvar pvar typ)
 
 
 let why3_get_vsymbol name (prover_data : prover_data) = 
@@ -1029,6 +1230,34 @@ let rec to_why3_expr exp tenv (prover_data : prover_data) =
   in
 
   let mk_const_term value = Why3.Term.t_real_const (Why3.BigInt.of_int value) in
+
+  let convert_min_max symbol args =
+    let why3_args, type_constraints = Set.fold (fun arg (args, constraints) ->
+      let why3_arg, arg_type_constraints = to_why3_expr arg tenv prover_data in
+      why3_arg :: args, Why3.Term.Sterm.union arg_type_constraints constraints
+    ) args ([], Why3.Term.Sterm.empty)
+    in
+    
+    assert(Set.cardinal args > 0);
+    if Set.cardinal args < 2 then (
+      let arg = List.hd_exn why3_args in
+      let ite_condition = Why3.Term.ps_app symbol [arg; zero_const] in
+
+      (* TODO: should we include conditions "x >= 0" for each "max(x, 0)" expression? *)
+      arg, Why3.Term.Sterm.add ite_condition type_constraints
+    ) else (
+      (* TODO: Could we potentially extract single max(...) argument based on
+       * currently examined bound parameter when checking monotony? (with some 
+       * exceptions of course) This could help use get rid of max expressions in
+       * Z3 altogether for those usecases.
+       * This seems to be necessary if we want to avoid Z3 loops and unknown results *)
+      let min_max_expr = List.reduce_exn why3_args ~f:(fun x y ->
+        Why3.Term.t_if (Why3.Term.ps_app symbol [x; y]) x y
+      )
+      in
+      min_max_expr, type_constraints
+    )
+  in
 
   match exp with
   | Const (Const.Cint const) -> mk_const_term (IntLit.to_int_exn const), Why3.Term.Sterm.empty
@@ -1110,44 +1339,19 @@ let rec to_why3_expr exp tenv (prover_data : prover_data) =
     let subexp, conditions = to_why3_expr subexp tenv prover_data in
     Why3.Term.t_app_infer unary_minus_symbol [subexp], conditions
   )
-  | Max max_args -> (
-    let why3_args, type_constraints = Set.fold (fun arg (args, constraints) ->
-      let why3_arg, arg_type_constraints = to_why3_expr arg tenv prover_data in
-      why3_arg :: args, Why3.Term.Sterm.union arg_type_constraints constraints
-    ) max_args ([], Why3.Term.Sterm.empty)
-    in
-    
-    if Set.cardinal max_args < 2 then (
-      assert(Set.cardinal max_args > 0);
-      let arg = List.hd_exn why3_args in
-      let ite_condition = Why3.Term.ps_app ge_symbol [arg; zero_const] in
-
-      (* TODO: should we include conditions "x >= 0" for each "max(x, 0)" expression? *)
-      arg, Why3.Term.Sterm.add ite_condition type_constraints
-    ) else (
-      (* TODO: Could we potentially extract single max(...) argument based on
-       * currently examined bound parameter when checking monotony? (with some 
-       * exceptions of course) This could help use get rid of max expressions in
-       * Z3 altogether for those usecases.
-       * This seems to be necessary if we want to avoid Z3 loops and unknown results *)
-      let max_expr = List.reduce_exn why3_args ~f:(fun x y ->
-        Why3.Term.t_if (Why3.Term.ps_app ge_symbol [x; y]) x y
-      )
-      in
-      max_expr, type_constraints
-    )
-  )
+  | Max max_args -> convert_min_max ge_symbol max_args
+  | Min min_args -> convert_min_max le_symbol min_args
   | Const _ -> (
-    L.(die InternalError)"[EdgeExp.T.to_why3_expr] Expression '%a' contains invalid const!" pp exp
+    L.(die InternalError) "[EdgeExp.T.to_why3_expr] Expression '%a' contains invalid const!" pp exp
   )
   | UnOp _ -> (
-    L.(die InternalError)"[EdgeExp.T.to_why3_expr] Unsupported UnOp Expression '%a'" pp exp
-  )
-  | Min args -> (
-    L.(die InternalError)"[EdgeExp.T.to_why3_expr] Unsupported Min Expression '%a'" pp exp
+    L.(die InternalError) "[EdgeExp.T.to_why3_expr] Unsupported UnOp Expression '%a'" pp exp
   )
   | Inf -> (
-    L.(die InternalError)"[EdgeExp.T.to_why3_expr] Infinity not supported'%a'" pp exp 
+    L.(die InternalError) "[EdgeExp.T.to_why3_expr] Infinity not supported'%a'" pp exp 
+  )
+  | Symbolic _ -> (
+    L.(die InternalError) "[EdgeExp.T.to_why3_expr] Symbolic expression not supported'%a'" pp exp 
   )
   (* | exp -> L.(die InternalError)"[EdgeExp.T.to_why3_expr] Expression '%a' contains invalid element!" pp exp *)
 
@@ -1226,6 +1430,9 @@ let get_accesses_poly exp set ~f ~g =
   | BinOp (_, lexp, rexp) -> aux rexp (aux lexp set)
   | UnOp (_, exp, _) -> aux exp set
   | Cast (_, exp) -> aux exp set
+  | Call (_, _, args, _) -> (
+    List.fold args ~init:set ~f:(fun acc (arg, _) -> aux arg acc)
+  )
   | Max args -> Set.fold (fun arg acc -> aux arg acc) args set
   | Min args -> Set.fold (fun arg acc -> aux arg acc) args set
   | _ -> set
@@ -1279,94 +1486,6 @@ let map_accesses bound ~f acc =
     | _ -> bound, acc
   in
   aux bound acc
-
-
-let pair_map_accesses bound ~f =
-  let rec aux bound =
-    let process_min_max args ~f ~g=
-      let lb_args, ub_args = Set.fold (fun arg (lb_args, ub_args) ->
-        match aux arg with
-        | Value value -> Set.add value lb_args, Set.add value ub_args
-        | Pair (lb, ub) -> Set.add lb lb_args, Set.add ub ub_args
-      ) args (Set.empty, Set.empty) in
-
-      let check_const args = if Set.for_all is_const args then f args else g args in
-
-      if Set.equal lb_args ub_args then Value (check_const lb_args)
-      else Pair (check_const lb_args, check_const ub_args)
-      (* let args = Set.fold (fun arg args -> Set.add (aux arg) args) args Set.empty in
-  
-      if Set.for_all is_const args then (
-        let args = match Set.cardinal args with
-        | 1 -> Set.add zero args
-        | _ -> args
-        in
-        f args
-      )
-      else g args *)
-    in
-
-
-    match bound with
-    | Access access -> f access
-    | BinOp (op, lexp, rexp) -> (
-      let lexp = aux lexp in
-      let rexp = aux rexp in
-      match lexp, rexp with
-      | Value lexp_value, Value rexp_value -> (
-        Value (try_eval op lexp_value rexp_value)
-      )
-      | Pair (lexp_lb, lexp_ub), Value rexp_value -> (
-        Pair (try_eval op lexp_lb rexp_value, try_eval op lexp_ub rexp_value)
-      )
-      | Value lexp_value, Pair (rexp_lb, rexp_ub) -> (
-        match op with
-        | Binop.PlusA _ | Binop.PlusPI | Binop.Mult _ | Binop.Shiftlt ->
-            Pair (try_eval op lexp_value rexp_lb, try_eval op lexp_value rexp_ub)
-        | Binop.MinusA _ | Binop.MinusPI | Binop.MinusPP | Binop.Div | Binop.Shiftrt ->
-            Pair (try_eval op lexp_value rexp_ub, try_eval op lexp_value rexp_lb)
-        | _ -> assert(false)
-      )
-      | Pair (lexp_lb, lexp_ub), Pair (rexp_lb, rexp_ub) -> (
-        match op with
-        | Binop.PlusA _ | Binop.PlusPI | Binop.Mult _ | Binop.Shiftlt ->
-            Pair (try_eval op lexp_lb rexp_lb, try_eval op lexp_ub rexp_ub)
-        | Binop.MinusA _ | Binop.MinusPI | Binop.MinusPP | Binop.Div | Binop.Shiftrt ->
-            Pair (try_eval op lexp_lb rexp_ub, try_eval op lexp_ub rexp_lb)
-        | _ -> assert(false)
-      )
-    )
-    | UnOp (Unop.Neg, exp, typ) -> (
-      let process_value value = match value with
-      | UnOp (Unop.Neg, _, _) -> value
-      | Const (Const.Cint const) -> Const (Const.Cint (IntLit.neg const))
-      | _ -> UnOp (Unop.Neg, value, typ)
-      in
-
-      match aux exp with
-      | Value value -> Value (process_value value)
-      | Pair (lb, ub) -> Pair (process_value lb, process_value ub)
-    )
-    | UnOp _ -> assert(false)
-    | Max args -> process_min_max args ~f:Set.max_elt ~g:(fun args -> Max args)
-    | Min args -> process_min_max args ~f:Set.min_elt ~g:(fun args -> Min args)
-    | _ -> Value bound
-
-
-    (* | UnOp (Unop.Neg, exp, typ) -> (
-      let exp = aux exp in
-      match exp with
-      | UnOp (Unop.Neg, _, _) -> exp
-      | Const (Const.Cint const) -> Const (Const.Cint (IntLit.neg const))
-      | _ ->  UnOp (Unop.Neg, exp, typ)
-    )
-    | UnOp (_, _, _) -> assert(false)
-    | Max args -> process_min_max args ~f:Set.max_elt ~g:(fun args -> Max args)
-    | Min args -> process_min_max args ~f:Set.min_elt ~g:(fun args -> Min args)
-    | _ -> bound *)
-  in
-  aux bound
-
 
 let subst bound args formal_map =
   let rec aux bound = 
@@ -1690,7 +1809,7 @@ let determine_monotonicity exp tenv (prover_data : prover_data) =
 
 
   (* Try to check monotonicity property based if no root exists  *)
-  let check_monotonicity var_access monotony_map =
+  let check_monotonicity var_access monotonicity_map =
     (* TODO: needs more robust solution, this is just a "heuristic" *)
     debug_log "Var access: %a@," HilExp.AccessExpression.pp var_access;
     let value_map_one = AccessExpressionMap.singleton var_access 1.0 in
@@ -1716,11 +1835,11 @@ let determine_monotonicity exp tenv (prover_data : prover_data) =
     )
     | x when x > 0 -> (
       debug_log "Monotonicity: Non-decreasing";
-      AccessExpressionMap.add var_access Monotonicity.NonDecreasing monotony_map
+      AccessExpressionMap.add var_access Monotonicity.NonDecreasing monotonicity_map
     )
     | _ -> (
       debug_log "Monotonicity: Non-increasing";
-      AccessExpressionMap.add var_access Monotonicity.NonIncreasing monotony_map
+      AccessExpressionMap.add var_access Monotonicity.NonIncreasing monotonicity_map
     )
   in
 
@@ -1744,6 +1863,9 @@ let determine_monotonicity exp tenv (prover_data : prover_data) =
   (* let non_const_part_exp_variables = get_accesses non_const_part_exp in *)
   let derivative_variables = get_accesses non_const_part_exp
   in
+  debug_log "Analyzed expression: %a@,%a@," pp non_const_part_exp 
+  (pp_list "Derivation variables" HilExp.AccessExpression.pp) 
+    (AccessExpressionSet.elements derivative_variables);
 
   let monotonicities = AccessExpressionSet.fold (fun var_access acc ->
     debug_log "@[<v2>[Derivation variable: %a]@," HilExp.AccessExpression.pp var_access;
@@ -1816,3 +1938,326 @@ let mult e1 e2 = if is_zero e1 || is_zero e2
   | true, false -> e2
   | false, true -> e1
   | _ -> try_eval (Binop.Mult None) e1 e2
+
+
+
+let rec array_index_of_exp ~include_array_indexes ~f_resolve_id ~add_deref exp typ =
+  (* TODO: Should probably create my own AccessExpression as well in the future.
+  Use HilExp in array indices for now *)
+  if include_array_indexes then
+    Some (HilExp.of_sil ~include_array_indexes ~f_resolve_id ~add_deref exp typ)
+  else None
+  
+(* Adapted from AccessPath.of_exp. *)
+and access_exprs_of_exp ~include_array_indexes ~f_resolve_id ~test_resolver ~add_deref exp0 typ0 =
+  let rec of_exp_ 
+    exp 
+    typ
+    (add_accesses : HilExp.AccessExpression.t -> HilExp.AccessExpression.t) 
+    acc : ValuePair.t list =
+    match (exp : Exp.t) with
+    | Var id -> (
+      match test_resolver (Var.of_id id) with
+      | Some value_pair -> (
+        let process_value value =
+          (* TODO: This seems sketchy, we're working with more
+           complex expressions instead of just access expressions
+           as it was originally *)
+          map_accesses value ~f:(fun ae None ->
+            let ae = if add_deref then HilExp.AccessExpression.dereference ae else ae in
+            Access (add_accesses ae), None
+          ) None |> fst
+        in
+
+        match value_pair with
+        | ValuePair.V value -> ValuePair.V (process_value value) :: acc
+        | ValuePair.P (lb, ub) -> ValuePair.P (process_value lb, process_value ub) :: acc
+      )
+      | None -> (
+        let ae = HilExp.AccessExpression.address_of_base (base_of_id id typ) in
+        let ae = if add_deref then HilExp.AccessExpression.dereference ae 
+        else ae in
+        ValuePair.V (Access (add_accesses ae)) :: acc
+      )
+      (* match f_resolve_id (Var.of_id id) with
+      | Some access_expr ->
+          let access_expr' =
+            if add_deref then HilExp.AccessExpression.dereference access_expr else access_expr
+          in
+          add_accesses access_expr' :: acc
+      | None ->
+          let access_expr = HilExp.AccessExpression.address_of_base (base_of_id id typ) in
+          let access_expr' =
+            if add_deref then HilExp.AccessExpression.dereference access_expr else access_expr
+          in
+          add_accesses access_expr' :: acc  *)
+    )
+    | Lvar pvar when Pvar.is_ssa_frontend_tmp pvar -> (
+      match test_resolver (Var.of_pvar pvar) with
+      | Some value_pair -> (
+        let process_value value =
+          (* TODO: This seems sketchy, we're working with more
+           complex expressions instead of just access expressions
+           as it was originally *)
+          map_accesses value ~f:(fun ae None ->
+            (* do not need to add deref here as it was added implicitly in the binding *)
+            (* but need to remove it if add_deref is false *)
+            let ae =
+            if not add_deref then (
+              match ae with 
+              | HilExp.Dereference ae -> ae 
+              | _ -> assert false
+            )
+            else ae
+            in
+            Access (add_accesses ae), None
+          ) None |> fst
+        in
+
+        match value_pair with
+        | ValuePair.V value -> ValuePair.V (process_value value) :: acc
+        | ValuePair.P (lb, ub) -> ValuePair.P (process_value lb, process_value ub) :: acc
+      )
+      | None -> (
+        let access_expr = of_pvar pvar typ in
+        let access_expr = if add_deref 
+        then HilExp.AccessExpression.dereference access_expr 
+        else access_expr
+        in
+        ValuePair.V (Access (add_accesses access_expr)) :: acc
+      )
+
+      (* match f_resolve_id (Var.of_pvar pvar) with
+      | Some access_expr ->
+          (* do not need to add deref here as it was added implicitly in the binding *)
+          (* but need to remove it if add_deref is false *)
+          let access_expr' =
+            if not add_deref then match access_expr with HilExp.Dereference ae -> ae | _ -> assert false
+            else access_expr
+          in
+          add_accesses access_expr' :: acc
+      | None ->
+          let access_expr = of_pvar pvar typ in
+          let access_expr' =
+            if add_deref then HilExp.AccessExpression.dereference access_expr else access_expr
+          in
+          add_accesses access_expr' :: acc *)
+    )
+    | Lvar pvar -> (
+      let ae = of_pvar pvar typ in
+      let ae = if add_deref then HilExp.AccessExpression.dereference ae else ae in
+      ValuePair.V (Access (add_accesses ae)) :: acc 
+    )
+    | Lfield (root_exp, fld, root_exp_typ) -> (
+      let add_field_access_expr access_expr =
+        add_accesses (HilExp.AccessExpression.field_offset access_expr fld)
+      in
+      of_exp_ root_exp root_exp_typ add_field_access_expr acc
+    )
+    | Lindex (root_exp, index_exp) ->
+        let index =
+          let index_typ = (* TODO: bogus *) StdTyp.void in
+          array_index_of_exp ~include_array_indexes ~f_resolve_id ~add_deref
+            index_exp index_typ
+        in
+        let add_array_access_expr access_expr =
+          add_accesses (HilExp.AccessExpression.array_offset access_expr typ index)
+        in
+        let array_typ = Typ.mk_array typ in
+        of_exp_ root_exp array_typ add_array_access_expr acc
+    | Cast (cast_typ, cast_exp) ->
+        of_exp_ cast_exp cast_typ Fn.id acc
+    | UnOp (_, unop_exp, _) ->
+        of_exp_ unop_exp typ Fn.id acc
+    | Exn exn_exp ->
+        of_exp_ exn_exp typ Fn.id acc
+    | BinOp (_, exp1, exp2) ->
+        of_exp_ exp1 typ Fn.id acc |> of_exp_ exp2 typ Fn.id
+    | Const _ | Closure _ | Sizeof _ ->
+        acc
+  in
+  of_exp_ exp0 typ0 Fn.id []
+  
+  
+and access_expr_of_lhs_exp ~include_array_indexes ~f_resolve_id ~test_resolver ~add_deref lhs_exp typ =
+
+  let process_lfield_lindex_access_list accesses = 
+    (* TODO: Sketchy again. Working with more complex expressions instead
+     of pure access expressions. How should we integrate this properly? *)
+    match accesses with 
+    | [ValuePair.V (Access lhs_ae)] -> (
+      Option.map (HilExp.AccessExpression.address_of lhs_ae)
+        ~f:(fun ae -> ValuePair.V (Access ae))
+    )
+    | [ValuePair.P (Access lb_ae, Access ub_ae)] -> (
+      let lb_ae_opt = HilExp.AccessExpression.address_of lb_ae in
+      let ub_ae_opt = HilExp.AccessExpression.address_of ub_ae in
+      match lb_ae_opt, ub_ae_opt with
+      | Some lb_ae, Some ub_ae -> Some (ValuePair.P (Access lb_ae, Access ub_ae))
+      | _ -> L.die InternalError "TODO: Not implemented"
+    )
+    | [ValuePair.V _] | [ValuePair.P _] -> (
+      L.die InternalError "TODO: Not implemented for more complex expressions.
+        HilExp.AccessExpression was expected"
+    )
+    | _ -> None
+  in
+
+  match (lhs_exp : Exp.t) with
+  | Lfield _ when not add_deref -> (
+    let accesses = access_exprs_of_exp ~include_array_indexes 
+      ~f_resolve_id ~test_resolver ~add_deref:true lhs_exp typ
+    in
+    process_lfield_lindex_access_list accesses
+  )
+  | Lindex _ when not add_deref -> (
+    let accesses =
+      let typ' = match typ.Typ.desc with
+      | Tptr (t, _) -> t
+      | _ -> (
+        (* T29630813 investigate cases where this is not a pointer *)
+        typ
+      )
+      in
+      access_exprs_of_exp ~include_array_indexes ~f_resolve_id
+        ~test_resolver ~add_deref:true lhs_exp typ'
+    in
+    process_lfield_lindex_access_list accesses
+  )
+  | _ -> (
+    let accesses = access_exprs_of_exp ~include_array_indexes ~f_resolve_id
+      ~test_resolver ~add_deref lhs_exp typ
+    in
+    match accesses with 
+    | [lhs_ae] -> Some lhs_ae 
+    | _ -> None
+  )
+
+
+(* convert an SIL expression into an EdgeExp expression.
+  The [f_resolve_id] function should map an SSA temporary variable to the
+  access path it represents. evaluating the HIL expression should produce
+  the same result as evaluating the SIL expression and replacing the temporary
+  variables using [f_resolve_id] *)
+and of_sil_exp ~include_array_indexes 
+  ~f_resolve_id ~test_resolver ~add_deref exp typ =
+  (* let access_of_access_expr ae =
+    let base_var = HilExp.AccessExpression.get_base ae |> fst in
+    match Var.get_ident base_var with
+    | Some ident -> (
+      (* TODO: Replace only base, not entire AE. Will be complicated 
+        Idents should occur only for previously unsubstituted
+        return idents of function calls, try to substitute now *)
+      id_resolver ident
+    )
+    | None -> Access ae
+  in *)
+
+  let rec of_sil_ (exp : Exp.t) typ = match exp with
+  | Exp.Var id -> (
+    match test_resolver (Var.of_id id) with
+    | Some value_pair -> (
+      let process_value value =
+        map_accesses value ~f:(fun ae None ->
+          let ae = if add_deref then HilExp.AccessExpression.dereference ae else ae in
+          Access ae, None
+        ) None |> fst
+      in
+
+      match value_pair with
+      | ValuePair.V value -> ValuePair.V (process_value value)
+      | ValuePair.P (lb, ub) -> ValuePair.P (process_value lb, process_value ub)
+    )
+    | None -> (
+      let access_expr = HilExp.AccessExpression.of_id id typ in
+      let access_expr = if add_deref
+      then HilExp.AccessExpression.dereference access_expr
+      else access_expr in
+      ValuePair.V (Access access_expr)
+    )
+
+    (* let ae = match f_resolve_id (Var.of_id id) with
+    | Some access_expr -> (
+      if add_deref then HilExp.AccessExpression.dereference access_expr else access_expr
+    )
+    | None -> (
+      let access_expr = HilExp.AccessExpression.of_id id typ in
+      if add_deref then HilExp.AccessExpression.dereference access_expr else access_expr
+    )
+    in
+    access_of_access_expr ae *)
+  )
+  | Exp.UnOp (Unop.Neg, Exp.Const Const.Cint c, _) ->
+    ValuePair.V (Const (Const.Cint (IntLit.neg c)))
+  | Exp.UnOp (op, subexp, subexp_typ) -> (
+    match of_sil_ subexp typ with
+    | ValuePair.V subexp -> ValuePair.V (UnOp (op, subexp, subexp_typ))
+    | ValuePair.P (lb, ub) -> ValuePair.P (UnOp (op, lb, subexp_typ), UnOp (op, ub, subexp_typ))
+  )
+  | Exp.BinOp (op, e0, e1) -> ValuePair.create_binop op (of_sil_ e0 typ) (of_sil_ e1 typ)
+  | Exp.Const c -> ValuePair.V (Const c)
+  | Exp.Cast (cast_type, Exp.Const (Const.Cint c)) -> (
+    (* TODO: do something based on signedness of the int type and value of const *)
+    assert(Typ.is_int cast_type || Typ.is_pointer_to_int cast_type);
+    ValuePair.V (Const (Const.Cint c))
+  )
+  | Exp.Cast (cast_type, e) -> (
+    match of_sil_ e typ with
+    | ValuePair.V value -> ValuePair.V (Cast (cast_type, value))
+    | ValuePair.P (lb, ub) -> ValuePair.P (Cast (cast_type, lb), Cast (cast_type, ub))
+  )
+  | Exp.Sizeof data -> (
+    match data.nbytes with
+    | Some size -> ValuePair.V (Const (Const.Cint (IntLit.of_int size)))
+    | None -> L.die InternalError "TODO: HilExp.Sizeof missing size information"
+  )
+  | Exp.Lfield (root_exp, fld, root_exp_typ) -> (
+    match access_expr_of_lhs_exp ~include_array_indexes ~f_resolve_id ~test_resolver ~add_deref exp typ with
+    | Some access_expr -> (
+      (* access_of_access_expr access_expr *)
+      access_expr
+    )
+    | None -> (
+      (* unsupported field expression: represent with a dummy variable *)
+      let dummy_id = Ident.create_normal (Ident.string_to_name (Exp.to_string root_exp)) 0 in
+      of_sil_ (Exp.Lfield (Exp.Var dummy_id, fld, root_exp_typ)) typ
+    )
+  )
+  | Exp.Lindex (Const (Cstr s), index_exp) -> (
+    (* indexed string literal (e.g., "foo"[1]). represent this by introducing a dummy variable
+    for the string literal. if you actually need to see the value of the string literal in the
+    analysis, you should probably be using SIL. this is unsound if the code modifies the
+    literal, e.g. using `const_cast<char*>` *)
+    let dummy_id = Ident.create_normal (Ident.string_to_name s) 0 in
+    of_sil_ (Exp.Lindex (Exp.Var dummy_id, index_exp)) typ
+  )
+  | Exp.Lindex (root_exp, index_exp) -> (
+    match access_expr_of_lhs_exp ~include_array_indexes ~f_resolve_id ~test_resolver ~add_deref exp typ with
+    | Some access_expr -> (
+      (* access_of_access_expr access_expr *)
+      access_expr
+    )
+    | None -> (
+      (* unsupported index expression: represent with a dummy variable *)
+      let dummy_id = (Ident.create_normal (Ident.string_to_name (Exp.to_string root_exp)) 0) in
+      of_sil_ (Exp.Lindex (Var dummy_id, index_exp )) typ 
+    )
+  )
+  | Exp.Lvar _ -> (
+    match access_expr_of_lhs_exp ~include_array_indexes ~f_resolve_id ~test_resolver ~add_deref exp typ with
+    | Some access_expr -> (
+      (* access_of_access_expr access_expr *)
+      access_expr
+    )
+    | None ->
+        L.(die InternalError) "Couldn't convert var expression %a to access path" Exp.pp exp
+  )
+  | Exp.Exn _ ->
+    L.(die InternalError)"[EdgeExp.of_sil_exp] Unsupported Exn expression %a!" Exp.pp exp
+  | Exp.Closure _ ->
+    L.(die InternalError)"[EdgeExp.of_sil_exp] Unsupported Closure expression %a!" Exp.pp exp
+  | _ ->
+    L.(die InternalError)"[EdgeExp.of_sil_exp] Unsupported Closure expression %a!" Exp.pp exp
+  in
+  of_sil_ exp typ
+  

@@ -21,7 +21,7 @@ module EdgeData = struct
     backedge: bool;
     branch_info: (Sil.if_kind * bool * Location.t) option;
 
-    mutable calls: EdgeExp.CallPairSet.t;
+    mutable calls: EdgeExp.CallPair.Set.t;
     mutable constraints: DC.t list;
     mutable guards: EdgeExp.Set.t;
     mutable bound: EdgeExp.T.t option;
@@ -80,10 +80,10 @@ module EdgeData = struct
     | Some ((_, dc_rhs) as dc) when not (DC.same_norms dc) -> (
       match dc_rhs with
       | DC.Value (rhs_norm, op, lit) -> (
-        Some (EdgeExp.Value (EdgeExp.merge rhs_norm (Some (op, lit))))
+        Some (EdgeExp.ValuePair.V (EdgeExp.merge rhs_norm (Some (op, lit))))
       )
       | DC.Pair ((lb_norm, lb_op, lb_lit), (ub_norm, ub_op, ub_lit)) -> (
-        Some (EdgeExp.Pair (EdgeExp.merge lb_norm (Some (lb_op, lb_lit)),
+        Some (EdgeExp.ValuePair.P (EdgeExp.merge lb_norm (Some (lb_op, lb_lit)),
               EdgeExp.merge ub_norm (Some (ub_op, ub_lit))))
       )
     )
@@ -106,7 +106,7 @@ module EdgeData = struct
     branch_info = None;
     edge_type = DCP;
     constraints = [];
-    calls = EdgeExp.CallPairSet.empty;
+    calls = EdgeExp.CallPair.Set.empty;
     guards = EdgeExp.Set.empty;
     bound = None;
     bound_norm = None;
@@ -148,13 +148,13 @@ let vertex_name vertex = string_of_int (LTS.Node.hash vertex)
 let edge_attributes : E.t -> 'a list = fun (_, edge_data, _) -> (
   let label = edge_label edge_data in
   let label = if edge_data.backedge then label ^ "[backedge]\n" else label in
-  let call_list = List.map (EdgeExp.CallPairSet.elements edge_data.calls) 
+  let call_list = List.map (EdgeExp.CallPair.Set.elements edge_data.calls) 
   ~f:(fun call_assignment ->
     match call_assignment with
-    | EdgeExp.CallValue ((_, _, _, loc) as call) -> (
+    | EdgeExp.CallPair.V ((_, _, _, loc) as call) -> (
       F.asprintf "%s : %a" (EdgeExp.call_to_string call) Location.pp loc
     )
-    | EdgeExp.CallPair (((_, _, _, loc1) as lb_call), ub_call) -> (
+    | EdgeExp.CallPair.P (((_, _, _, loc1) as lb_call), ub_call) -> (
       F.asprintf "[%s; %s] : %a"
         (EdgeExp.call_to_string lb_call)
         (EdgeExp.call_to_string ub_call) Location.pp loc1

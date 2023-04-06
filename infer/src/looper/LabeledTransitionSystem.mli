@@ -43,9 +43,9 @@ module EdgeData : sig
   type t = {
     backedge: bool;
     conditions: EdgeExp.Set.t;
-    assignments: (HilExp.access_expression * EdgeExp.value_pair) list;
+    assignments: (HilExp.access_expression * EdgeExp.ValuePair.t) list;
     branch_info: (Sil.if_kind * bool * Location.t) option;
-    calls: EdgeExp.CallPairSet.t;
+    calls: EdgeExp.CallPair.Set.t;
   }
   [@@deriving compare]
 
@@ -58,11 +58,11 @@ module EdgeData : sig
 
   val add_condition : t -> EdgeExp.T.t -> t
 
-  val add_assignment : t -> HilExp.access_expression -> EdgeExp.value_pair -> t
+  val add_assignment : t -> HilExp.access_expression -> EdgeExp.ValuePair.t -> t
 
   val add_invariants : t -> LooperUtils.AccessExpressionSet.t AccessPath.BaseMap.t -> t
 
-  val get_assignment_rhs : t -> HilExp.access_expression -> EdgeExp.value_pair
+  val get_assignment_rhs : t -> HilExp.access_expression -> EdgeExp.ValuePair.t
 
   val derive_guards : t -> EdgeExp.Set.t -> Tenv.t -> LooperUtils.prover_data -> EdgeExp.Set.t
 

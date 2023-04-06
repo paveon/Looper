@@ -3,6 +3,12 @@
 open! IStd
 module F = Format
 
+module ComplexityDegree : sig
+  type t =
+    | Linear
+    | Log
+    | Linearithmic
+end
 
 module rec T : sig
   type call = Typ.t * Procname.t * (t * Typ.t) list * Location.t
@@ -17,6 +23,7 @@ module rec T : sig
   | Max of Set.t
   | Min of Set.t
   | Inf
+  | Symbolic of ComplexityDegree.t * t
   [@@deriving compare]
 
   val equal : t -> t -> bool
@@ -36,19 +43,66 @@ val pp : F.formatter -> T.t -> unit
 
 val pp_call : F.formatter -> T.call -> unit
 
-type value_pair =
-  | Value of T.t
-  | Pair of (T.t * T.t)
-  [@@deriving compare]
+val pp_list : string -> (F.formatter -> 'a -> unit) -> F.formatter -> 'a list -> unit
 
-val value_pair_to_string : value_pair -> string
+val list_to_string : 'a list -> string -> (F.formatter -> 'a -> unit) -> string
 
-val pp_value_pair : F.formatter -> value_pair -> unit
+module ValuePair : sig
+  type pair = (T.t * T.t)
+    [@@deriving compare]
 
-module ValuePairSet : Caml.Set.S with type elt = value_pair
+  type t =
+    | V of T.t
+    | P of pair
+    [@@deriving compare]
 
+  val to_string : t -> string
 
-type call_pair =
+  val pp : F.formatter -> t -> unit
+
+  val make_pair : T.t -> t
+
+  val make_list : T.t list -> T.t list -> t list
+  
+  val map : t -> f:(T.t -> T.t) -> t
+
+  val merge : t -> t -> t
+
+  val create_binop : Binop.t -> t -> t -> t
+
+  val map_accesses : T.t -> f:(HilExp.access_expression -> t) -> t
+  
+  module Set : Caml.Set.S with type elt = t
+end
+
+module CallPair : sig
+  type pair = (T.call * T.call)
+    [@@deriving compare]
+
+  type t =
+    | V of T.call
+    | P of pair
+    [@@deriving compare]
+
+  val to_string : t -> string
+
+  val pp : F.formatter -> t -> unit
+
+  module Set : Caml.Set.S with type elt = t
+end
+
+(* type call_pair =
+    | CallValue of T.call
+    | CallPair of (T.call * T.call)
+    [@@deriving compare]
+
+  val call_pair_to_string : call_pair -> string
+
+  val pp_call_pair : F.formatter -> call_pair -> unit
+
+  module CallPairSet : Caml.Set.S with type elt = call_pair *)
+
+(* type call_pair =
   | CallValue of T.call
   | CallPair of (T.call * T.call)
   [@@deriving compare]
@@ -57,7 +111,7 @@ val call_pair_to_string : call_pair -> string
 
 val pp_call_pair : F.formatter -> call_pair -> unit
 
-module CallPairSet : Caml.Set.S with type elt = call_pair
+module CallPairSet : Caml.Set.S with type elt = call_pair *)
 
 
 val compare : t -> t -> int
@@ -104,6 +158,8 @@ val is_int : T.t -> Typ.t LooperUtils.PvarMap.t -> Tenv.t -> bool
 
 val get_typ : Tenv.t -> T.t -> Typ.t option
 
+val is_integral_typ : Typ.t -> bool
+
 val is_integer_condition : Tenv.t -> T.t -> bool
 
 val is_return : T.t -> bool
@@ -137,7 +193,12 @@ val evaluate_const_exp : T.t -> IntLit.t option
 
 (* val of_exp : Exp.t -> (t * Typ.t) Ident.Map.t -> Typ.t -> Typ.t LooperUtils.PvarMap.t -> t *)
 
-val of_hil_exp : HilExp.t -> (Ident.t -> T.t) -> T.t
+(* val of_hil_exp : HilExp.t -> (Ident.t -> T.t) -> T.t *)
+val of_sil_exp : include_array_indexes:bool 
+  -> f_resolve_id:(Var.t -> HilExp.access_expression option) 
+  -> test_resolver:(Var.t -> ValuePair.t option)
+  -> add_deref:bool
+  -> Exp.t -> Typ.t -> ValuePair.t
 
 val to_why3_expr : T.t -> Tenv.t -> LooperUtils.prover_data -> (Why3.Term.term * Why3.Term.Sterm.t)
 
@@ -148,8 +209,6 @@ val get_accesses: T.t -> LooperUtils.AccessExpressionSet.t
 val get_access_exp_set : T.t -> Set.t
 
 val map_accesses: T.t -> f:(HilExp.access_expression -> 'a -> T.t * 'a) -> 'a -> T.t * 'a
-
-val pair_map_accesses : T.t -> f:(HilExp.access_expression -> value_pair) -> value_pair
 
 val subst : T.t -> (T.t * Typ.t) list -> FormalMap.t -> T.t
 

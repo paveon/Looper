@@ -1,6 +1,7 @@
 (* Author: Ondrej Pavela <xpavel34@stud.fit.vutbr.cz> *)
 
 open! IStd
+open LooperUtils
 
 module F = Format
 module LTS = LabeledTransitionSystem
@@ -25,7 +26,7 @@ val empty_updates : norm_updates
 
 type cache = {
   updates: norm_updates EdgeExp.Map.t;
-  variable_bounds: EdgeExp.T.t EdgeExp.Map.t;
+  upper_bounds: EdgeExp.T.t EdgeExp.Map.t;
   lower_bounds: EdgeExp.T.t EdgeExp.Map.t;
   reset_chains: ResetGraph.Chain.Set.t EdgeExp.Map.t;
   positivity: bool EdgeExp.Map.t;
@@ -44,22 +45,61 @@ and transition = {
   src_node: LTS.Node.t;
   dst_node: LTS.Node.t;
   bound: EdgeExp.T.t;
-  monotony_map: LooperUtils.Monotonicity.t LooperUtils.AccessExpressionMap.t;
+  monotony_map: Monotonicity.t AccessExpressionMap.t;
   calls: call list
 }
 
-and t = {
+type t = {
   formal_map: FormalMap.t;
   bounds: transition list;
-  return_bound: (EdgeExp.T.t * EdgeExp.T.t) option;
-  formal_bounds: (EdgeExp.T.t * EdgeExp.T.t) EdgeExp.Map.t
+
+  return_bound: (EdgeExp.ValuePair.pair) option;
+  return_monotonicity_map : (
+    Monotonicity.t AccessExpressionMap.t * 
+    Monotonicity.t AccessExpressionMap.t
+  );
+
+  formal_bounds: (EdgeExp.ValuePair.pair) EdgeExp.Map.t;
+  formal_monotonicity_map : (
+    Monotonicity.t AccessExpressionMap.t *
+    Monotonicity.t AccessExpressionMap.t
+  );
 }
+
+(* module ComplexityDegree : sig
+  type t =
+    | Linear
+    | Log
+    | Linearithmic
+end *)
+
+module Model : sig
+  type t = {
+    (* args: EdgeExp.ValuePair.t list;
+    complexity: EdgeExp.ComplexityDegree.t;
+    return_bound: EdgeExp.ValuePair.t option; *)
+
+    name: string;
+    complexity: EdgeExp.ValuePair.t;
+    return_bound: EdgeExp.ValuePair.t option;
+  }
+
+  val pp : F.formatter -> t -> unit
+end
+  
+(* type model = {
+  complexity: ComplexityDegree.t;
+  args: EdgeExp.ValuePair.t list;
+} *)
+
+type model_summary =
+  | Real of t
+  | Model of Model.t
 
 val total_bound : transition list -> EdgeExp.T.t
 
-val instantiate : t -> (EdgeExp.T.t * Typ.t) list 
-    -> upper_bound:(EdgeExp.T.t -> cache -> EdgeExp.T.t * cache)
-    -> lower_bound:(EdgeExp.T.t -> cache -> EdgeExp.T.t * cache)
+val instantiate : t -> (EdgeExp.T.t * Typ.t) list
+    -> variable_bound:(bound_type: BoundType.t -> EdgeExp.T.t -> cache -> EdgeExp.T.t * cache)
     -> Tenv.t -> LooperUtils.prover_data -> cache -> transition list * cache
 
 val pp : F.formatter -> t -> unit

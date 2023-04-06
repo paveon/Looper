@@ -11,7 +11,7 @@ type procedure_data = {
   norms: EdgeExp.Set.t;
   formals: AccessPath.BaseSet.t;
   analysis_data: LooperSummary.t InterproceduralAnalysis.t;
-  call_summaries: LooperSummary.t Location.Map.t;
+  call_summaries: LooperSummary.model_summary Location.Map.t;
   lts: LTS.t
 }
 

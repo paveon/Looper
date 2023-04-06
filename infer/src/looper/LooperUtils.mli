@@ -61,12 +61,18 @@ module AccessExpressionMap : Caml.Map.S with type key = HilExp.access_expression
 
 module Monotonicity : sig
    type t =
-   | NonDecreasing
-   | NonIncreasing
-   | NotMonotonic
-   [@@deriving compare]
+    | NonDecreasing
+    | NonIncreasing
+    | NotMonotonic
+    [@@deriving compare]
 end
 
+module BoundType : sig
+  type t =
+    | Upper 
+    | Lower
+  [@@deriving compare]
+end
 
 val access_of_exp : include_array_indexes:bool -> Exp.t -> Typ.t -> f_resolve_id:(Var.t -> AccessPath.t option) -> AccessPath.t list
 

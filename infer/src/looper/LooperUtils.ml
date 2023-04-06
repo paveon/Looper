@@ -102,6 +102,12 @@ module Monotonicity = struct
   [@@deriving compare]
 end
 
+module BoundType = struct
+  type t = 
+    | Upper 
+    | Lower
+  [@@deriving compare]
+end
 
 let base_of_id id typ = (Var.of_id id, typ)
 
