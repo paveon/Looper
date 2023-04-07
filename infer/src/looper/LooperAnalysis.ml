@@ -70,7 +70,8 @@ let analyze_procedure (analysis_data : LooperSummary.t InterproceduralAnalysis.t
   let prover_map : prover_data ProverMap.t = if ProverMap.is_empty !why3_data then (
     console_log "=========== Initializing Why3 ===========@,";
     
-    let config : Why3.Whyconf.config = Why3.Whyconf.(load_default_config_if_needed (read_config None)) in
+    (* Why3.Whyconf.(default_config) *)
+    let config : Why3.Whyconf.config = Why3.Whyconf.init_config None in
     let main : Why3.Whyconf.main = Why3.Whyconf.get_main config in
 
     let env : Why3.Env.env = Why3.Env.create_env (Why3.Whyconf.loadpath main) in
@@ -86,7 +87,7 @@ let analyze_procedure (analysis_data : LooperSummary.t InterproceduralAnalysis.t
       else (
         let why3_prover_cfg = snd (Why3.Whyconf.Mprover.max_binding provers) in
 
-        let driver : Why3.Driver.driver = try Why3.Whyconf.load_driver main env prover_cfg.driver_path []
+        let driver : Why3.Driver.driver = try Why3.Driver.load_driver_file_and_extras main env prover_cfg.driver_path []
           with e -> L.die InternalError "[Looper] Failed to load driver for %s: %a@."
             prover_cfg.name Why3.Exn_printer.exn_printer e
         in
@@ -1598,7 +1599,7 @@ let analyze_procedure (analysis_data : LooperSummary.t InterproceduralAnalysis.t
   in
 
   let payload : LooperSummary.t = {
-    formal_map = FormalMap.make proc_desc;
+    formal_map = FormalMap.make (Procdesc.get_attributes proc_desc);
     bounds = bounds;
     return_bound = return_bound;
     return_monotonicity_map = (AccessExpressionMap.empty, AccessExpressionMap.empty);
