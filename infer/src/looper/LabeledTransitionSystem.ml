@@ -169,9 +169,10 @@ module EdgeData = struct
           let task = Why3.Task.use_export None prover_data.theory in
           let task = Why3.Task.add_prop_decl task Why3.Decl.Pgoal goal_symbol quantified_fmla in
 
-          let prover_call = Why3.Driver.prove_task prover_data.driver task 
+          let prover_call = Why3.Driver.prove_task prover_data.driver task
+            ~config:prover_data.main
             ~command:prover_data.prover_conf.command
-            ~limit:{Why3.Call_provers.empty_limit with limit_time = 5} 
+            ~limit:{Why3.Call_provers.empty_limit with limit_time = 5.} 
           in
           let result = Why3.Call_provers.wait_on_call prover_call in
           match result.pr_answer with

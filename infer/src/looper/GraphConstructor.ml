@@ -761,7 +761,7 @@ let exec_instr : construction_temp_data
     debug_log "@[<v4>Loading call summary@,";
     let payload_opt = graph_data.proc_data.analysis_data.analyze_dependency callee_pname in
     let call_summaries, return_bound, edge_data = match payload_opt with
-    | Some (_, payload) -> (
+    | Some payload -> (
       (* We have to check monotonicity here to correctly substitute
         lower or upper bound of each argument to the payload bounds *)
       let lb_args = List.zip_exn lb_args arg_types in

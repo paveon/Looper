@@ -95,6 +95,7 @@ let analyze_procedure (analysis_data : LooperSummary.t InterproceduralAnalysis.t
         ProverMap.add prover_cfg.prover_type {
           name = prover_cfg.name;
           driver;
+          main;
           theory = real_theory;
           idents = StringMap.empty;
           vars = StringMap.empty;

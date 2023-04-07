@@ -482,29 +482,6 @@ let deadlock =
   register ~id:"DEADLOCK" Error Starvation
     ~user_documentation:[%blob "./documentation/issues/DEADLOCK.md"]
 
-(* let double_locking =
-  register ~id:"DOUBLE_LOCKING" Error DeadlockChecker
-    ~user_documentation:""
-
-let double_unlocking =
-  register ~id:"DOUBLE_UNLOCKING" Error DeadlockChecker
-    ~user_documentation:""
-
-let release_without_acquisition =
-  register ~id:"RELEASE_WITHOUT_ACQUISITION" Error DeadlockChecker
-    ~user_documentation:""
-
-let _direct_atomic_property_access =
-  register ~id:"DIRECT_ATOMIC_PROPERTY_ACCESS" Warning Linters
-    ~user_documentation:[%blob "../../documentation/issues/DIRECT_ATOMIC_PROPERTY_ACCESS.md"]
-
-
-let _discouraged_weak_property_custom_setter =
-  register ~id:"DISCOURAGED_WEAK_PROPERTY_CUSTOM_SETTER" Warning Linters
-    ~user_documentation:
-      [%blob "../../documentation/issues/DISCOURAGED_WEAK_PROPERTY_CUSTOM_SETTER.md"] *)
-
-
 let divide_by_zero =
   register ~enabled:false ~id:"DIVIDE_BY_ZERO" Error Biabduction (* TODO *) ~user_documentation:""
 

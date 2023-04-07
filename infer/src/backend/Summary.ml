@@ -104,10 +104,12 @@ module ReportSummary = struct
 end
 
 module LooperSummary = struct
-  type t = {loc: Location.t; looper_opt: LooperSummary.t option}
+  type t = {loc: Location.t; looper_opt: LooperSummary.t option; err_log: Errlog.t}
 
-  let of_full_summary (f : full_summary) =
-    ({loc= get_loc f; looper_opt= f.payloads.Payloads.looper} : t)
+  let of_full_summary ({proc_name; payloads; err_log} : full_summary) : t =
+    { loc= (Attributes.load_exn proc_name).loc
+    ; looper_opt= Lazy.force payloads.Payloads.looper
+    ; err_log }
 
 
   module SQLite = SqliteUtils.MarshalledDataNOTForComparison (struct
@@ -308,7 +310,7 @@ module OnDisk = struct
 
 
   let iter_filtered_looper_summaries ~filter ~f =
-    let db = ResultsDatabase.get_database () in
+    let db = Database.get_database AnalysisDatabase in
     let dummy_source_file = SourceFile.invalid __FILE__ in
     (* NB the order is deterministic, but it is over a serialised value, so it is arbitrary *)
     Sqlite3.prepare db "SELECT proc_name, looper_summary FROM specs ORDER BY proc_uid ASC"
@@ -332,6 +334,7 @@ module OnDisk = struct
 
   let iter_report_summaries_from_config ~f =
     make_filtered_iterator_from_config ~iter:iter_filtered_report_summaries ~f
+
 
   let iter_looper_summaries_from_config ~f =
     make_filtered_iterator_from_config ~iter:iter_filtered_looper_summaries ~f

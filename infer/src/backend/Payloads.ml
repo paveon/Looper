@@ -16,7 +16,6 @@ type t =
   ; config_impact_analysis: ConfigImpactAnalysis.Summary.t option Lazy.t
   ; cost: CostDomain.summary option Lazy.t
   ; looper: LooperSummary.t option Lazy.t
-  (* ; deadlock: DeadlockDomain.summary option Lazy.t *)
   ; disjunctive_demo: DisjunctiveDemo.domain option Lazy.t
   ; lab_resource_leaks: ResourceLeakDomain.summary option Lazy.t
   ; litho_required_props: LithoDomain.summary option Lazy.t
@@ -52,8 +51,7 @@ let all_fields =
     ~buffer_overrun_checker:(fun f -> mk f BufferOverrunChecker BufferOverrunCheckerSummary.pp)
     ~config_impact_analysis:(fun f -> mk f ConfigImpactAnalysis ConfigImpactAnalysis.Summary.pp)
     ~cost:(fun f -> mk f Cost CostDomain.pp_summary)
-    ~looper:(fun f -> mk f "Looper" LooperSummary.pp)
-    (* ~deadlock:(fun f -> mk f "Deadlock" DeadlockDomain.pp) *)
+    ~looper:(fun f -> mk f Looper LooperSummary.pp)
     ~disjunctive_demo:(fun f -> mk f DisjunctiveDemo DisjunctiveDemo.pp_domain)
     ~litho_required_props:(fun f -> mk f LithoRequiredProps LithoDomain.pp_summary)
     ~pulse:(fun f -> mk f Pulse PulseSummary.pp)
@@ -154,6 +152,7 @@ module SQLite = struct
       ~scope_leakage:data_of_sqlite_column ~siof:data_of_sqlite_column
       ~simple_lineage:data_of_sqlite_column ~simple_shape:data_of_sqlite_column
       ~starvation:data_of_sqlite_column ~nullsafe:data_of_sqlite_column
+      ~looper:data_of_sqlite_column
       ~uninit:data_of_sqlite_column
 
 
@@ -199,6 +198,7 @@ module SQLite = struct
     ; buffer_overrun_checker= lazy (load table ~rowid BufferOverrunChecker)
     ; config_impact_analysis= lazy (load table ~rowid ConfigImpactAnalysis)
     ; cost= lazy (load table ~rowid Cost)
+    ; looper= lazy (load table ~rowid Looper)
     ; disjunctive_demo= lazy (load table ~rowid DisjunctiveDemo)
     ; lab_resource_leaks= lazy (load table ~rowid LabResourceLeaks)
     ; litho_required_props= lazy (load table ~rowid LithoRequiredProps)

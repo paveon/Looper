@@ -26,7 +26,6 @@ include sig
     ; config_impact_analysis: ConfigImpactAnalysis.Summary.t option Lazy.t
     ; cost: CostDomain.summary option Lazy.t
     ; looper: LooperSummary.t option Lazy.t
-    (* ; deadlock: DeadlockDomain.summary option *)
     ; disjunctive_demo: DisjunctiveDemo.domain option Lazy.t
     ; lab_resource_leaks: ResourceLeakDomain.summary option Lazy.t
     ; litho_required_props: LithoDomain.summary option Lazy.t

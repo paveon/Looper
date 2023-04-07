@@ -24,6 +24,7 @@ type prover_data = {
   name: string;
   prover_conf: Why3.Whyconf.config_prover;
   driver: Why3.Driver.driver;
+  main : Why3.Whyconf.main;
   theory: Why3.Theory.theory;
   mutable idents: Why3.Ident.preid StringMap.t;
   mutable vars: Why3.Term.vsymbol StringMap.t;

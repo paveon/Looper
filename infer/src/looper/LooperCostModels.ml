@@ -27,7 +27,7 @@ module LooperModelEnv = struct
     ; location: Location.t
     ; tenv: Tenv.t
     ; integer_type_widths: Typ.IntegerWidths.t
-    ; get_summary: Procname.t -> (Procdesc.t * LooperSummary.t) option }
+    ; get_summary: Procname.t -> LooperSummary.t option }
 
   let mk_model_env pname ~node_hash location tenv integer_type_widths get_summary =
     {pname; node_hash; location; tenv; integer_type_widths; get_summary }

@@ -15,7 +15,6 @@ type t =
   | ConfigImpactAnalysis
   | Cost
   | Looper
-  (* | DeadlockChecker *)
   | Datalog
   | DisjunctiveDemo
   | Eradicate

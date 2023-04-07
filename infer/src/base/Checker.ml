@@ -16,7 +16,6 @@ type t =
   | ConfigImpactAnalysis
   | Cost
   | Looper
-  (* | DeadlockChecker *)
   | Datalog
   | DisjunctiveDemo
   | Eradicate
@@ -172,23 +171,11 @@ let config_unsafe checker =
           UserFacing
             { title= "Looper"
             ; markdown_body= "See https://github.com/paveon/Looper/wiki/Looper:-A-Worst-Case-Cost-Analyser"}
-      ; support= supports_clang_and_java
+      ; support= mk_support_func ~clang:Support ~java:ExperimentalSupport ()
       ; short_documentation= "Loop complexity analysis."
       ; cli_flags= Some {deprecated= []; show_in_help= true}
       ; enabled_by_default= false
       ; activates= [] }
-  (* | DeadlockChecker ->
-      { id= "deadlock"
-      ; kind=
-          UserFacing
-            { title= "Deadlock Checker"
-            ; markdown_body= "See https://pajda.fit.vutbr.cz/xmarci10/fbinfer_concurrency/-/wikis/L2D2:-A-Low-Level-Deadlock-Detector"}
-      ; support= supports_clang
-      ; short_documentation= "Deadlock analysis"
-      ; cli_flags= Some {deprecated= []; show_in_help= true}
-      ; enabled_by_default= false
-      ; activates= []
-      } *)
   | Datalog ->
       { id= "datalog"
       ; kind= UserFacing {title= "Datalog-based points-to analysis"; markdown_body= ""}

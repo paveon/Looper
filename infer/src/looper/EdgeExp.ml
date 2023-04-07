@@ -123,7 +123,7 @@ let eval_consts op c1 c2 = match op with
   | Binop.PlusA _ | Binop.PlusPI -> IntLit.add c1 c2
   | Binop.MinusA _ -> IntLit.sub c1 c2
   | Binop.Mult _ -> IntLit.mul c1 c2
-  | Binop.Div -> IntLit.div c1 c2
+  | Binop.DivI -> IntLit.div c1 c2
   | Binop.Ne -> if IntLit.eq c1 c2 then IntLit.zero else IntLit.one
   | Binop.Eq -> if IntLit.eq c1 c2 then IntLit.one else IntLit.zero
   | Binop.Shiftrt -> IntLit.shift_right c1 c2
@@ -139,14 +139,14 @@ let try_eval op e1 e2 = match e1, e2 with
     match op with
     | Binop.PlusA _ -> exp
     | Binop.MinusA _ -> UnOp (Unop.Neg, exp, None)
-    | Binop.Mult _ | Binop.Div -> zero
+    | Binop.Mult _ | Binop.DivI -> zero
     | _ -> BinOp (op, e1, e2)
   )
   | exp, Const (Const.Cint c) when IntLit.iszero c -> (
     match op with
     | Binop.PlusA _ -> exp | Binop.MinusA _ -> exp
     | Binop.Mult _ -> zero
-    | Binop.Div -> assert(false)
+    | Binop.DivI -> assert(false)
     | _ -> BinOp (op, e1, e2)
   )
   | _ -> BinOp (op, e1, e2)
@@ -239,7 +239,7 @@ module ValuePair = struct
       match op with
       | Binop.PlusA _ | Binop.PlusPI | Binop.Mult _ | Binop.Shiftlt ->
           P (try_eval op lexp_value rexp_lb, try_eval op lexp_value rexp_ub)
-      | Binop.MinusA _ | Binop.MinusPI | Binop.MinusPP | Binop.Div | Binop.Shiftrt ->
+      | Binop.MinusA _ | Binop.MinusPI | Binop.MinusPP | Binop.DivI | Binop.Shiftrt ->
           P (try_eval op lexp_value rexp_ub, try_eval op lexp_value rexp_lb)
       | _ -> L.die InternalError "[EdgeExp.create_value_pair_binop] Merge for operator '%a'
         not implemented" Binop.pp op
@@ -250,7 +250,7 @@ module ValuePair = struct
       match op with
       | Binop.PlusA _ | Binop.PlusPI | Binop.Mult _ | Binop.Shiftlt ->
           P (try_eval op lexp_lb rexp_lb, try_eval op lexp_ub rexp_ub)
-      | Binop.MinusA _ | Binop.MinusPI | Binop.MinusPP | Binop.Div | Binop.Shiftrt ->
+      | Binop.MinusA _ | Binop.MinusPI | Binop.MinusPP | Binop.DivI | Binop.Shiftrt ->
           P (try_eval op lexp_lb rexp_ub, try_eval op lexp_ub rexp_lb)
       | _ -> L.die InternalError "[EdgeExp.create_value_pair_binop] Merge for operator '%a'
         not implemented" Binop.pp op
@@ -565,7 +565,7 @@ let rec evaluate exp value_map default_value =
     | Binop.PlusA _ -> l_value +. r_value
     | Binop.MinusA _ -> l_value -. r_value
     | Binop.Mult _ -> l_value *. r_value
-    | Binop.Div -> l_value /. r_value
+    | Binop.DivI -> l_value /. r_value
     | _ -> assert(false)
   )
   | Cast (_, subexp) -> (
@@ -732,14 +732,14 @@ let rec separate exp =
       | Some (l_op, l_const), None -> (
         match l_op with
         | Binop.PlusA _ | Binop.MinusA _ -> lexp_derived, rexp_derived, Some (l_op, l_const)
-        | Binop.Mult _ | Binop.Div | Binop.Shiftlt | Binop.Shiftrt ->
+        | Binop.Mult _ | Binop.DivI | Binop.Shiftlt | Binop.Shiftrt ->
           merge lexp_derived l_const_opt, rexp_derived, None
         | _ -> assert(false)
       )
       | None, Some (r_op, r_const) -> (
         match r_op with
         | Binop.PlusA _ | Binop.MinusA _ -> lexp_derived, rexp_derived, Some (symmetric_op r_op, r_const)
-        | Binop.Mult _ | Binop.Div | Binop.Shiftlt | Binop.Shiftrt ->
+        | Binop.Mult _ | Binop.DivI | Binop.Shiftlt | Binop.Shiftrt ->
           lexp_derived, merge rexp_derived r_const_opt, None
         | _ -> assert(false)
       )
@@ -815,7 +815,7 @@ let rec separate exp =
         match op with
         | Binop.MinusA _
         | Binop.PlusA _
-        | Binop.Div
+        | Binop.DivI
         | Binop.Mult _
         | Binop.Shiftrt 
         | Binop.Shiftlt -> (
@@ -890,13 +890,13 @@ let rec expand_multiplication exp const_opt =
     | _ -> (
       let lexp = expand_multiplication lexp const_opt in
       let rexp = expand_multiplication rexp None in
-      BinOp (Binop.Div, lexp, rexp)
+      BinOp (Binop.DivI, lexp, rexp)
     )
   )
   | None -> (
     let lexp = expand_multiplication lexp None in
     let rexp = expand_multiplication rexp None in
-    BinOp (Binop.Div, lexp, rexp)
+    BinOp (Binop.DivI, lexp, rexp)
   )
   in
 
@@ -943,14 +943,14 @@ let rec expand_multiplication exp const_opt =
           let exp = if IntLit.isone c then x_part else try_eval op x_part y_part in
           expand_multiplication exp const_opt
         )
-        | BinOp (Binop.Div, lexp_numer, lexp_denom), BinOp (Binop.Div, rexp_numer, rexp_denom) -> (
+        | BinOp (Binop.DivI, lexp_numer, lexp_denom), BinOp (Binop.DivI, rexp_numer, rexp_denom) -> (
           let numerator = multiply_sub_exps lexp_numer rexp_numer in
           let denominator = multiply_sub_exps lexp_denom rexp_denom in
           let numerator_parts = split_exp numerator in
           let parts = List.map numerator_parts ~f:(fun part -> 
             match part with
-            | UnOp (Unop.Neg, subexp, typ) -> UnOp (Unop.Neg, BinOp (Binop.Div, subexp, denominator), typ)
-            | _ -> BinOp (Binop.Div, part, denominator)
+            | UnOp (Unop.Neg, subexp, typ) -> UnOp (Unop.Neg, BinOp (Binop.DivI, subexp, denominator), typ)
+            | _ -> BinOp (Binop.DivI, part, denominator)
           )
           in
           merge_exp_parts parts
@@ -984,7 +984,7 @@ let rec expand_multiplication exp const_opt =
     let rexp = expand_multiplication rexp const_opt in
     BinOp (op, lexp, rexp)
   )
-  | BinOp (Binop.Div, lexp, rexp) -> process_div lexp rexp const_opt
+  | BinOp (Binop.DivI, lexp, rexp) -> process_div lexp rexp const_opt
   | BinOp (Binop.Shiftrt, lexp, Const (Const.Cint power_value)) -> (
     let lexp = expand_multiplication lexp const_opt in
     BinOp (Binop.Shiftrt, lexp, Const (Const.Cint power_value))
@@ -1076,13 +1076,13 @@ let rec transform_shifts exp = match exp with
       else (
         (* Transform to division *)
         let divisor = IntLit.of_int (Int.pow 2 (IntLit.to_int_exn rexp_value)) in
-        BinOp (Binop.Div, lexp, Const (Const.Cint divisor)), lexp_conditions
+        BinOp (Binop.DivI, lexp, Const (Const.Cint divisor)), lexp_conditions
       )
     )
     | None -> (
       let rexp, rexp_conditions = transform_shifts rexp in
       let conditions = Set.union lexp_conditions rexp_conditions in
-      BinOp (Binop.Div, lexp, rexp), Set.add (BinOp (Binop.Ge, rexp, zero)) conditions
+      BinOp (Binop.DivI, lexp, rexp), Set.add (BinOp (Binop.Ge, rexp, zero)) conditions
     )
   )
   | BinOp (op, lexp, rexp) -> (
@@ -1308,7 +1308,7 @@ let rec to_why3_expr exp tenv (prover_data : prover_data) =
     | Binop.Mult ikind_opt -> aux (Why3.Term.t_app_infer mul_symbol [why3_lexp; why3_rexp]) ikind_opt
     | Binop.PlusPI -> Why3.Term.t_app_infer plus_symbol [why3_lexp; why3_rexp], Why3.Term.Sterm.empty
     | Binop.MinusPI | Binop.MinusPP -> Why3.Term.t_app_infer minus_symbol [why3_lexp; why3_rexp], Why3.Term.Sterm.empty
-    | Binop.Div -> (
+    | Binop.DivI -> (
       let conditions = if is_const rexp then (
         assert(not (is_zero rexp));
         Why3.Term.Sterm.empty
@@ -1411,9 +1411,10 @@ let rec always_positive_why3 exp tenv (prover_data : prover_data) =
       let task = Why3.Task.use_export None prover_data.theory in
       let task = Why3.Task.add_prop_decl task Why3.Decl.Pgoal goal_symbol quantified_fmla in
 
-      let prover_call = Why3.Driver.prove_task prover_data.driver task 
+      let prover_call = Why3.Driver.prove_task prover_data.driver task
+      ~config:prover_data.main
       ~command:prover_data.prover_conf.command
-      ~limit:{Why3.Call_provers.empty_limit with limit_time = 5} 
+      ~limit:{Why3.Call_provers.empty_limit with limit_time = 5.0} 
       in
 
       match (Why3.Call_provers.wait_on_call prover_call).pr_answer with
@@ -1635,7 +1636,7 @@ let determine_monotonicity exp tenv (prover_data : prover_data) =
   debug_log "@]@,[Simplified] %a@," pp simplified;
 
   let rec partial_derivative exp var is_root = match exp with
-  | BinOp (Binop.Div, lexp, rexp) -> (
+  | BinOp (Binop.DivI, lexp, rexp) -> (
     if not is_root then (
       (* not supported yet *)
       assert(false)
@@ -1665,11 +1666,11 @@ let determine_monotonicity exp tenv (prover_data : prover_data) =
       let numerator_rhs = multiply_exps numerator_parts divisor_derivative |> merge_exp_parts in
       match is_zero numerator_lhs, is_zero numerator_rhs with
       | true, true -> zero
-      | true, false -> UnOp (Unop.Neg, BinOp (Binop.Div, numerator_rhs, divisor_squared), None)
-      | false, true -> BinOp (Binop.Div, numerator_lhs, divisor_squared)
+      | true, false -> UnOp (Unop.Neg, BinOp (Binop.DivI, numerator_rhs, divisor_squared), None)
+      | false, true -> BinOp (Binop.DivI, numerator_lhs, divisor_squared)
       | false, false -> (
         let numerator = BinOp (Binop.MinusA None, numerator_lhs, numerator_rhs) in
-        BinOp (Binop.Div, numerator, divisor_squared)
+        BinOp (Binop.DivI, numerator, divisor_squared)
       )
     )
   )
@@ -1713,10 +1714,10 @@ let determine_monotonicity exp tenv (prover_data : prover_data) =
       in
       lexp_degree + rexp_degree, merged_exp
     )
-    | BinOp (Binop.Div, Access access, (Const (Const.Cint _) as div_const)) -> (
+    | BinOp (Binop.DivI, Access access, (Const (Const.Cint _) as div_const)) -> (
       if HilExp.AccessExpression.equal access var then (
         let const_one = Const (Const.Cint (IntLit.one)) in
-        1, Some (BinOp (Binop.Div, const_one, div_const))
+        1, Some (BinOp (Binop.DivI, const_one, div_const))
       )
       else 0, Some exp
     )
@@ -1801,8 +1802,10 @@ let determine_monotonicity exp tenv (prover_data : prover_data) =
 
 
   let why3_solve_task task =
-    let prover_call = Why3.Driver.prove_task ~command:prover_data.prover_conf.command
-    ~limit:{Why3.Call_provers.empty_limit with limit_time = 10} prover_data.driver task
+    let prover_call = Why3.Driver.prove_task
+    ~config:prover_data.main
+    ~command:prover_data.prover_conf.command
+    ~limit:{Why3.Call_provers.empty_limit with limit_time = 10.} prover_data.driver task
     in
     Why3.Call_provers.wait_on_call prover_call
   in

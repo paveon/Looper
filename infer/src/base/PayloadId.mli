@@ -15,6 +15,7 @@ type t =
   | BufferOverrunChecker
   | ConfigImpactAnalysis
   | Cost
+  | Looper
   | DisjunctiveDemo
   | LabResourceLeaks
   | LithoRequiredProps

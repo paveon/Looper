@@ -414,8 +414,6 @@ val impurity_report_immutable_modifications : bool
 
 val disable_vfg_renaming : bool
 
-val locking_error : bool
-
 val incremental_analysis : bool
 
 val inline_func_pointer_for_testing : string option
