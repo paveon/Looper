@@ -38,15 +38,3 @@ val pp_const_part : F.formatter -> rhs_const -> unit
 val pp : F.formatter -> t -> unit
 
 val get_dc : norm -> t list -> t option
-
-(* module Map : sig
-     type dc = t
-
-     include module type of EdgeExp.Map
-
-     val get_dc : norm -> rhs t -> dc option
-
-     val add_dc : norm -> rhs -> rhs t -> rhs t
-
-     val to_string : rhs EdgeExp.Map.t -> string
-   end *)

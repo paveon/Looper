@@ -61,21 +61,6 @@ module Node = struct
   end)
 end
 
-(* type assignment_rhs =
-     | Value of EdgeExp.T.t
-     | Interval of (EdgeExp.T.t * EdgeExp.T.t)
-     [@@deriving compare]
-
-   let assignment_rhs_to_string rhs = match rhs with
-     | Value rhs_value -> EdgeExp.to_string rhs_value
-     | Interval (lb, ub) ->
-       F.asprintf "[%s; %s]" (EdgeExp.to_string lb) (EdgeExp.to_string ub)
-
-   module AssignmentSet = Caml.Set.Make(struct
-     type nonrec t = assignment_rhs
-     let compare = compare_assignment_rhs
-   end) *)
-
 module EdgeData = struct
   type t =
     { backedge: bool
@@ -127,9 +112,7 @@ module EdgeData = struct
           in
           let local_base_access = HilExp.AccessExpression.base local_base in
           let assignments = add_assignment local_base_access acc in
-          AccessExpressionSet.fold add_assignment accesses assignments
-          (* if AccessExpressionMap.mem local acc then acc else
-             AccessExpressionMap.add local (EdgeExp.T.Access local) acc *) )
+          AccessExpressionSet.fold add_assignment accesses assignments )
         locals edge.assignments
     in
     {edge with assignments= with_invariants}
@@ -220,8 +203,6 @@ module EdgeData = struct
           if AccessPath.BaseSet.mem lhs_access_base formals then
             Some (EdgeExp.ValuePair.V (EdgeExp.T.Access lhs_access))
           else None
-      (* let base_pvar = Option.value_exn (HilExp.AccessExpression.get_base lhs_access |> fst |> Var.get_pvar) in *)
-      (* if Pvar.Set.mem base_pvar formals then Some (EdgeExp.T.Access lhs_access) else None *)
     in
     let wrap_derived exp_derived_opt ~wrap_func =
       match exp_derived_opt with
@@ -289,7 +270,7 @@ module EdgeData = struct
                 L.user_warning
                   "Edge '%a = %a' assignment previously used, skipping substitution...@."
                   HilExp.AccessExpression.pp access EdgeExp.pp rhs ;
-                (AccessExpressionSet.empty, Some norm) (* AccessExpressionSet.empty, None *) )
+                (AccessExpressionSet.empty, Some norm) )
               else
                 let accesses =
                   if (not (EdgeExp.equal norm rhs)) && not (EdgeExp.is_zero rhs) then
@@ -357,33 +338,8 @@ module EdgeData = struct
                 ( AccessExpressionSet.union lexp_accesses rexp_accesses
                 , Some (EdgeExp.ValuePair.V (process_value_binop op lexp_value rexp_value)) ) )
           | _ ->
-              ( (* Some expression variable is not defined on this edge *)
-                AccessExpressionSet.empty
-              , None )
-          (*
-             AccessExpressionSet.union lexp_accesses rexp_accesses,
-             match lexp_derived_opt, rexp_derived_opt with
-             | Some lexp_derived, Some rexp_derived -> (
-               match op with
-               | Binop.Shiftrt -> (
-                 match EdgeExp.is_zero lexp_derived, EdgeExp.is_zero rexp_derived with
-                 | true, true
-                 | true, false -> Some EdgeExp.zero
-                 | false, true -> Some lexp_derived
-                 | false, false -> Some (EdgeExp.T.BinOp (op, lexp_derived, rexp_derived))
-               )
-               | _ -> Some (EdgeExp.T.BinOp (op, lexp_derived, rexp_derived))
-             )
-             | Some _, None
-             | None, Some _ -> (
-               (* Some expression variable is not defined on this edge *)
-               None
-             )
-             | _ -> (
-               (* assert(false) *)
-               None
-             ) *)
-          )
+              (* Some expression variable is not defined on this edge *)
+              (AccessExpressionSet.empty, None) )
       | EdgeExp.T.Cast (typ, exp) ->
           let cast_derived_value exp =
             if EdgeExp.is_zero exp then exp else EdgeExp.T.Cast (typ, exp)
@@ -412,25 +368,14 @@ module EdgeData = struct
       (* Separate and simplify the rhs expression and get
        * "cannnonical" form which might be equal to the lhs
        * norm in which case we dont create a new norm *)
-      (* let simplified = EdgeExp.simplify rhs_value in *)
       let rhs_terms, rhs_const_opt = EdgeExp.split_exp_new rhs_value in
       let rhs_norm_terms = List.map rhs_terms ~f:EdgeExp.multiply_term_by_frac in
       let rhs_norm = EdgeExp.merge_exp_list rhs_norm_terms in
-      (* let rhs_norm = EdgeExp.merge_exp_list rhs_terms in *)
-      (* debug_log "@[[Expression terms]@ " ;
-         List.iter terms ~f:(fun exp -> debug_log "%a,@ " EdgeExp.pp exp) ;
-         debug_log "@]@," ; *)
       debug_log "[Expression] %a@," EdgeExp.pp rhs_norm ;
       if Option.is_some rhs_const_opt then
         debug_log "[Expression const] %a@," DifferenceConstraint.pp_const_part
           (Option.value_exn rhs_const_opt) ;
-      (* let non_const_terms = List.filter terms ~f:(fun part -> not (EdgeExp.is_const part)) in *)
-      (* debug_log "@[[Non-const terms]@ " ;
-         List.iter non_const_terms ~f:(fun exp -> debug_log "%a,@ " EdgeExp.pp exp) ;
-         debug_log "@]@," ; *)
-      (* let rhs_norm, rhs_const_opt = EdgeExp.separate rhs_value in *)
       let rhs_simplified = EdgeExp.merge rhs_norm rhs_const_opt in
-      (* let rhs_simplified = EdgeExp.merge rhs_norm rhs_const_opt in *)
       if EdgeExp.equal norm rhs_value || EdgeExp.equal norm rhs_simplified then
         (DC.make_value_rhs norm, EdgeExp.Set.empty)
       else
@@ -588,9 +533,9 @@ let edge_attributes : E.t -> 'a list =
       calls_str
   in
   (* Perform replacement to escape all harmful characters which corrupt dot file *)
+  (* Remove newlines from string arguments of function calls and such to make it more readable *)
   let label =
     String.substr_replace_all label ~pattern:"\"" ~with_:"\\\""
-    |> (* Remove newlines from string arguments of function calls and such to make it more readable *)
-    String.substr_replace_all ~pattern:"\\n" ~with_:""
+    |> String.substr_replace_all ~pattern:"\\n" ~with_:""
   in
   [`Label label; `Color 4711]

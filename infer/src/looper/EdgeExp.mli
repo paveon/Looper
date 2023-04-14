@@ -7,10 +7,6 @@ module ComplexityDegree : sig
   type t = Linear | Log | Linearithmic
 end
 
-(* module StrlenArg : sig
-     type t = Variable of HilExp.access_expression | Const of string
-   end *)
-
 module rec T : sig
   type call = Typ.t * Procname.t * (t * Typ.t) list * Location.t
 
@@ -85,43 +81,7 @@ module CallPair : sig
   module Set : Caml.Set.S with type elt = t
 end
 
-(* type call_pair =
-     | CallValue of T.call
-     | CallPair of (T.call * T.call)
-     [@@deriving compare]
-
-   val call_pair_to_string : call_pair -> string
-
-   val pp_call_pair : F.formatter -> call_pair -> unit
-
-   module CallPairSet : Caml.Set.S with type elt = call_pair *)
-
-(* type call_pair =
-     | CallValue of T.call
-     | CallPair of (T.call * T.call)
-     [@@deriving compare]
-
-   val call_pair_to_string : call_pair -> string
-
-   val pp_call_pair : F.formatter -> call_pair -> unit
-
-   module CallPairSet : Caml.Set.S with type elt = call_pair *)
-
 val compare : t -> t -> int
-
-(* type t =
-   | BinOp of Binop.t * t * t
-   | UnOp of Unop.t * t * Typ.t option
-   | Access of HilExp.access_expression
-   | Const of Const.t
-   | Cast of Typ.t * t
-   | Call of Typ.t * Procname.t * (t * Typ.t) list * Location.t
-   | Max of t list
-   | Min of t list
-   | Inf
-   [@@deriving compare] *)
-
-(* module Set : Caml.Set.S with type elt = t *)
 
 val equal : T.t -> T.t -> bool
 
@@ -172,16 +132,10 @@ val multiply_term_by_frac : T.t * (int * int) -> T.t
 (* Simplifies expression and splits it into individual terms *)
 val split_exp_new : T.t -> (T.t * (int * int)) list * (Binop.t * IntLit.t) option
 
-(* Splits expression on +/- into terms *)
-(* val split_exp : T.t -> T.t list *)
-
 (* Merges terms into single expression *)
 val merge_exp_list : T.t list -> T.t
 
 val separate : T.t -> T.t * (Binop.t * IntLit.t) option
-
-(* Tries to expand the expression on multiplications  *)
-(* val expand_multiplication : T.t -> IntLit.t option -> T.t *)
 
 val simplify : T.t -> T.t
 
@@ -189,11 +143,6 @@ val remove_casts_of_consts : T.t -> Typ.IntegerWidths.t -> T.t
 
 val evaluate_const_exp : T.t -> IntLit.t option
 
-(* val access_path_id_resolver : (t * Typ.t) Ident.Map.t -> Var.t -> AccessPath.t option *)
-
-(* val of_exp : Exp.t -> (t * Typ.t) Ident.Map.t -> Typ.t -> Typ.t LooperUtils.PvarMap.t -> t *)
-
-(* val of_hil_exp : HilExp.t -> (Ident.t -> T.t) -> T.t *)
 val of_sil_exp :
      include_array_indexes:bool
   -> f_resolve_id:(Var.t -> HilExp.access_expression option)

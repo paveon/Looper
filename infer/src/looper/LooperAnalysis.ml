@@ -73,7 +73,6 @@ let analyze_procedure (analysis_data : LooperSummary.t InterproceduralAnalysis.t
   let prover_map : prover_data ProverMap.t =
     if ProverMap.is_empty !why3_data then (
       console_log "=========== Initializing Why3 ===========@," ;
-      (* Why3.Whyconf.(default_config) *)
       let config : Why3.Whyconf.config = Why3.Whyconf.init_config None in
       let main : Why3.Whyconf.main = Why3.Whyconf.get_main config in
       let env : Why3.Env.env = Why3.Env.create_env (Why3.Whyconf.loadpath main) in
@@ -183,13 +182,6 @@ let analyze_procedure (analysis_data : LooperSummary.t InterproceduralAnalysis.t
                   debug_log
                     "DC could not be derived (undefined variable of norm expression at source or \
                      destination LTS location)@," ) ;
-              (* Option.value_map dc_rhs_opt ~default:() ~f:(fun dc_rhs ->
-
-                 ); *)
-              (* if Option.is_some dc_rhs_opt then (
-                   let dc_rhs = Option.value_exn dc_rhs_opt in
-                   DCP.EdgeData.add_constraint dcp_edge_data (norm, dc_rhs)
-                 ); *)
               let unprocessed =
                 EdgeExp.Set.fold
                   (fun new_norm unprocessed ->
@@ -208,10 +200,7 @@ let analyze_procedure (analysis_data : LooperSummary.t InterproceduralAnalysis.t
                   new_norms unprocessed
               in
               debug_log "@]@," ;
-              unprocessed
-              (* match new_norm_opt with
-                 | Some new_norm -> ()
-                 | None -> debug_log "@]@,"; unprocessed *) )
+              unprocessed )
             ~init:unprocessed
         else unprocessed
       in
@@ -580,28 +569,7 @@ let analyze_procedure (analysis_data : LooperSummary.t InterproceduralAnalysis.t
                   | Some (lhs_norm, mapped_rhs) ->
                       acc @ [(lhs_norm, DC.Value mapped_rhs)]
                   | None ->
-                      acc
-                      (* let rhs_node = (rhs_norm, dcp_src) in
-                         match VFG.Map.find_opt lhs_node vfg_map, VFG.Map.find_opt rhs_node vfg_map with
-                         | Some lhs_mapped, Some rhs_mapped -> acc @ [(lhs_mapped, DC.Value (rhs_mapped, op, rhs_const))]
-                         | None, Some rhs_mapped -> (
-                           if EdgeExp.is_variable lhs_norm formals tenv then acc
-                           else acc @ [lhs_norm, DC.Value (rhs_mapped, op, rhs_const)]
-                         )
-                         | Some lhs_mapped, None -> (
-                           if EdgeExp.is_variable rhs_norm formals tenv then acc
-                           else acc @ [lhs_mapped, DC.Value (rhs_norm, op, rhs_const)]
-                         )
-                         | None, None -> (
-                           if EdgeExp.is_return lhs_norm then (
-                             if EdgeExp.is_variable rhs_norm formals tenv then acc
-                             else acc @ [lhs_norm, DC.Value (rhs_norm, op, rhs_const)]
-                           ) else (
-                             if EdgeExp.is_variable rhs_norm formals tenv
-                             || EdgeExp.is_variable lhs_norm formals tenv then acc
-                             else acc @ [lhs_norm, DC.Value (rhs_norm, op, rhs_const)]
-                           )
-                         ) *) )
+                      acc )
                 | DC.Pair (lb_rhs, ub_rhs) -> (
                   match (map_value_rhs lb_rhs, map_value_rhs ub_rhs) with
                   | Some (lb_lhs, lb_rhs), Some (ub_lhs, ub_rhs) ->
@@ -666,76 +634,7 @@ let analyze_procedure (analysis_data : LooperSummary.t InterproceduralAnalysis.t
                           | EdgeExp.ValuePair.P (lb, ub) ->
                               ( lb_args @ [(lb, typ)]
                               , ub_args @ [(ub, typ)]
-                              , lb_ub_equal && EdgeExp.equal lb ub )
-                          (* let renamed_arg, _ = EdgeExp.map_accesses arg ~f:(fun access _ ->
-                               let access = EdgeExp.T.Access access in
-                               if EdgeExp.is_symbolic_const access formals tenv then access, None
-                               else (
-                                 (* A little hack-around, need to figure out how to deal with this later *)
-                                 let possible_keys = [
-                                   (EdgeExp.T.Max (EdgeExp.Set.singleton access), dcp_dst);
-                                   (EdgeExp.T.Max (EdgeExp.Set.singleton access), dcp_src);
-                                   (access, dcp_dst);
-                                   (access, dcp_src)]
-                                 in
-                                 let vfg_var_opt = List.find_map possible_keys ~f:(fun vfg_node ->
-                                   VFG.Map.find_opt vfg_node vfg_map
-                                 )
-                                 in
-                                 let vfg_var = match vfg_var_opt with
-                                 | Some v -> v
-                                 | None -> (
-                                   (* This case should occur only for SSA variables which are constant after initialization *)
-                                   let possible_ssa_map_keys = [EdgeExp.T.Max (EdgeExp.Set.singleton access); access] in
-
-                                   let ssa_map_key_opt = List.find possible_ssa_map_keys ~f:(fun key ->
-                                     EdgeExp.Map.mem key ssa_var_initialization_map
-                                   )
-                                   in
-                                   match ssa_map_key_opt with
-                                   | Some key -> (
-                                     (* EdgeExp.Map.find key ssa_var_initialization_map *)
-                                     access
-                                   )
-                                   | None -> (
-                                     debug_log "MAPPING ACCESS: %a\n" EdgeExp.pp access;
-                                     assert(false)
-                                   )
-                                 )
-                                 in
-
-
-                                 let rec find_vfg_variable keys = match keys with
-                                 | [] -> (
-                                   (* This case should occur only for SSA variables which are constant after initialization *)
-                                   let possible_ssa_map_keys = [EdgeExp.T.Max (EdgeExp.Set.singleton access); access] in
-
-                                   let ssa_map_key_opt = List.find possible_ssa_map_keys ~f:(fun key ->
-                                     EdgeExp.Map.mem key ssa_var_initialization_map
-                                   )
-                                   in
-                                   match ssa_map_key_opt with
-                                   | Some key -> (
-                                     (* EdgeExp.Map.find key ssa_variables_map *)
-                                     access
-                                   )
-                                   | None -> (
-                                     debug_log "MAPPING ACCESS: %a\n" EdgeExp.pp access;
-                                     assert(false)
-                                   )
-                                 )
-                                 | vfg_node :: xs -> (match VFG.Map.find_opt vfg_node vfg_map with
-                                   | Some vfg_var -> vfg_var
-                                   | None -> (
-                                     find_vfg_variable xs
-                                   )
-                                 )
-                                 in
-                                 find_vfg_variable possible_keys, None
-                               )
-                             ) None
-                             in
-                             renamed_arg, typ *) )
+                              , lb_ub_equal && EdgeExp.equal lb ub ) )
                         else (lb_args @ [(arg, typ)], ub_args @ [(arg, typ)], lb_ub_equal) )
                   in
                   if lb_ub_equal then EdgeExp.CallPair.V (ret_typ, proc_name, lb_args, loc)
@@ -844,13 +743,6 @@ let analyze_procedure (analysis_data : LooperSummary.t InterproceduralAnalysis.t
         let get_edge_set norm =
           DCP.EdgeSet.filter
             (fun (_, edge_data, _) ->
-              (* List.exists edge_data.constraints ~f:(fun ((lhs_norm, _) as dc) ->
-                   if EdgeExp.equal norm lhs_norm && DC.same_norms dc && DC.is_decreasing dc then (
-                     edge_data.bound <- Some norm;
-                     true
-                   )
-                   else false
-                 ) *)
               match DC.get_dc norm edge_data.constraints with
               | Some dc when DC.same_norms dc && DC.is_decreasing dc ->
                   edge_data.bound_norm <- Some norm ;
@@ -864,7 +756,6 @@ let analyze_procedure (analysis_data : LooperSummary.t InterproceduralAnalysis.t
           | EdgeExp.T.Max set when Int.equal (EdgeExp.Set.cardinal set) 1 ->
               aux (EdgeExp.Set.min_elt set)
           | EdgeExp.T.Access access ->
-              (* let base_pvar = Option.value_exn (Var.get_pvar var) in *)
               let access_base = HilExp.AccessExpression.get_base access in
               if AccessPath.BaseSet.mem access_base formals then (sets, processed_edges)
               else
@@ -1036,22 +927,6 @@ let analyze_procedure (analysis_data : LooperSummary.t InterproceduralAnalysis.t
               let binop_bound = EdgeExp.add var_bound const_bound in
               (binop_bound, cache)
           in
-          (* Creates a list of arguments for min(args) function. Arguments are
-             * transition bounds of each transition of a reset chain. Zero TB stops
-             * the fold as we cannot get smaller value. *)
-          (* let fold_aux (args, cache) (dcp_edge : DCP.E.t) =
-               let open Base.Continue_or_stop in
-               let bound, cache = transition_bound dcp_edge cache in
-               if EdgeExp.is_zero bound then Stop ([EdgeExp.zero], cache)
-               else (
-                 match List.hd args with
-                 | Some arg when EdgeExp.is_one arg -> Continue (args, cache)
-                 | _ -> (
-                   if EdgeExp.is_one bound then Continue ([bound], cache)
-                   else Continue (bound :: args, cache)
-                 )
-               )
-             in *)
           let fold_aux (dcp_edge : DCP.E.t) (args, cache) =
             let bound, cache = transition_bound dcp_edge cache in
             (EdgeExp.Set.add bound args, cache)
@@ -1059,7 +934,6 @@ let analyze_procedure (analysis_data : LooperSummary.t InterproceduralAnalysis.t
           let reset_exp, cache =
             if EdgeExp.is_zero max_exp then (max_exp, cache)
             else
-              (* let chain_transitions = DCP.EdgeSet.elements (RG.Chain.transitions chain) in *)
               let args, cache =
                 DCP.EdgeSet.fold fold_aux (RG.Chain.transitions chain) (EdgeExp.Set.empty, cache)
               in
@@ -1279,16 +1153,7 @@ let analyze_procedure (analysis_data : LooperSummary.t InterproceduralAnalysis.t
       DCP.EdgeSet.iter
         (fun (src, _, dst) -> debug_log "%a   --->    %a@," LTS.Node.pp src LTS.Node.pp dst)
         remaining_edges ;
-      debug_log "@]@,"
-      (* let culprits =
-           List.map (DCP.EdgeSet.elements remaining_edges) ~f:(fun (src, _, dst) ->
-               F.asprintf "%a ---> %a" LTS.Node.pp src LTS.Node.pp dst )
-           |> String.concat ~sep:"\n"
-         in *)
-      (* L.internal_error
-         "[%a] Local bound could not be determined for following edges:\n%s\nReturning [Infinity]\n"
-         Procname.pp proc_name culprits ; *)
-      (* ([], LooperSummary.empty_cache)  *) ) ;
+      debug_log "@]@," ) ;
     debug_log "@,====================[Calculating bounds]====================@," ;
     (* Calculate bound for all back-edges and sum them to get the total bound *)
     try

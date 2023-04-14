@@ -26,20 +26,14 @@ type construction_temp_data =
   { last_node: LTS.Node.t
   ; loophead_stack: Procdesc.Node.t Stack.t
   ; edge_data: LTS.EdgeData.t
-  ; ident_map: (EdgeExp.ValuePair.t * Typ.t) Ident.Map.t
   ; ident_map_2: EdgeExp.ValuePair.t Ident.Map.t
   ; node_map: LTS.Node.t Procdesc.NodeMap.t
   ; potential_norms: EdgeExp.Set.t
   ; loop_heads: Location.t list
   ; loop_modified: AccessExpressionSet.t
   ; scope_locals: AccessExpressionSet.t list
-  ; (* scope_locals: AccessExpressionSet.t list; *)
-    (* locals: AccessExpressionSet.t; *)
-    locals: AccessExpressionSet.t AccessPath.BaseMap.t
-        (* locals: AccessPath.BaseSet.t;
-           local_accesses: AccessExpressionSet.t; *)
-  ; (* type_map: Typ.t PvarMap.t; *)
-    tenv: Tenv.t
+  ; locals: AccessExpressionSet.t AccessPath.BaseMap.t
+  ; tenv: Tenv.t
   ; exe_env: Exe_env.t
   ; procname: Procname.t
   ; proc_data: procedure_data }
@@ -72,18 +66,8 @@ let is_ignored_function procname =
   match Procname.get_method procname with "__infer_skip" -> true | _ -> false
 
 
-let exec_instr : construction_temp_data -> Sil.instr -> Procdesc.Node.t -> construction_temp_data =
- fun graph_data instr node ->
-  let call_id_resolver ident =
-    match Ident.Map.find_opt ident graph_data.ident_map_2 with
-    | Some (EdgeExp.ValuePair.V exp) ->
-        exp
-    | Some (EdgeExp.ValuePair.P _) ->
-        assert (* same problem as with ae_id_resolver *)
-               false
-    | None ->
-        assert false
-  in
+let exec_instr : construction_temp_data -> Sil.instr -> construction_temp_data =
+ fun graph_data instr ->
   let integer_type_widths =
     Exe_env.get_integer_type_widths graph_data.exe_env graph_data.procname
   in
@@ -138,13 +122,6 @@ let exec_instr : construction_temp_data -> Sil.instr -> Procdesc.Node.t -> const
     match kind with Ik_dowhile | Ik_for | Ik_while -> true | _ -> false
   in
   let in_loop = not (List.is_empty graph_data.loop_heads) in
-  (* let lb = EdgeExp.map_accesses exp ~f:(fun access _ ->
-       match LTS.EdgeData.get_assignment_rhs graph_data.edge_data access with
-       | Value value_rhs -> value_rhs, None
-       | EdgeExp.ValuePair.P (lb, _) -> lb, None
-     ) None |> fst |> process_rhs_value
-     in *)
-
   (* Can't make it the EdgeExp module function due to cyclical dependency *)
   let rec substitute_call_args edge_data args =
     List.fold args ~init:([], [], []) ~f:(fun (lb_acc, ub_acc, typ_acc) (arg, arg_typ) ->
@@ -213,7 +190,6 @@ let exec_instr : construction_temp_data -> Sil.instr -> Procdesc.Node.t -> const
         EdgeExp.of_sil_exp ~include_array_indexes:true ~f_resolve_id:ae_id_resolver ~test_resolver
           ~add_deref:false cond (Typ.mk (Tint IBool))
       in
-      (* let edge_exp_cond = EdgeExp.of_exp cond graph_data.ident_map (Typ.mk (Tint IBool)) graph_data.type_map in *)
       debug_log
         "@[<v4>[PRUNE] %a@,Prune type: %a@,Branch: %B@,Exp condition: %a@,EdgeExp condition: %a@,"
         Location.pp loc Sil.pp_if_kind kind branch Exp.pp cond EdgeExp.ValuePair.pp
@@ -230,13 +206,6 @@ let exec_instr : construction_temp_data -> Sil.instr -> Procdesc.Node.t -> const
             EdgeExp.normalize_condition ub_cond graph_data.tenv
       in
       let is_int_cond = EdgeExp.is_integer_condition graph_data.tenv normalized_cond in
-      (* let is_int_cond = match normalized_cond with
-         | Value cond -> EdgeExp.is_integer_condition graph_data.tenv cond
-         | Pair (lb_cond, ub_cond) -> (
-           EdgeExp.is_integer_condition graph_data.tenv lb_cond &&
-           EdgeExp.is_integer_condition graph_data.tenv ub_cond
-         )
-         in *)
       let is_on_loop_path = is_loop_prune kind || in_loop in
       debug_log "is_int_cond: %B@,is_on_loop_path: %B@," is_int_cond is_on_loop_path ;
       let graph_data =
@@ -362,12 +331,6 @@ let exec_instr : construction_temp_data -> Sil.instr -> Procdesc.Node.t -> const
       in
       check_casts rhs_edge_exp_pair ;
       debug_log "@]@," ;
-      (* let lhs_access = Option.value_exn (access_of_lhs_exp ~include_array_indexes:true lhs typ ~f_resolve_id:ap_id_resolver) in
-         let lhs_access_exp = EdgeExp.T.Access lhs_access in *)
-
-      (* let lhs_typ = Option.value_exn (AccessPath.get_typ lhs_access graph_data.tenv) in *)
-      (* debug_log "LHS AccessPath: %a : %a\n" AccessPath.pp lhs_access Typ.(pp Pp.text) lhs_typ; *)
-      let integer_widths = Exe_env.get_integer_type_widths graph_data.exe_env graph_data.procname in
       let lhs_access =
         match lhs_edge_exp with
         | EdgeExp.T.Access access ->
@@ -379,7 +342,7 @@ let exec_instr : construction_temp_data -> Sil.instr -> Procdesc.Node.t -> const
       in
       let lhs_access_base = HilExp.AccessExpression.get_base lhs_access in
       let simplify value =
-        (value |> EdgeExp.simplify |> EdgeExp.remove_casts_of_consts) integer_widths
+        (value |> EdgeExp.simplify |> EdgeExp.remove_casts_of_consts) integer_type_widths
       in
       let process_rhs_value value =
         match value with
@@ -442,14 +405,6 @@ let exec_instr : construction_temp_data -> Sil.instr -> Procdesc.Node.t -> const
       let locals, new_norms =
         if HilExp.AccessExpression.is_return_var lhs_access then (
           debug_log "LHS is a return variable, adding to norms@," ;
-          (* let new_norms = if EdgeExp.is_variable rhs_edge_exp graph_data.proc_data.formals
-             then EdgeExp.Set.add rhs_edge_exp (EdgeExp.Set.singleton lhs_edge_exp)
-             else EdgeExp.Set.singleton lhs_edge_exp
-             in *)
-
-          (* debug_log "New norms: ";
-             EdgeExp.Set.iter (fun norm -> debug_log "%a " EdgeExp.pp norm) new_norms;
-             debug_log "@,"; *)
           (add_local lhs_access graph_data.locals, EdgeExp.Set.add lhs_edge_exp new_norms) )
         else (graph_data.locals, new_norms)
       in
@@ -458,8 +413,7 @@ let exec_instr : construction_temp_data -> Sil.instr -> Procdesc.Node.t -> const
             let f access =
               AccessPath.equal_base (HilExp.AccessExpression.get_base access) lhs_access_base
             in
-            AccessExpressionSet.find_first_opt f scope |> Option.is_empty
-            (* not (AccessPath.BaseSet.mem lhs_access_base scope) *) )
+            AccessExpressionSet.find_first_opt f scope |> Option.is_none )
       in
       (* Only base of access expression stripped of any other sub-accesses *)
       let lhs_access_stripped = HilExp.AccessExpression.base lhs_access_base in
@@ -477,14 +431,6 @@ let exec_instr : construction_temp_data -> Sil.instr -> Procdesc.Node.t -> const
               [AccessExpressionSet.add lhs_access scope] @ higher_scopes
           | [] ->
               [AccessExpressionSet.singleton lhs_access]
-          (* let scope_locals = if not is_lhs_top_scope_local then (
-               match graph_data.scope_locals with
-               | scope :: higher_scopes -> [AccessPath.BaseSet.add lhs_access_base scope] @ higher_scopes
-               | [] -> [AccessPath.BaseSet.singleton lhs_access_base]
-             )
-             else graph_data.scope_locals
-             in *)
-          (* {graph_data with locals; scope_locals} *)
         else graph_data.scope_locals
       in
       (* Check if the access base of LHS expression is a formal pointer and add the access
@@ -536,65 +482,6 @@ let exec_instr : construction_temp_data -> Sil.instr -> Procdesc.Node.t -> const
        * and return it so we can add it to the ident_map instead
        * of just wrapping artifically *)
       let ident_map_2 = Ident.Map.add id rhs_edge_exp_pair graph_data.ident_map_2 in
-      (* TODO: this is quite legacy, map_ident should probably be recursive... *)
-      (* let map_ident exp = match exp with
-         | Exp.Lindex _ -> (
-           debug_log "Exp.Lindex@,";
-           let accesses = access_of_exp ~include_array_indexes:true exp typ ~f_resolve_id:ap_id_resolver in
-           assert (Int.equal (List.length accesses) 1);
-           let access = List.hd_exn accesses in
-           Ident.Map.add id ((EdgeExp.T.Access access), typ) graph_data.ident_map,
-           graph_data.type_map
-         )
-         | Exp.Lfield (struct_exp, name, struct_type) -> (
-           debug_log "Exp.Lfield@,";
-           match struct_exp with
-           | Exp.Var struct_id -> (
-             match Ident.Map.find struct_id graph_data.ident_map with
-             | EdgeExp.T.Access path, path_typ -> (
-               let access = AccessPath.FieldAccess name in
-               let ext_path = EdgeExp.T.Access (AccessPath.append path [access]) in
-               Ident.Map.add id (ext_path, typ) graph_data.ident_map,
-               graph_data.type_map
-             )
-             | ref_exp, ref_typ -> L.die InternalError "Unexpected root structure expression: %a" EdgeExp.pp ref_exp;
-           )
-           | Exp.Lvar struct_pvar -> (
-             let access_base = AccessPath.base_of_pvar struct_pvar struct_type in
-             let field_access = AccessPath.FieldAccess name in
-             let full_path : AccessPath.t = access_base, [field_access] in
-             Ident.Map.add id ((EdgeExp.T.Access full_path), typ) graph_data.ident_map,
-             PvarMap.add struct_pvar struct_type graph_data.type_map
-           )
-           | Exp.Cast (result_type, original_exp) -> (
-             debug_log "Result type: %a, original exp: %a@," Typ.(pp Pp.text) result_type Exp.pp original_exp;
-             L.die InternalError "Unexpected structure expression type: %a. Field: %a, Struct type: %a"
-               Exp.pp exp Fieldname.pp name Typ.(pp Pp.text) struct_type;
-           )
-           | exp -> (
-             L.die InternalError "Unexpected structure expression type: %a. Field: %a, Struct type: %a"
-               Exp.pp exp Fieldname.pp name Typ.(pp Pp.text) struct_type;
-           )
-         )
-         | Exp.Lvar pvar -> (
-           debug_log "Exp.Lvar@,";
-           let access = EdgeExp.T.Access (AccessPath.of_pvar pvar typ) in
-           Ident.Map.add id (access, typ) graph_data.ident_map,
-           PvarMap.add pvar typ graph_data.type_map
-         )
-         | Exp.Var rhs_id -> (
-           debug_log "Exp.Var@,";
-           let ref_exp, ref_type = Ident.Map.find rhs_id graph_data.ident_map in
-           if Typ.is_pointer ref_type && Typ.equal (Typ.strip_ptr ref_type) typ then (
-             debug_log "Typ: %a, Ref typ: %a, loading dereferenced value@," Typ.(pp Pp.text) typ Typ.(pp Pp.text) ref_type;
-           );
-           Ident.Map.add id (ref_exp, typ) graph_data.ident_map,
-           graph_data.type_map
-         )
-         | _ -> L.(die InternalError)"Unsupported LOAD lhs-expression type!"
-         in *)
-
-      (* let ident_map, type_map = map_ident e in *)
       debug_log "@]@," ;
       {graph_data with ident_map_2}
   | Call (_, Exp.Const (Const.Cfun name), _, loc, _) when is_ignored_function name ->
@@ -603,13 +490,6 @@ let exec_instr : construction_temp_data -> Sil.instr -> Procdesc.Node.t -> const
       graph_data
   | Call ((ret_id, ret_typ), Exp.Const (Const.Cfun callee_pname), args, loc, _) ->
       debug_log "@[<v4>[CALL] %a@, Procedure name: %a@," Location.pp loc Procname.pp callee_pname ;
-      (* let get_summary = graph_data.proc_data.analysis_data.analyze_dependency in *)
-      (* let model_env =
-           lazy
-             (let node_hash = Procdesc.Node.hash node in
-              LooperCostModels.LooperModelEnv.mk_model_env callee_pname ~node_hash loc graph_data.tenv
-                integer_type_widths get_summary )
-         in *)
       debug_log "@[<v4>Processing call arguments:@," ;
       let process_func_arg idx (lb_acc, ub_acc, types_acc) (arg, arg_typ) =
         debug_log "@[<v2>(%d) Exp: %a : %a@," idx Exp.pp arg Typ.(pp Pp.text) arg_typ ;
@@ -705,11 +585,6 @@ let exec_instr : construction_temp_data -> Sil.instr -> Procdesc.Node.t -> const
                 (fun formal (lb, ub) acc ->
                   debug_log "Formal: %a  --->  [%a, %a]@," EdgeExp.pp formal EdgeExp.pp lb
                     EdgeExp.pp ub ;
-                  (* let lhs_subst = match EdgeExp.subst formal args payload.formal_map with
-                     | EdgeExp.T.Access access -> access
-                     | _ -> L.die InternalError "Unsupported formal expression: %a.
-                       Only Access expressions are allowed." EdgeExp.pp formal
-                     in *)
                   let rec extract_lhs_access exp =
                     match exp with
                     | EdgeExp.T.Access lhs_access ->
@@ -737,17 +612,10 @@ let exec_instr : construction_temp_data -> Sil.instr -> Procdesc.Node.t -> const
                   debug_log "[Substituted] Formal: [%a, %a]  --->  [%a, %a]@,"
                     HilExp.AccessExpression.pp lb_lhs_subst_access HilExp.AccessExpression.pp
                     ub_lhs_subst_access EdgeExp.pp lb_subst EdgeExp.pp ub_subst ;
-                  (* let formal_access = match formal with
-                     | EdgeExp.T.Access access -> access
-                     | exp -> (
-                       L.die InternalError "Unknown expression: %a" EdgeExp.pp exp
-                     )
-                     in *)
                   let acc = LTS.EdgeData.add_assignment acc lb_lhs_subst_access bound in
                   LTS.EdgeData.add_assignment acc ub_lhs_subst_access bound )
                 payload.formal_bounds graph_data.edge_data
             in
-            (* edge_data = LTS.EdgeData.add_assignment graph_data.edge_data lhs_access assignment_rhs; *)
             debug_log "@]@," ;
             let summary = LooperSummary.Real {payload with return_bound= subst_ret_bound_opt} in
             ( Location.Map.add loc summary graph_data.proc_data.call_summaries
@@ -755,17 +623,11 @@ let exec_instr : construction_temp_data -> Sil.instr -> Procdesc.Node.t -> const
                   EdgeExp.ValuePair.P subst_ret_bound )
             , edge_data )
         | None ->
-            (* let fun_arg_list =
-                 List.map args ~f:(fun (exp, typ) ->
-                     ProcnameDispatcher.Call.FuncArg.{exp; typ; arg_payload= ()} )
-               in *)
             let arg_pairs = EdgeExp.ValuePair.make_list lb_args ub_args in
             debug_log "callee_pname: %a@," Procname.pp callee_pname ;
             let call_summaries =
               match LooperCostModels.Call.get_model callee_pname arg_pairs with
               | Some call_model ->
-                  (* let modeled_cost = get_model_summary (Lazy.force model_env) ~ret in *)
-                  (* get_modeled_cost_unless_top ~default:(BasicCostWithReason.one ()) modeled_cost *)
                   debug_log "[CostModel] Model cost: %a@," LooperSummary.Model.pp call_model ;
                   let model_summary = LooperSummary.Model call_model in
                   Location.Map.add loc model_summary graph_data.proc_data.call_summaries
@@ -778,10 +640,8 @@ let exec_instr : construction_temp_data -> Sil.instr -> Procdesc.Node.t -> const
       debug_log "@]@,Adding return identifier mapping: %a = %s@]@,@," Ident.pp ret_id
         (EdgeExp.ValuePair.to_string return_bound) ;
       { graph_data with
-        ident_map= Ident.Map.add ret_id (call_pair_exp, ret_typ) graph_data.ident_map
-      ; ident_map_2= Ident.Map.add ret_id return_bound graph_data.ident_map_2
-      ; (* type_map = PvarMap.add (Pvar.mk_abduced_ret callee_pname loc) ret_typ graph_data.type_map; *)
-        edge_data= {edge_data with calls= EdgeExp.CallPair.Set.add call_pair edge_data.calls}
+        ident_map_2= Ident.Map.add ret_id return_bound graph_data.ident_map_2
+      ; edge_data= {edge_data with calls= EdgeExp.CallPair.Set.add call_pair edge_data.calls}
       ; proc_data=
           { graph_data.proc_data with
             call_summaries
@@ -824,7 +684,7 @@ let exec_instr : construction_temp_data -> Sil.instr -> Procdesc.Node.t -> const
 
 let exec_node node graph_data =
   let rev_instrs = IContainer.to_rev_list ~fold:Instrs.fold (Procdesc.Node.get_instrs node) in
-  List.fold (List.rev rev_instrs) ~init:graph_data ~f:(fun acc instr -> exec_instr acc instr node)
+  List.fold (List.rev rev_instrs) ~init:graph_data ~f:(fun acc instr -> exec_instr acc instr)
 
 
 let rec traverseCFG :
@@ -870,8 +730,6 @@ let rec traverseCFG :
         let edge_data = if is_backedge then LTS.EdgeData.set_backedge edge_data else edge_data in
         (* console_log "IS_BACKEDGE: %B\n" is_backedge; *)
         let lts_node = Procdesc.NodeMap.find cfg_node graph_data.node_map in
-        (* log "Mapped node %a\n" LTS.Node.pp node; *)
-        (* log "[New edge] %a ---> %a\n" LTS.Node.pp graph_data.last_node LTS.Node.pp node; *)
         let new_edge = LTS.E.create graph_data.last_node edge_data lts_node in
         let edges = LTS.EdgeSet.add new_edge graph_data.proc_data.edges in
         { graph_data with
@@ -882,7 +740,7 @@ let rec traverseCFG :
     (visited_cfg_nodes, graph_data)
   else
     let visited_cfg_nodes = Procdesc.NodeSet.add cfg_node visited_cfg_nodes in
-    let remove_scoped_locals locals scope_locals =
+    let remove_scoped_locals scope_locals =
       AccessExpressionSet.fold
         (fun access locals_map ->
           let access_base = HilExp.AccessExpression.get_base access in
@@ -908,12 +766,10 @@ let rec traverseCFG :
         let join_node = LTS.Node.Join (Procdesc.Node.get_loc cfg_node, join_node_id) in
         let edge_data = LTS.EdgeData.add_invariants graph_data.edge_data graph_data.locals in
         let new_edge = LTS.E.create graph_data.last_node edge_data join_node in
-        (* log "Locals: %a\n" Pvar.Set.pp graph_data.locals;
-           log "Scope locals:\n"; List.iter graph_data.scope_locals ~f:(fun scope -> log "  %a\n" Pvar.Set.pp scope; ); *)
         { graph_data with
           last_node= join_node
         ; edge_data= LTS.EdgeData.default
-        ; locals= remove_scoped_locals graph_data.locals (List.hd_exn graph_data.scope_locals)
+        ; locals= remove_scoped_locals (List.hd_exn graph_data.scope_locals)
         ; scope_locals= List.tl_exn graph_data.scope_locals
         ; node_map= Procdesc.NodeMap.add cfg_node join_node graph_data.node_map
         ; proc_data=
@@ -1005,53 +861,23 @@ let construct : LooperSummary.t InterproceduralAnalysis.t -> procedure_data =
   let begin_loc = Procdesc.get_loc proc_desc in
   let start_node = Procdesc.get_start_node proc_desc in
   let lts_start_node = LTS.Node.Start (procname, begin_loc) in
-  (* let get_summary procname =
-       let+ _, summary = summary.analyze_dependency procname in
-       summary
-     in *)
-  let locals = Procdesc.get_locals proc_desc in
   let formals = Procdesc.get_pvar_formals proc_desc in
-  let _, type_map =
-    List.fold locals ~init:(Pvar.Set.empty, PvarMap.empty)
-      ~f:(fun (locals, type_map) (local : ProcAttributes.var_data) ->
-        let pvar = Pvar.mk local.name procname in
-        let type_map = PvarMap.add pvar local.typ type_map in
-        let locals = Pvar.Set.add pvar locals in
-        (locals, type_map) )
-  in
   debug_log "@[<v4>[Procedure formals]@," ;
-  let formals, type_map, norm_set =
+  let formals =
     List.foldi formals
-      ~f:(fun idx (formals, type_map, norm_set) (pvar, typ) ->
+      ~f:(fun idx formals (pvar, typ) ->
         debug_log "@[<v4>(%d) %a : %a" idx Pvar.(pp Pp.text) pvar Typ.(pp Pp.text) typ ;
-        let norm_set =
-          if Typ.is_pointer_to_int typ then (
-            debug_log "@,Pointer to int" ;
-            norm_set )
-          else if Typ.is_pointer typ then
-            (* TODO: recursively check? *)
-            let underlying_type = Typ.strip_ptr typ in
-            if Typ.is_struct underlying_type then (
-              debug_log "@,Pointer to struct: %a" Typ.(pp Pp.text) underlying_type ;
-              norm_set )
-            else (
-              debug_log "@,Pointer to: %a" Typ.(pp Pp.text) underlying_type ;
-              norm_set )
-          else norm_set
-        in
         debug_log "@]@," ;
         let formal_pvar_base_access = AccessPath.base_of_pvar pvar typ in
-        let type_map = PvarMap.add pvar typ type_map in
         let formals = AccessPath.BaseSet.add formal_pvar_base_access formals in
-        (formals, type_map, norm_set) )
-      ~init:(AccessPath.BaseSet.empty, type_map, EdgeExp.Set.empty)
+        formals )
+      ~init:AccessPath.BaseSet.empty
   in
   debug_log "@]@," ;
   let construction_data =
     { last_node= lts_start_node
     ; loophead_stack= Stack.create ()
     ; edge_data= LTS.EdgeData.default
-    ; ident_map= Ident.Map.empty
     ; ident_map_2= Ident.Map.empty
     ; node_map= Procdesc.NodeMap.empty
     ; potential_norms= EdgeExp.Set.empty
@@ -1059,9 +885,7 @@ let construct : LooperSummary.t InterproceduralAnalysis.t -> procedure_data =
     ; loop_modified= AccessExpressionSet.empty
     ; scope_locals= [AccessExpressionSet.empty]
     ; locals= AccessPath.BaseMap.empty
-    ; (* local_accesses = AccessExpressionSet.empty; *)
-      (* type_map = type_map; *)
-      tenv
+    ; tenv
     ; exe_env= summary.exe_env
     ; procname
     ; proc_data=
