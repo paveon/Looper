@@ -35,8 +35,7 @@ type construction_temp_data =
   ; locals: AccessExpressionSet.t AccessPath.BaseMap.t
   ; tenv: Tenv.t
   ; exe_env: Exe_env.t
-  ; procname: Procname.t
-  ; proc_data: procedure_data }
+  ; procname: Procname.t }
 
 let pp_nodekind kind =
   match kind with
@@ -66,8 +65,10 @@ let is_ignored_function procname =
   match Procname.get_method procname with "__infer_skip" -> true | _ -> false
 
 
-let exec_instr : construction_temp_data -> Sil.instr -> construction_temp_data =
- fun graph_data instr ->
+let exec_instr :
+    construction_temp_data * procedure_data -> Sil.instr -> construction_temp_data * procedure_data
+    =
+ fun (graph_data, proc_data) instr ->
   let integer_type_widths =
     Exe_env.get_integer_type_widths graph_data.exe_env graph_data.procname
   in
@@ -208,7 +209,7 @@ let exec_instr : construction_temp_data -> Sil.instr -> construction_temp_data =
       let is_int_cond = EdgeExp.is_integer_condition graph_data.tenv normalized_cond in
       let is_on_loop_path = is_loop_prune kind || in_loop in
       debug_log "is_int_cond: %B@,is_on_loop_path: %B@," is_int_cond is_on_loop_path ;
-      let graph_data =
+      let graph_data, proc_data =
         if branch && is_on_loop_path && is_int_cond then
           (* Derive norm from prune condition.
              * [x > y] -> [x - y] > 0
@@ -245,32 +246,31 @@ let exec_instr : construction_temp_data -> Sil.instr -> construction_temp_data =
                         false
                   in
                   if (not (is_loop_prune kind)) && not is_modified then
-                    { (* Prune on loop path but not loop head. Norm is only potential,
+                    (* Prune on loop path but not loop head. Norm is only potential,
                        * must be confirmed by increment/decrement on this loop path *)
-                      graph_data
-                      with
-                      potential_norms= EdgeExp.Set.add new_norm graph_data.potential_norms }
+                    ( { graph_data with
+                        potential_norms= EdgeExp.Set.add new_norm graph_data.potential_norms }
+                    , proc_data )
                   else
-                    let init_norms =
-                      EdgeExp.Set.add (EdgeExp.simplify new_norm) graph_data.proc_data.norms
-                    in
-                    {graph_data with proc_data= {graph_data.proc_data with norms= init_norms}}
+                    let init_norms = EdgeExp.Set.add (EdgeExp.simplify new_norm) proc_data.norms in
+                    (graph_data, {proc_data with norms= init_norms})
               | None ->
-                  graph_data )
+                  (graph_data, proc_data) )
           | _ ->
               L.(die InternalError) "Unsupported PRUNE expression!"
-        else graph_data
+        else (graph_data, proc_data)
       in
       debug_log "@]@," ;
-      { graph_data with
-        loop_heads= (if branch then [loc] @ graph_data.loop_heads else graph_data.loop_heads)
-      ; scope_locals=
-          ( if branch then [AccessExpressionSet.empty] @ graph_data.scope_locals
-            else graph_data.scope_locals )
-      ; edge_data=
-          { graph_data.edge_data with
-            branch_info= Some (kind, branch, loc)
-          ; conditions= EdgeExp.Set.add normalized_cond graph_data.edge_data.conditions } }
+      ( { graph_data with
+          loop_heads= (if branch then [loc] @ graph_data.loop_heads else graph_data.loop_heads)
+        ; scope_locals=
+            ( if branch then [AccessExpressionSet.empty] @ graph_data.scope_locals
+              else graph_data.scope_locals )
+        ; edge_data=
+            { graph_data.edge_data with
+              branch_info= Some (kind, branch, loc)
+            ; conditions= EdgeExp.Set.add normalized_cond graph_data.edge_data.conditions } }
+      , proc_data )
   | Store {e1= Lvar lhs_pvar; typ; e2; loc} when Pvar.is_ssa_frontend_tmp lhs_pvar ->
       (* TODO: not sure when this case occurs, but starvation checker handles it, need to check later *)
       debug_log "@[<v4>[STORE] (%a) | %a = %a : %a@," Location.pp loc
@@ -284,7 +284,7 @@ let exec_instr : construction_temp_data -> Sil.instr -> construction_temp_data =
       (* Ignore these assignments for now. Initialization of huge global arrays
        * cause incredible slowdown currently because Infer invokes Store instruction
        * for each initialization value *)
-      graph_data
+      (graph_data, proc_data)
   | Store {e1= lhs; typ; e2= rhs; loc} ->
       debug_log "@[<v4>[STORE] %a@,Type: %a@,Exp: %a = %a@," Location.pp loc
         Typ.(pp Pp.text)
@@ -347,7 +347,7 @@ let exec_instr : construction_temp_data -> Sil.instr -> construction_temp_data =
       let process_rhs_value value =
         match value with
         | EdgeExp.T.Call (_, _, _, loc) as call -> (
-          match Location.Map.find_opt loc graph_data.proc_data.call_summaries with
+          match Location.Map.find_opt loc proc_data.call_summaries with
           | Some (LooperSummary.Real summary) -> (
             match summary.return_bound with
             | Some ret_bound ->
@@ -438,7 +438,7 @@ let exec_instr : construction_temp_data -> Sil.instr -> construction_temp_data =
       let lhs_access_base_typ = snd lhs_access_base in
       let new_norms =
         if
-          AccessPath.BaseSet.mem lhs_access_base graph_data.proc_data.formals
+          AccessPath.BaseSet.mem lhs_access_base proc_data.formals
           && Typ.is_pointer lhs_access_base_typ
           && EdgeExp.is_integer_type typ
         then
@@ -455,20 +455,20 @@ let exec_instr : construction_temp_data -> Sil.instr -> construction_temp_data =
               new_norms
         else new_norms
       in
-      let norms = EdgeExp.Set.union graph_data.proc_data.norms new_norms in
+      let norms = EdgeExp.Set.union proc_data.norms new_norms in
       debug_log "Norms: " ;
       EdgeExp.Set.iter (fun norm -> debug_log "%a | " EdgeExp.pp norm) norms ;
       debug_log "@," ;
       debug_log "@]@," ;
-      { graph_data with
-        locals
-      ; scope_locals
-      ; potential_norms
-      ; edge_data= LTS.EdgeData.add_assignment graph_data.edge_data lhs_access assignment_rhs
-      ; loop_modified=
-          ( if in_loop then AccessExpressionSet.add lhs_access graph_data.loop_modified
-            else graph_data.loop_modified )
-      ; proc_data= {graph_data.proc_data with norms} }
+      ( { graph_data with
+          locals
+        ; scope_locals
+        ; potential_norms
+        ; edge_data= LTS.EdgeData.add_assignment graph_data.edge_data lhs_access assignment_rhs
+        ; loop_modified=
+            ( if in_loop then AccessExpressionSet.add lhs_access graph_data.loop_modified
+              else graph_data.loop_modified ) }
+      , {proc_data with norms} )
   | Load {id; e; typ; loc} ->
       debug_log "@[<v4>[LOAD] %a@,Type: %a@,Exp: %a = %a@," Location.pp loc
         Typ.(pp Pp.text)
@@ -483,11 +483,11 @@ let exec_instr : construction_temp_data -> Sil.instr -> construction_temp_data =
        * of just wrapping artifically *)
       let ident_map_2 = Ident.Map.add id rhs_edge_exp_pair graph_data.ident_map_2 in
       debug_log "@]@," ;
-      {graph_data with ident_map_2}
+      ({graph_data with ident_map_2}, proc_data)
   | Call (_, Exp.Const (Const.Cfun name), _, loc, _) when is_ignored_function name ->
       debug_log "@[<v4>[CALL] %a@,Procedure name: %a@,Ignoring function call@]@," Location.pp loc
         Procname.pp name ;
-      graph_data
+      (graph_data, proc_data)
   | Call ((ret_id, ret_typ), Exp.Const (Const.Cfun callee_pname), args, loc, _) ->
       debug_log "@[<v4>[CALL] %a@, Procedure name: %a@," Location.pp loc Procname.pp callee_pname ;
       debug_log "@[<v4>Processing call arguments:@," ;
@@ -560,7 +560,7 @@ let exec_instr : construction_temp_data -> Sil.instr -> construction_temp_data =
           , EdgeExp.Set.union lb_norms ub_norms )
       in
       debug_log "@[<v4>Loading call summary@," ;
-      let payload_opt = graph_data.proc_data.analysis_data.analyze_dependency callee_pname in
+      let payload_opt = proc_data.analysis_data.analyze_dependency callee_pname in
       let call_summaries, return_bound, edge_data =
         match payload_opt with
         | Some payload ->
@@ -617,35 +617,37 @@ let exec_instr : construction_temp_data -> Sil.instr -> construction_temp_data =
                 payload.formal_bounds graph_data.edge_data
             in
             debug_log "@]@," ;
-            let summary = LooperSummary.Real {payload with return_bound= subst_ret_bound_opt} in
-            ( Location.Map.add loc summary graph_data.proc_data.call_summaries
-            , Option.value_map subst_ret_bound_opt ~default:call_pair_exp ~f:(fun subst_ret_bound ->
+            let real_summary =
+              LooperSummary.Real {payload with return_bound= subst_ret_bound_opt}
+            in
+            let call_summaries = Location.Map.add loc real_summary proc_data.call_summaries in
+            let return_bound_pair =
+              Option.value_map subst_ret_bound_opt ~default:call_pair_exp ~f:(fun subst_ret_bound ->
                   EdgeExp.ValuePair.P subst_ret_bound )
-            , edge_data )
-        | None ->
+            in
+            (call_summaries, return_bound_pair, edge_data)
+        | None -> (
             let arg_pairs = EdgeExp.ValuePair.make_list lb_args ub_args in
             debug_log "callee_pname: %a@," Procname.pp callee_pname ;
-            let call_summaries =
-              match LooperCostModels.Call.get_model callee_pname arg_pairs with
-              | Some call_model ->
-                  debug_log "[CostModel] Model cost: %a@," LooperSummary.Model.pp call_model ;
-                  let model_summary = LooperSummary.Model call_model in
-                  Location.Map.add loc model_summary graph_data.proc_data.call_summaries
-              | None ->
-                  debug_log "[CostModel] NOT FOUND@," ;
-                  graph_data.proc_data.call_summaries
-            in
-            (call_summaries, call_pair_exp, graph_data.edge_data)
+            match LooperCostModels.Call.get_model callee_pname arg_pairs with
+            | Some call_model ->
+                debug_log "[CostModel] Model cost: %a@," LooperSummary.Model.pp call_model ;
+                let model_summary = LooperSummary.Model call_model in
+                let call_summaries = Location.Map.add loc model_summary proc_data.call_summaries in
+                let return_bound_pair =
+                  Option.value call_model.return_bound ~default:call_pair_exp
+                in
+                (call_summaries, return_bound_pair, graph_data.edge_data)
+            | None ->
+                debug_log "[CostModel] NOT FOUND@," ;
+                (proc_data.call_summaries, call_pair_exp, graph_data.edge_data) )
       in
       debug_log "@]@,Adding return identifier mapping: %a = %s@]@,@," Ident.pp ret_id
         (EdgeExp.ValuePair.to_string return_bound) ;
-      { graph_data with
-        ident_map_2= Ident.Map.add ret_id return_bound graph_data.ident_map_2
-      ; edge_data= {edge_data with calls= EdgeExp.CallPair.Set.add call_pair edge_data.calls}
-      ; proc_data=
-          { graph_data.proc_data with
-            call_summaries
-          ; norms= EdgeExp.Set.union graph_data.proc_data.norms arg_norms } }
+      ( { graph_data with
+          ident_map_2= Ident.Map.add ret_id return_bound graph_data.ident_map_2
+        ; edge_data= {edge_data with calls= EdgeExp.CallPair.Set.add call_pair edge_data.calls} }
+      , {proc_data with call_summaries; norms= EdgeExp.Set.union proc_data.norms arg_norms} )
   | Metadata metadata -> (
     match metadata with
     | VariableLifetimeBegins (pvar, typ, loc) ->
@@ -665,7 +667,8 @@ let exec_instr : construction_temp_data -> Sil.instr -> construction_temp_data =
               [AccessExpressionSet.singleton pvar_base_access]
         in
         debug_log "@]@,@," ;
-        {graph_data with locals= add_local pvar_base_access graph_data.locals; scope_locals}
+        ( {graph_data with locals= add_local pvar_base_access graph_data.locals; scope_locals}
+        , proc_data )
     | ExitScope (var_list, loc) ->
         let exit_pvars = List.filter var_list ~f:(fun var -> Var.is_pvar var) in
         if not (List.is_empty exit_pvars) then (
@@ -673,9 +676,9 @@ let exec_instr : construction_temp_data -> Sil.instr -> construction_temp_data =
           debug_log "Variables: " ;
           List.iter exit_pvars ~f:(fun var -> debug_log "%a " Var.pp var) ;
           debug_log "@]@,@," ) ;
-        graph_data
+        (graph_data, proc_data)
     | _ ->
-        graph_data )
+        (graph_data, proc_data) )
   | instr ->
       L.die InternalError "SIL instruction not implemented: %a"
         Sil.(pp_instr ~print_types:true Pp.text)
@@ -691,9 +694,9 @@ let rec traverseCFG :
        Procdesc.t
     -> Procdesc.Node.t
     -> Procdesc.NodeSet.t
-    -> construction_temp_data
-    -> Procdesc.NodeSet.t * construction_temp_data =
- fun proc_desc cfg_node visited_cfg_nodes graph_data ->
+    -> construction_temp_data * procedure_data
+    -> Procdesc.NodeSet.t * construction_temp_data * procedure_data =
+ fun proc_desc cfg_node visited_cfg_nodes (graph_data, proc_data) ->
   (* console_log "[Visiting node] %a : %s\n" Procdesc.Node.pp cfg_node (pp_nodekind (Procdesc.Node.get_kind cfg_node)); *)
   let cfg_predecessors = Procdesc.Node.get_preds cfg_node in
   let cfg_successors = Procdesc.Node.get_succs cfg_node in
@@ -724,20 +727,18 @@ let rec traverseCFG :
   in
   if Procdesc.NodeSet.mem cfg_node visited_cfg_nodes then
     (* console_log "[%a] Visited\n" Procdesc.Node.pp cfg_node; *)
-    let graph_data =
+    let graph_data, proc_data =
       if is_join_node cfg_node || in_degree > 1 then
         let edge_data = LTS.EdgeData.add_invariants graph_data.edge_data graph_data.locals in
         let edge_data = if is_backedge then LTS.EdgeData.set_backedge edge_data else edge_data in
         (* console_log "IS_BACKEDGE: %B\n" is_backedge; *)
         let lts_node = Procdesc.NodeMap.find cfg_node graph_data.node_map in
         let new_edge = LTS.E.create graph_data.last_node edge_data lts_node in
-        let edges = LTS.EdgeSet.add new_edge graph_data.proc_data.edges in
-        { graph_data with
-          edge_data= LTS.EdgeData.default
-        ; proc_data= {graph_data.proc_data with edges} }
-      else graph_data
+        let edges = LTS.EdgeSet.add new_edge proc_data.edges in
+        ({graph_data with edge_data= LTS.EdgeData.default}, {proc_data with edges})
+      else (graph_data, proc_data)
     in
-    (visited_cfg_nodes, graph_data)
+    (visited_cfg_nodes, graph_data, proc_data)
   else
     let visited_cfg_nodes = Procdesc.NodeSet.add cfg_node visited_cfg_nodes in
     let remove_scoped_locals scope_locals =
@@ -759,28 +760,27 @@ let rec traverseCFG :
               locals_map )
         scope_locals graph_data.locals
     in
-    let graph_data =
+    let graph_data, proc_data =
       if in_degree > 1 && not is_loop_head then
         (* Join node *)
         let join_node_id = Procdesc.Node.get_id cfg_node in
         let join_node = LTS.Node.Join (Procdesc.Node.get_loc cfg_node, join_node_id) in
         let edge_data = LTS.EdgeData.add_invariants graph_data.edge_data graph_data.locals in
         let new_edge = LTS.E.create graph_data.last_node edge_data join_node in
-        { graph_data with
-          last_node= join_node
-        ; edge_data= LTS.EdgeData.default
-        ; locals= remove_scoped_locals (List.hd_exn graph_data.scope_locals)
-        ; scope_locals= List.tl_exn graph_data.scope_locals
-        ; node_map= Procdesc.NodeMap.add cfg_node join_node graph_data.node_map
-        ; proc_data=
-            { graph_data.proc_data with
-              nodes= LTS.NodeSet.add join_node graph_data.proc_data.nodes
-            ; edges= LTS.EdgeSet.add new_edge graph_data.proc_data.edges } }
-      else graph_data
+        ( { graph_data with
+            last_node= join_node
+          ; edge_data= LTS.EdgeData.default
+          ; locals= remove_scoped_locals (List.hd_exn graph_data.scope_locals)
+          ; scope_locals= List.tl_exn graph_data.scope_locals
+          ; node_map= Procdesc.NodeMap.add cfg_node join_node graph_data.node_map }
+        , { proc_data with
+            nodes= LTS.NodeSet.add join_node proc_data.nodes
+          ; edges= LTS.EdgeSet.add new_edge proc_data.edges } )
+      else (graph_data, proc_data)
     in
     (* Execute node instructions *)
-    let graph_data = exec_node cfg_node graph_data in
-    let graph_data =
+    let graph_data, proc_data = exec_node cfg_node (graph_data, proc_data) in
+    let graph_data, proc_data =
       if out_degree > 1 then
         (* Split node, create new DCP prune node *)
         let branch_node = List.hd_exn cfg_successors in
@@ -815,40 +815,33 @@ let rec traverseCFG :
             Procdesc.NodeMap.add cfg_node prune_node graph_data.node_map
           else graph_data.node_map
         in
-        { graph_data with
-          last_node= prune_node
-        ; edge_data= LTS.EdgeData.default
-        ; node_map
-        ; proc_data=
-            { graph_data.proc_data with
-              nodes= LTS.NodeSet.add prune_node graph_data.proc_data.nodes
-            ; edges= LTS.EdgeSet.add new_edge graph_data.proc_data.edges } }
-      else graph_data
+        ( {graph_data with last_node= prune_node; edge_data= LTS.EdgeData.default; node_map}
+        , { proc_data with
+            nodes= LTS.NodeSet.add prune_node proc_data.nodes
+          ; edges= LTS.EdgeSet.add new_edge proc_data.edges } )
+      else (graph_data, proc_data)
     in
     if is_exit_node cfg_node then
       let exit_node = LTS.Node.Exit in
       let edge_data = LTS.EdgeData.add_invariants graph_data.edge_data graph_data.locals in
       let new_edge = LTS.E.create graph_data.last_node edge_data exit_node in
-      let graph_data =
-        { graph_data with
-          last_node= exit_node
-        ; edge_data= LTS.EdgeData.default
-        ; proc_data=
-            { graph_data.proc_data with
-              nodes= LTS.NodeSet.add exit_node graph_data.proc_data.nodes
-            ; edges= LTS.EdgeSet.add new_edge graph_data.proc_data.edges } }
+      let graph_data = {graph_data with last_node= exit_node; edge_data= LTS.EdgeData.default} in
+      let proc_data =
+        { proc_data with
+          nodes= LTS.NodeSet.add exit_node proc_data.nodes
+        ; edges= LTS.EdgeSet.add new_edge proc_data.edges }
       in
-      (visited_cfg_nodes, graph_data)
+      (visited_cfg_nodes, graph_data, proc_data)
     else
       let last_node = graph_data.last_node in
       let loop_heads = graph_data.loop_heads in
       let locals = graph_data.locals in
       let scope_locals = graph_data.scope_locals in
       List.fold cfg_successors
-        ~f:(fun (visited_cfg_nodes, graph_data) next_node ->
+        ~f:(fun (visited_cfg_nodes, graph_data, proc_data) next_node ->
           let graph_data = {graph_data with last_node; loop_heads; locals; scope_locals} in
-          traverseCFG proc_desc next_node visited_cfg_nodes graph_data )
-        ~init:(visited_cfg_nodes, graph_data)
+          traverseCFG proc_desc next_node visited_cfg_nodes (graph_data, proc_data) )
+        ~init:(visited_cfg_nodes, graph_data, proc_data)
 
 
 let construct : LooperSummary.t InterproceduralAnalysis.t -> procedure_data =
@@ -887,24 +880,21 @@ let construct : LooperSummary.t InterproceduralAnalysis.t -> procedure_data =
     ; locals= AccessPath.BaseMap.empty
     ; tenv
     ; exe_env= summary.exe_env
-    ; procname
-    ; proc_data=
-        { nodes= LTS.NodeSet.singleton lts_start_node
-        ; edges= LTS.EdgeSet.empty
-        ; norms= EdgeExp.Set.empty
-        ; formals
-        ; analysis_data= summary
-        ; call_summaries= Location.Map.empty
-        ; lts= LTS.create () } }
+    ; procname }
   in
-  let graph_data =
-    traverseCFG proc_desc start_node Procdesc.NodeSet.empty construction_data |> snd
+  let proc_data =
+    { nodes= LTS.NodeSet.singleton lts_start_node
+    ; edges= LTS.EdgeSet.empty
+    ; norms= EdgeExp.Set.empty
+    ; formals
+    ; analysis_data= summary
+    ; call_summaries= Location.Map.empty
+    ; lts= LTS.create () }
   in
-  LTS.NodeSet.iter
-    (fun node -> LTS.add_vertex graph_data.proc_data.lts node)
-    graph_data.proc_data.nodes ;
-  LTS.EdgeSet.iter
-    (fun edge -> LTS.add_edge_e graph_data.proc_data.lts edge)
-    graph_data.proc_data.edges ;
+  let _, _, proc_data =
+    traverseCFG proc_desc start_node Procdesc.NodeSet.empty (construction_data, proc_data)
+  in
+  LTS.NodeSet.iter (fun node -> LTS.add_vertex proc_data.lts node) proc_data.nodes ;
+  LTS.EdgeSet.iter (fun edge -> LTS.add_edge_e proc_data.lts edge) proc_data.edges ;
   debug_log "@]" ;
-  graph_data.proc_data
+  proc_data

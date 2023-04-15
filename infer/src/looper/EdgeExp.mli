@@ -54,6 +54,10 @@ module ValuePair : sig
 
   val pp : F.formatter -> t -> unit
 
+  val get_lb : t -> T.t
+
+  val get_ub : t -> T.t
+
   val make_pair : T.t -> t
 
   val make_list : T.t list -> T.t list -> t list

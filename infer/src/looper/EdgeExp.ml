@@ -270,6 +270,10 @@ module ValuePair = struct
         P (T.Min lb_set, T.Max ub_set)
 
 
+  let get_lb value_pair = match value_pair with V value -> value | P (lb, _) -> lb
+
+  let get_ub value_pair = match value_pair with V value -> value | P (_, ub) -> ub
+
   let create_binop op lexp rexp =
     match (lexp, rexp) with
     | V lexp_value, V rexp_value ->
@@ -459,7 +463,7 @@ let is_variable norm formals tenv =
         traverse_exp lexp || traverse_exp rexp
     | Max args | Min args ->
         Set.exists traverse_exp args
-    | _ ->
+    | Inf | Const _ | Call _ | Strlen _ | Symbolic (_, _) ->
         false
   in
   traverse_exp norm
@@ -1352,6 +1356,9 @@ let rec to_why3_expr exp tenv (prover_data : prover_data) =
       (mk_const_term (IntLit.to_int_exn const), Why3.Term.Sterm.empty)
   | Const (Const.Cfloat const) ->
       (mk_const_term (int_of_float const), Why3.Term.Sterm.empty)
+  | Strlen access ->
+      let term_name = F.asprintf "Strlen(%a)" HilExp.AccessExpression.pp access in
+      why3_make_access_term term_name (Typ.mk (Typ.Tint Typ.IULong))
   | Call (typ, procname, _, _) ->
       (* Treat function without summary as constant *)
       why3_make_access_term (Procname.to_string procname) typ
@@ -1450,8 +1457,6 @@ let rec to_why3_expr exp tenv (prover_data : prover_data) =
   | Const _ ->
       L.(die InternalError)
         "[EdgeExp.T.to_why3_expr] Expression '%a' contains invalid const!" pp exp
-  | Strlen access ->
-      L.(die InternalError) "[EdgeExp.T.to_why3_expr] TODO: Support '%a'" pp exp
   | UnOp _ ->
       L.(die InternalError) "[EdgeExp.T.to_why3_expr] Unsupported UnOp Expression '%a'" pp exp
   | Inf ->

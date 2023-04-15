@@ -152,38 +152,38 @@ module EdgeData = struct
       let gt_symbol = Why3.Theory.ns_find_ls prover_data.theory.th_export ["infix >"] in
       let goal_symbol = Why3.Decl.create_prsymbol (Why3.Ident.id_fresh "is_guard") in
       let lhs_vars = Why3.Term.Mvs.keys (Why3.Term.t_vars lhs) in
+      let is_norm_guard norm =
+        let norm_why3 = EdgeExp.to_why3_expr norm tenv prover_data |> fst in
+        let rhs = Why3.Term.t_app_infer gt_symbol [norm_why3; zero_const] in
+        let formula = Why3.Term.t_implies lhs rhs in
+        let rhs_vars = Why3.Term.Mvs.keys (Why3.Term.t_vars rhs) in
+        let free_vars = lhs_vars @ rhs_vars in
+        let quantified_fmla = Why3.Term.t_forall_close free_vars [] formula in
+        let task = Why3.Task.use_export None prover_data.theory in
+        let task = Why3.Task.add_prop_decl task Why3.Decl.Pgoal goal_symbol quantified_fmla in
+        let prover_call =
+          Why3.Driver.prove_task prover_data.driver task ~config:prover_data.main
+            ~command:prover_data.prover_conf.command
+            ~limit:{Why3.Call_provers.empty_limit with limit_time= 5.}
+        in
+        let result = Why3.Call_provers.wait_on_call prover_call in
+        match result.pr_answer with
+        | Why3.Call_provers.Valid ->
+            (* Implication [conditions] => [norm > 0] always holds *)
+            true
+        | Why3.Call_provers.Invalid | Why3.Call_provers.Unknown _ ->
+            false
+        | _ ->
+            debug_log "Failed task: %a\n" Why3.Pretty.print_task task ;
+            debug_log "Fail: %s\n" result.pr_output ;
+            assert false
+      in
       let guards =
         EdgeExp.Set.fold
-          (fun norm acc ->
-            let solve_formula rhs =
-              let rhs = Why3.Term.t_app_infer gt_symbol [rhs; zero_const] in
-              let formula = Why3.Term.t_implies lhs rhs in
-              let rhs_vars = Why3.Term.Mvs.keys (Why3.Term.t_vars rhs) in
-              let free_vars = lhs_vars @ rhs_vars in
-              let quantified_fmla = Why3.Term.t_forall_close free_vars [] formula in
-              let task = Why3.Task.use_export None prover_data.theory in
-              let task = Why3.Task.add_prop_decl task Why3.Decl.Pgoal goal_symbol quantified_fmla in
-              let prover_call =
-                Why3.Driver.prove_task prover_data.driver task ~config:prover_data.main
-                  ~command:prover_data.prover_conf.command
-                  ~limit:{Why3.Call_provers.empty_limit with limit_time= 5.}
-              in
-              let result = Why3.Call_provers.wait_on_call prover_call in
-              match result.pr_answer with
-              | Why3.Call_provers.Valid ->
-                  (* Implication [conditions] => [norm > 0] always holds *)
-                  EdgeExp.Set.add norm acc
-              | Why3.Call_provers.Invalid | Why3.Call_provers.Unknown _ ->
-                  acc
-              | _ ->
-                  debug_log "Failed task: %a\n" Why3.Pretty.print_task task ;
-                  debug_log "Fail: %s\n" result.pr_output ;
-                  assert false
-            in
-            if EdgeExp.is_const norm then acc
-            else
-              let rhs_expr = EdgeExp.to_why3_expr norm tenv prover_data |> fst in
-              solve_formula rhs_expr )
+          (fun norm guard_acc ->
+            if EdgeExp.is_const norm then guard_acc
+            else if is_norm_guard norm then EdgeExp.Set.add norm guard_acc
+            else guard_acc )
           norms EdgeExp.Set.empty
       in
       guards

@@ -44,7 +44,15 @@ let empty_cache =
   ; positivity= EdgeExp.Map.empty }
 
 
-type call = {name: Procname.t; loc: Location.t; bounds: transition list}
+type model_call =
+  { name: Procname.t
+  ; loc: Location.t
+  ; bound: EdgeExp.T.t
+  ; monotony_map: Monotonicity.t AccessExpressionMap.t }
+
+type real_call = {name: Procname.t; loc: Location.t; bounds: transition list}
+
+and call = ModelCall of model_call | RealCall of real_call
 
 and transition =
   { src_node: LTS.Node.t
@@ -91,11 +99,15 @@ type model_summary = Real of t | Model of Model.t
 let total_bound transitions =
   let rec calculate_transition_cost transition =
     let cost_of_calls =
-      List.fold transition.calls ~init:EdgeExp.zero ~f:(fun bound_sum (call : call) ->
-          List.fold call.bounds
-            ~f:(fun sum (call_transition : transition) ->
-              EdgeExp.add sum (calculate_transition_cost call_transition) )
-            ~init:bound_sum )
+      List.fold transition.calls ~init:EdgeExp.zero ~f:(fun bound_sum call ->
+          match call with
+          | RealCall real_call ->
+              List.fold real_call.bounds
+                ~f:(fun sum (call_transition : transition) ->
+                  EdgeExp.add sum (calculate_transition_cost call_transition) )
+                ~init:bound_sum
+          | ModelCall model_call ->
+              EdgeExp.add bound_sum model_call.bound )
     in
     let total_edge_cost =
       if EdgeExp.is_zero cost_of_calls then (
@@ -246,19 +258,36 @@ let instantiate (summary : t) args ~variable_bound tenv active_prover cache =
       if EdgeExp.is_const bound then AccessExpressionMap.empty
       else EdgeExp.determine_monotonicity bound tenv active_prover
     in
+    let instantiate_real_call (real_call : real_call) cache =
+      let call_transitions, cache =
+        List.fold real_call.bounds ~init:([], cache)
+          ~f:(fun (call_transitions, cache) (call_transition : transition) ->
+            let instantiated_call_transition, cache =
+              instantiate_transition_summary call_transition arg_monotonicity_maps cache
+            in
+            (instantiated_call_transition :: call_transitions, cache) )
+      in
+      (RealCall {real_call with bounds= call_transitions}, cache)
+    in
+    let instantiate_model_call (model_call : model_call) cache =
+      let bound, cache =
+        if EdgeExp.is_const model_call.bound then (model_call.bound, cache)
+        else instantiate_bound model_call.bound model_call.monotony_map arg_monotonicity_maps cache
+      in
+      (ModelCall {model_call with bound}, cache)
+    in
+    let instantiate_transition_call (calls_acc, cache) call =
+      let instantiated_call, cache =
+        match call with
+        | RealCall real_call ->
+            instantiate_real_call real_call cache
+        | ModelCall model_call ->
+            instantiate_model_call model_call cache
+      in
+      (instantiated_call :: calls_acc, cache)
+    in
     let calls, cache =
-      List.fold transition.calls
-        ~f:(fun (calls_acc, cache) (call : call) ->
-          let call_transitions, cache =
-            List.fold call.bounds ~init:([], cache)
-              ~f:(fun (call_transitions, cache) (call_transition : transition) ->
-                let instantiated_call_transition, cache =
-                  instantiate_transition_summary call_transition arg_monotonicity_maps cache
-                in
-                (instantiated_call_transition :: call_transitions, cache) )
-          in
-          ({call with bounds= call_transitions} :: calls_acc, cache) )
-        ~init:([], cache)
+      List.fold transition.calls ~f:instantiate_transition_call ~init:([], cache)
     in
     let transition = {transition with bound; calls; monotony_map= bound_monotony_map} in
     debug_log "@]@," ;
@@ -348,11 +377,18 @@ let to_graph (summary : t) procname loc =
         in
         TreeGraph.add_vertex graph transition_node ;
         TreeGraph.add_edge graph root transition_node ;
-        List.iter trans.calls ~f:(fun (call : call) ->
-            let call_node = TreeGraph.Node.CallNode (call.name, call.loc) in
-            TreeGraph.add_vertex graph call_node ;
-            TreeGraph.add_edge graph transition_node call_node ;
-            construct_subtree call_node call.bounds ) )
+        List.iter trans.calls ~f:(fun call ->
+            match call with
+            | RealCall real_call ->
+                let call_node = TreeGraph.Node.CallNode (real_call.name, real_call.loc) in
+                TreeGraph.add_vertex graph call_node ;
+                TreeGraph.add_edge graph transition_node call_node ;
+                construct_subtree call_node real_call.bounds
+            | ModelCall model_call ->
+                let call_node = TreeGraph.Node.CallNode (model_call.name, model_call.loc) in
+                TreeGraph.add_vertex graph call_node ;
+                TreeGraph.add_edge graph transition_node call_node ;
+                construct_subtree call_node [] ) )
   in
   let root_node = TreeGraph.Node.CallNode (procname, loc) in
   TreeGraph.add_vertex graph root_node ;

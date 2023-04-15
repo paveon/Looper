@@ -319,39 +319,53 @@ let analyze_procedure (analysis_data : LooperSummary.t InterproceduralAnalysis.t
           List.fold edge_data.constraints
             ~f:(fun acc (lhs, dc_rhs) ->
               let convert_dc lhs (rhs_norm, op, rhs_const) =
-                let rhs_const =
-                  match op with
-                  | Binop.PlusA _ ->
-                      if IntLit.isnegative rhs_const then
-                        if
-                          (* lhs != rhs hack for now, abstraction algorithm presented in the thesis
-                             * doesn't add up in the example 'SingleLinkSimple' where they have [i]' <= [n]-1
-                             * which is indeed right if we want to get valid bound but their abstraction algorithm
-                             * leads to [i]' <= [n] because there's no guard for n on the transition *)
-                          EdgeExp.Set.mem rhs_norm edge_data.guards
-                          || not (EdgeExp.equal lhs rhs_norm)
-                        then IntLit.minus_one
-                        else IntLit.zero
-                      else rhs_const
-                  | Binop.Shiftrt ->
-                      (* We should be able to transform (e1 <= e2 >> c) into ([e1] <= [e2] >> c) directly,
-                         * because shifting to the right can never result in a negative number, thus abstraction
-                         * ([e1] <= [e2] >> c) should be sound for any positive value of 'c'. We regard
-                         * shifting to the right with negative literal values to be a bug (undefined behaviour
-                         * in most of the languages, usually caught by compilers) *)
-                      assert (IntLit.isnegative rhs_const |> not) ;
-                      rhs_const
-                  | _ ->
-                      assert false
-                in
                 match EdgeExp.evaluate_const_exp rhs_norm with
                 | Some rhs_norm_value ->
-                    let const_value = EdgeExp.eval_consts op rhs_norm_value rhs_const in
+                    let const_value =
+                      IntLit.max (EdgeExp.eval_consts op rhs_norm_value rhs_const) IntLit.zero
+                    in
                     let dc_rhs = (EdgeExp.zero, Binop.PlusA None, const_value) in
                     dc_rhs
-                | None ->
-                    let dc_rhs = (EdgeExp.T.Max (EdgeExp.Set.singleton rhs_norm), op, rhs_const) in
-                    dc_rhs
+                | None -> (
+                    let rhs_const =
+                      match op with
+                      | Binop.PlusA _ ->
+                          if IntLit.isnegative rhs_const then
+                            if
+                              (* lhs != rhs hack for now, abstraction algorithm presented in the thesis
+                                 * doesn't add up in the example 'SingleLinkSimple' where they have [i]' <= [n]-1
+                                 * which is indeed right if we want to get valid bound but their abstraction algorithm
+                                 * leads to [i]' <= [n] because there's no guard for n on the transition *)
+                              EdgeExp.Set.mem rhs_norm edge_data.guards
+                              || not (EdgeExp.equal lhs rhs_norm)
+                            then IntLit.minus_one
+                            else IntLit.zero
+                          else rhs_const
+                      | Binop.Shiftrt ->
+                          (* We should be able to transform (e1 <= e2 >> c) into ([e1] <= [e2] >> c) directly,
+                             * because shifting to the right can never result in a negative number, thus abstraction
+                             * ([e1] <= [e2] >> c) should be sound for any positive value of 'c'. We regard
+                             * shifting to the right with negative literal values to be a bug (undefined behaviour
+                             * in most of the languages, usually caught by compilers) *)
+                          assert (IntLit.isnegative rhs_const |> not) ;
+                          rhs_const
+                      | _ ->
+                          assert false
+                    in
+                    (* TODO: Do this more robustly *)
+                    (* Try to determine whether the norm needs to be wrapped in Max(x, 0)
+                       Do not wrap if exp >= 0 is guaranteed *)
+                    match rhs_norm with
+                    | EdgeExp.T.Strlen _ ->
+                        (rhs_norm, op, rhs_const)
+                    | EdgeExp.T.Access access -> (
+                      match HilExp.AccessExpression.get_typ access tenv with
+                      | Some typ when Typ.is_unsigned_int typ ->
+                          (rhs_norm, op, rhs_const)
+                      | _ ->
+                          (EdgeExp.T.Max (EdgeExp.Set.singleton rhs_norm), op, rhs_const) )
+                    | _ ->
+                        (EdgeExp.T.Max (EdgeExp.Set.singleton rhs_norm), op, rhs_const) )
               in
               let lhs = EdgeExp.T.Max (EdgeExp.Set.singleton lhs) in
               match dc_rhs with
@@ -1122,27 +1136,37 @@ let analyze_procedure (analysis_data : LooperSummary.t InterproceduralAnalysis.t
     EdgeExp.CallPair.Set.fold
       (fun call_pair (calls, cache_acc) ->
         match call_pair with
-        | EdgeExp.CallPair.V (_, proc_name, args, loc) -> (
+        | EdgeExp.CallPair.V (_, proc_name, args, loc) ->
+            debug_log "@[<v2>[Summary Instantiation] %a | %a@," Procname.pp proc_name Location.pp
+              loc ;
             let payload_opt = Location.Map.find_opt loc graph_data.call_summaries in
-            match payload_opt with
-            | Some (LooperSummary.Real payload) ->
-                debug_log "@[<v2>[Summary Instantiation] %a | %a@," Procname.pp proc_name
-                  Location.pp loc ;
-                let call_transitions, new_cache =
-                  LooperSummary.instantiate payload args tenv active_prover cache ~variable_bound
-                in
-                let instantiated_call : LooperSummary.call =
-                  {name= proc_name; loc; bounds= call_transitions}
-                in
-                debug_log "@]@," ;
-                (instantiated_call :: calls, new_cache)
-            | Some (LooperSummary.Model _) ->
-                assert false
-            | None ->
-                let missing_payload_call : LooperSummary.call =
-                  {name= proc_name; loc; bounds= []}
-                in
-                (missing_payload_call :: calls, cache_acc) )
+            let call, cache =
+              match payload_opt with
+              | Some (LooperSummary.Real payload) ->
+                  let call_transitions, new_cache =
+                    LooperSummary.instantiate payload args tenv active_prover cache ~variable_bound
+                  in
+                  let instantiated_call : LooperSummary.call =
+                    RealCall {name= proc_name; loc; bounds= call_transitions}
+                  in
+                  (instantiated_call, new_cache)
+              | Some (LooperSummary.Model model_payload) ->
+                  let instantiated_call : LooperSummary.call =
+                    ModelCall
+                      { name= proc_name
+                      ; loc
+                      ; bound=
+                          (* TODO: Shouldn't the bound be value pair here too? Use upper bound for now.
+                             Probably will have to change the call summary definitions and usage too. *)
+                          EdgeExp.ValuePair.get_ub model_payload.complexity
+                      ; monotony_map= AccessExpressionMap.empty }
+                  in
+                  (instantiated_call, cache)
+              | None ->
+                  (LooperSummary.RealCall {name= proc_name; loc; bounds= []}, cache_acc)
+            in
+            debug_log "@]@," ;
+            (call :: calls, cache)
         | EdgeExp.CallPair.P (lb_call, ub_call) ->
             L.(die InternalError) "[TODO] Missing implementation" )
       edge_data.calls ([], cache)
@@ -1202,7 +1226,7 @@ let analyze_procedure (analysis_data : LooperSummary.t InterproceduralAnalysis.t
       formal_variables_mapping (EdgeExp.Map.empty, cache)
   in
   debug_log "@]@," ;
-  let total_bound_exp = LooperSummary.total_bound bounds in
+  let total_bound_exp = LooperSummary.total_bound bounds |> EdgeExp.simplify in
   debug_log "[Final bound] %a@," EdgeExp.pp total_bound_exp ;
   let ret_type = Procdesc.get_ret_type proc_desc in
   let return_bound =

@@ -25,7 +25,15 @@ type cache =
 
 val empty_cache : cache
 
-type call = {name: Procname.t; loc: Location.t; bounds: transition list}
+type model_call =
+  { name: Procname.t
+  ; loc: Location.t
+  ; bound: EdgeExp.T.t
+  ; monotony_map: Monotonicity.t AccessExpressionMap.t }
+
+type real_call = {name: Procname.t; loc: Location.t; bounds: transition list}
+
+and call = ModelCall of model_call | RealCall of real_call
 
 and transition =
   { src_node: LTS.Node.t
