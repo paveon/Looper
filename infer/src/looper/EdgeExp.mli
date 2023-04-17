@@ -168,7 +168,7 @@ val map_accesses : T.t -> f:(HilExp.access_expression -> 'a -> T.t * 'a) -> 'a -
 
 val subst : T.t -> (T.t * Typ.t) list -> FormalMap.t -> T.t
 
-val normalize_condition : T.t -> Tenv.t -> T.t
+val normalize_condition : T.t -> Tenv.t -> T.t * T.t option
 
 val deduplicate_exp_list : T.t list -> T.t list
 

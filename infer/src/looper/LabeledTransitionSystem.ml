@@ -64,7 +64,8 @@ end
 module EdgeData = struct
   type t =
     { backedge: bool
-    ; conditions: EdgeExp.Set.t
+    ; conditions: EdgeExp.Set.t list
+    ; condition_norms: EdgeExp.Set.t list
     ; assignments: (HilExp.access_expression * EdgeExp.ValuePair.t) list
     ; branch_info: (Sil.if_kind * bool * Location.t) option
     ; calls: EdgeExp.CallPair.Set.t }
@@ -75,17 +76,33 @@ module EdgeData = struct
   (* Required by Graph module interface *)
   let default =
     { backedge= false
-    ; conditions= EdgeExp.Set.empty
+    ; conditions= []
+    ; condition_norms= []
     ; assignments= []
     ; branch_info= None
     ; calls= EdgeExp.CallPair.Set.empty }
 
 
-  let set_backedge edge = {edge with backedge= true}
+  let set_backedge_flag edge ~is_backedge = {edge with backedge= is_backedge}
 
   let add_condition edge cond =
     if EdgeExp.is_zero cond then edge
-    else {edge with conditions= EdgeExp.Set.add cond edge.conditions}
+    else
+      match edge.conditions with
+      | x :: xs ->
+          {edge with conditions= EdgeExp.Set.add cond x :: xs}
+      | [] ->
+          {edge with conditions= [EdgeExp.Set.singleton cond]}
+
+
+  let add_condition_norm edge condition_norm =
+    if EdgeExp.is_zero condition_norm then edge
+    else
+      match edge.condition_norms with
+      | x :: xs ->
+          {edge with condition_norms= EdgeExp.Set.add condition_norm x :: xs}
+      | [] ->
+          {edge with condition_norms= [EdgeExp.Set.singleton condition_norm]}
 
 
   let add_assignment edge lhs rhs =
@@ -131,23 +148,28 @@ module EdgeData = struct
 
 
   let derive_guards edge norms tenv prover_data =
-    let cond_expressions =
-      EdgeExp.Set.fold
-        (fun cond acc ->
-          match cond with
-          | EdgeExp.T.BinOp (_, EdgeExp.T.Const _, EdgeExp.T.Const _) ->
-              acc
-          | EdgeExp.T.BinOp _ ->
-              let cond_why3, type_conditions = EdgeExp.to_why3_expr cond tenv prover_data in
-              Why3.Term.Sterm.add cond_why3 (Why3.Term.Sterm.union type_conditions acc)
-          | _ ->
-              L.(die InternalError)
-                "[Guards] Condition of form '%a' is not supported" EdgeExp.pp cond )
-        edge.conditions Why3.Term.Sterm.empty
+    let or_terms =
+      List.fold edge.conditions ~init:[] ~f:(fun or_terms and_terms ->
+          let condition_set =
+            EdgeExp.Set.fold
+              (fun cond acc ->
+                match cond with
+                | EdgeExp.T.BinOp (_, EdgeExp.T.Const _, EdgeExp.T.Const _) ->
+                    acc
+                | EdgeExp.T.UnOp _ | EdgeExp.T.BinOp _ ->
+                    let cond_why3, type_conditions = EdgeExp.to_why3_expr cond tenv prover_data in
+                    Why3.Term.Sterm.add cond_why3 (Why3.Term.Sterm.union type_conditions acc)
+                | _ ->
+                    L.(die InternalError)
+                      "[Guards] Condition of form '%a' is not supported" EdgeExp.pp cond )
+              and_terms Why3.Term.Sterm.empty
+          in
+          if Why3.Term.Sterm.is_empty condition_set then or_terms
+          else (Why3.Term.Sterm.elements condition_set |> Why3.Term.t_and_l) :: or_terms )
     in
-    if Why3.Term.Sterm.is_empty cond_expressions then EdgeExp.Set.empty
+    if List.is_empty or_terms then EdgeExp.Set.empty
     else
-      let lhs = Why3.Term.Sterm.elements cond_expressions |> Why3.Term.t_and_l in
+      let lhs = Why3.Term.t_or_l or_terms in
       let zero_const = Why3.Term.t_real_const (Why3.BigInt.of_int 0) in
       let gt_symbol = Why3.Theory.ns_find_ls prover_data.theory.th_export ["infix >"] in
       let goal_symbol = Why3.Decl.create_prsymbol (Why3.Ident.id_fresh "is_guard") in
@@ -490,47 +512,61 @@ let pp_element fmt (kind, branch, loc) =
   F.fprintf fmt "%a[%s](%B)" Sil.pp_if_kind kind (Location.to_string loc) branch
 
 
-let edge_label : EdgeData.t -> string =
+let edge_label : EdgeData.t -> string option =
  fun edge_data ->
   match edge_data.branch_info with
   | Some prune_info ->
-      F.asprintf "%a\n" pp_element prune_info
+      Some (F.asprintf "%a" pp_element prune_info)
   | None ->
-      ""
+      None
 
 
-let vertex_attributes node = [`Shape `Box; `Label (Node.to_string node)]
+let vertex_attributes node = [`Shape `Box; `Label (Node.to_string node) (* `Fontname "monospace" *)]
 
 let vertex_name vertex = string_of_int (Node.hash vertex)
 
 let edge_attributes : E.t -> 'a list =
  fun (_, edge_data, _) ->
-  let label = edge_label edge_data in
-  let label = if edge_data.backedge then label ^ "[backedge]\n" else label in
-  let call_list =
-    List.map (EdgeExp.CallPair.Set.elements edge_data.calls) ~f:(fun call_assignment ->
-        match call_assignment with
-        | EdgeExp.CallPair.V ((_, _, _, loc) as call) ->
-            F.asprintf "%s : %a" (EdgeExp.call_to_string call) Location.pp loc
-        | EdgeExp.CallPair.P (((_, _, _, loc1) as lb_call), ub_call) ->
-            F.asprintf "[%s; %s] : %a" (EdgeExp.call_to_string lb_call)
-              (EdgeExp.call_to_string ub_call) Location.pp loc1
-        | _ ->
-            assert false )
+  let backedge_label = if edge_data.backedge then Some "[backedge]" else None in
+  let calls_str =
+    if EdgeExp.CallPair.Set.is_empty edge_data.calls then None
+    else
+      let call_list =
+        List.map (EdgeExp.CallPair.Set.elements edge_data.calls) ~f:(fun call_assignment ->
+            match call_assignment with
+            | EdgeExp.CallPair.V ((_, _, _, loc) as call) ->
+                F.asprintf "%s : %a" (EdgeExp.call_to_string call) Location.pp loc
+            | EdgeExp.CallPair.P (((_, _, _, loc1) as lb_call), ub_call) ->
+                F.asprintf "[%s; %s] : %a" (EdgeExp.call_to_string lb_call)
+                  (EdgeExp.call_to_string ub_call) Location.pp loc1
+            | _ ->
+                assert false )
+      in
+      Some (String.concat ~sep:"\n" call_list)
   in
-  let calls_str = String.concat ~sep:"\n" call_list in
-  let conditions =
-    List.map (EdgeExp.Set.elements edge_data.conditions) ~f:(fun cond -> EdgeExp.to_string cond)
+  let condition_or_terms =
+    if List.is_empty edge_data.conditions then None
+    else
+      Some
+        ( List.map edge_data.conditions ~f:(fun and_terms ->
+              List.map (EdgeExp.Set.elements and_terms) ~f:EdgeExp.to_string
+              |> String.concat ~sep:" &&" )
+        |> String.concat ~sep:" ||\n" )
   in
   let assignments =
-    List.map edge_data.assignments ~f:(fun (lhs, rhs) ->
-        F.asprintf "%a = %s" HilExp.AccessExpression.pp lhs (EdgeExp.ValuePair.to_string rhs) )
+    if List.is_empty edge_data.assignments then None
+    else
+      Some
+        ( List.map edge_data.assignments ~f:(fun (lhs, rhs) ->
+              F.asprintf "%a = %s" HilExp.AccessExpression.pp lhs (EdgeExp.ValuePair.to_string rhs) )
+        |> String.concat ~sep:"\n" )
   in
   let label =
-    F.asprintf "%s\n%s\n%s\n%s" label
-      (String.concat ~sep:"\n" conditions)
-      (String.concat ~sep:"\n" assignments)
-      calls_str
+    List.fold
+      [edge_label edge_data; backedge_label; calls_str; condition_or_terms; assignments]
+      ~init:""
+      ~f:(fun label_acc part_opt ->
+        match part_opt with Some part -> label_acc ^ F.asprintf "\n%s" part | None -> label_acc )
   in
   (* Perform replacement to escape all harmful characters which corrupt dot file *)
   (* Remove newlines from string arguments of function calls and such to make it more readable *)
@@ -538,4 +574,4 @@ let edge_attributes : E.t -> 'a list =
     String.substr_replace_all label ~pattern:"\"" ~with_:"\\\""
     |> String.substr_replace_all ~pattern:"\\n" ~with_:""
   in
-  [`Label label; `Color 4711]
+  [`Label label; `Color 4711 (* `Fontname "monospace" *)]

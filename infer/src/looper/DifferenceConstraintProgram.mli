@@ -5,25 +5,21 @@ module F = Format
 module DC = DifferenceConstraint
 module LTS = LabeledTransitionSystem
 
-
 (* Difference Constraint Program *)
-type edge_output_type = | GuardedDCP | DCP [@@deriving compare]
-
+type edge_output_type = GuardedDCP | DCP [@@deriving compare]
 
 module EdgeData : sig
-  type t = {
-    backedge: bool;
-    branch_info: (Sil.if_kind * bool * Location.t) option;
-
-    mutable calls: EdgeExp.CallPair.Set.t;
-    mutable constraints: DC.t list;
-    mutable guards: EdgeExp.Set.t;
-    mutable bound: EdgeExp.T.t option;
-    mutable bound_norm: EdgeExp.T.t option;
-    mutable computing_bound: bool;
-
-    mutable edge_type: edge_output_type;
-  }
+  type t =
+    { backedge: bool
+    ; branch_info: (Sil.if_kind * bool * Location.t) option
+    ; mutable calls: EdgeExp.CallPair.Set.t
+    ; mutable constraints: DC.t list
+    ; mutable guards: EdgeExp.Set.t
+    ; mutable condition_norms: EdgeExp.Set.t list
+    ; mutable bound: EdgeExp.T.t option
+    ; mutable bound_norm: EdgeExp.T.t option
+    ; mutable computing_bound: bool
+    ; mutable edge_type: edge_output_type }
   [@@deriving compare]
 
   val equal : t -> t -> bool
@@ -50,12 +46,18 @@ module EdgeData : sig
   val add_constraint : t -> DC.t -> unit
 end
 
-include module type of Graph.Imperative.Digraph.ConcreteBidirectionalLabeled(LTS.Node)(EdgeData)
-module EdgeSet : module type of Caml.Set.Make(E)
-module EdgeMap : module type of Caml.Map.Make(E)
+include module type of Graph.Imperative.Digraph.ConcreteBidirectionalLabeled (LTS.Node) (EdgeData)
+
+module EdgeSet : module type of Caml.Set.Make (E)
+
+module EdgeMap : module type of Caml.Map.Make (E)
 
 include module type of LooperUtils.DefaultDot
-val edge_label : EdgeData.t -> string
+
+val edge_label : EdgeData.t -> string option
+
 val vertex_attributes : LTS.Node.t -> Graph.Graphviz.DotAttributes.vertex list
+
 val vertex_name : LTS.Node.t -> string
+
 val edge_attributes : E.t -> Graph.Graphviz.DotAttributes.edge list

@@ -130,6 +130,29 @@ let pp_list name pp_func fmt list =
 
 let list_to_string set name pp_func = F.asprintf "%a" (pp_list name pp_func) set
 
+let compare = T.compare
+
+let equal = [%compare.equal: T.t]
+
+let one = Const (Const.Cint IntLit.one)
+
+let of_int value = Const (Const.Cint (IntLit.of_int value))
+
+let of_int32 value = Const (Const.Cint (IntLit.of_int32 value))
+
+let of_int64 value = Const (Const.Cint (IntLit.of_int64 value))
+
+let is_zero = function
+  | Const const | UnOp (Unop.Neg, Const const, _) ->
+      Const.iszero_int_float const
+  | _ ->
+      false
+
+
+let is_one = function Const (Const.Cint const) -> IntLit.isone const | _ -> false
+
+let is_integer_type typ = Typ.is_int typ || Typ.is_pointer typ
+
 let eval_consts op c1 c2 =
   match op with
   | Binop.PlusA _ | Binop.PlusPI ->
@@ -184,6 +207,44 @@ let try_eval op e1 e2 =
         BinOp (op, e1, e2) )
   | _ ->
       BinOp (op, e1, e2)
+
+
+let add e1 e2 =
+  match (is_zero e1, is_zero e2) with
+  | false, false ->
+      try_eval (Binop.PlusA None) e1 e2
+  | true, false ->
+      e2
+  | false, true ->
+      e1
+  | _ ->
+      zero
+
+
+let sub e1 e2 =
+  match (is_zero e1, is_zero e2) with
+  | false, false ->
+      try_eval (Binop.MinusA None) e1 e2
+  | true, false ->
+      UnOp (Unop.Neg, e2, None)
+  | false, true ->
+      e1
+  | _ ->
+      zero
+
+
+let mult e1 e2 =
+  if is_zero e1 || is_zero e2 then zero
+  else
+    match (is_one e1, is_one e2) with
+    | true, true ->
+        one
+    | true, false ->
+        e2
+    | false, true ->
+        e1
+    | _ ->
+        try_eval (Binop.Mult None) e1 e2
 
 
 let rec evaluate_const_exp exp =
@@ -391,29 +452,6 @@ module CallPair = struct
     let compare = compare
   end)
 end
-
-let compare = T.compare
-
-let equal = [%compare.equal: T.t]
-
-let one = Const (Const.Cint IntLit.one)
-
-let of_int value = Const (Const.Cint (IntLit.of_int value))
-
-let of_int32 value = Const (Const.Cint (IntLit.of_int32 value))
-
-let of_int64 value = Const (Const.Cint (IntLit.of_int64 value))
-
-let is_zero = function
-  | Const const | UnOp (Unop.Neg, Const const, _) ->
-      Const.iszero_int_float const
-  | _ ->
-      false
-
-
-let is_one = function Const (Const.Cint const) -> IntLit.isone const | _ -> false
-
-let is_integer_type typ = Typ.is_int typ || Typ.is_pointer typ
 
 let rec is_formal_variable norm formals tenv =
   match norm with
@@ -1450,6 +1488,10 @@ let rec to_why3_expr exp tenv (prover_data : prover_data) =
   | UnOp (Unop.Neg, subexp, _) ->
       let subexp, conditions = to_why3_expr subexp tenv prover_data in
       (Why3.Term.t_app_infer unary_minus_symbol [subexp], conditions)
+  | UnOp (Unop.LNot, subexp, _) ->
+      let subexp, conditions = to_why3_expr subexp tenv prover_data in
+      (Why3.Term.t_not subexp, conditions)
+      (* (Why3.Term.t_app_infer unary_minus_symbol [subexp], conditions) *)
   | Max max_args ->
       convert_min_max ge_symbol max_args
   | Min min_args ->
@@ -1666,27 +1708,102 @@ let normalize_condition exp tenv =
     | _ ->
         (op, lexp, rexp)
   in
-  let rec create_condition exp =
-    match exp with
-    | UnOp (Unop.LNot, subexp, _) ->
-        let op, lexp, rexp = create_condition subexp in
-        negate_lop (op, lexp, rexp)
-    | BinOp (op, lexp, rexp) -> (
-      match op with
-      | Binop.Lt ->
-          (Binop.Gt, rexp, lexp)
-      | Binop.Le ->
-          (Binop.Ge, rexp, lexp)
-      | Binop.Gt | Binop.Ge | Binop.Eq | Binop.Ne ->
-          (op, lexp, rexp)
+  (* let is_integer_condition tenv = function
+       | BinOp ((Lt | Gt | Le | Ge | Eq | Ne | LAnd | LOr), lhs, rhs) -> (
+         match (get_typ tenv lhs, get_typ tenv rhs) with
+         | Some lhs_typ, Some rhs_typ ->
+             is_integer_type lhs_typ && is_integer_type rhs_typ
+         | Some typ, None | None, Some typ ->
+             is_integer_type typ
+         | _ ->
+             false )
+       | exp -> (
+         match get_typ tenv exp with Some typ -> is_integer_type typ | None -> false )
+     in *)
+  let process_gt lhs rhs ~add_one =
+    let is_integer =
+      match (get_typ tenv lhs, get_typ tenv rhs) with
+      | Some lhs_typ, Some rhs_typ ->
+          is_integer_type lhs_typ && is_integer_type rhs_typ
+      | Some typ, None | None, Some typ ->
+          is_integer_type typ
       | _ ->
-          (Binop.Ne, exp, zero) )
-    | _ ->
-        (Binop.Ne, exp, zero)
+          false
+    in
+    if is_integer then
+      let norm =
+        match (is_zero lhs, is_zero rhs) with
+        | true, true ->
+            zero
+        | true, _ ->
+            UnOp (Unop.Neg, rhs, None)
+        | false, true ->
+            lhs
+        | _ ->
+            BinOp (Binop.MinusA None, lhs, rhs)
+      in
+      if add_one then Some (add norm one) else Some norm
+    else None
   in
-  let op, lexp, rexp = create_condition exp in
-  BinOp (op, lexp, rexp)
+  let rec create_condition exp negate =
+    match exp with
+    | UnOp (Unop.LNot, subexp, typ) ->
+        (* Normalized condition can contain logical NOT but norm
+           can't so we have to negate the binary operator before we derive the norm *)
+        let condition, negated_norm = create_condition subexp true in
+        (UnOp (Unop.LNot, condition, typ), negated_norm)
+        (* let test = negate_lop (op, lexp, rexp) in *)
+        (* match create_condition subexp with
+           | Some cond ->
+               Some (UnOp (Unop.LNot, cond, typ))
+           | None ->
+               UnOp (Unop.LNot, subexp, typ), None *)
+    | BinOp (op, lexp, rexp) ->
+        let negated_exp = if negate then negate_lop (op, lexp, rexp) else (op, lexp, rexp) in
+        let norm =
+          match negated_exp with
+          | Binop.Lt, lexp, rexp ->
+              process_gt rexp lexp ~add_one:false
+          | Binop.Le, lexp, rexp ->
+              process_gt rexp lexp ~add_one:true
+          | Binop.Gt, lexp, rexp ->
+              process_gt lexp rexp ~add_one:false
+          | Binop.Ge, lexp, rexp ->
+              process_gt lexp rexp ~add_one:true
+          | _ ->
+              None
+        in
+        let condition =
+          match op with
+          | Binop.Lt ->
+              BinOp (Binop.Gt, rexp, lexp)
+          | Binop.Le ->
+              BinOp (Binop.Ge, rexp, lexp)
+          | Binop.Gt ->
+              BinOp (Binop.Gt, lexp, rexp)
+          | Binop.Ge ->
+              BinOp (Binop.Ge, lexp, rexp)
+          | _ ->
+              BinOp (op, lexp, rexp)
+        in
+        (condition, norm)
+    | _ ->
+        (BinOp (Binop.Ne, exp, zero), None)
+  in
+  create_condition exp false
 
+
+(* match create_condition exp with
+   | BinOp (op, lexp, rexp) -> (
+     match op with
+     | Binop.Gt ->
+         Some (process_gt lexp rexp)
+     | Binop.Ge ->
+         Some (add (process_gt lexp rexp) one)
+     | _ ->
+         None )
+   | _ ->
+       L.(die InternalError) "Unsupported PRUNE expression!" *)
 
 let rec deduplicate_exp_list exp_list =
   match exp_list with
@@ -1916,44 +2033,6 @@ let determine_monotonicity exp tenv (prover_data : prover_data) =
   in
   debug_log "@]@]@," ;
   monotonicities
-
-
-let add e1 e2 =
-  match (is_zero e1, is_zero e2) with
-  | false, false ->
-      try_eval (Binop.PlusA None) e1 e2
-  | true, false ->
-      e2
-  | false, true ->
-      e1
-  | _ ->
-      zero
-
-
-let sub e1 e2 =
-  match (is_zero e1, is_zero e2) with
-  | false, false ->
-      try_eval (Binop.MinusA None) e1 e2
-  | true, false ->
-      UnOp (Unop.Neg, e2, None)
-  | false, true ->
-      e1
-  | _ ->
-      zero
-
-
-let mult e1 e2 =
-  if is_zero e1 || is_zero e2 then zero
-  else
-    match (is_one e1, is_one e2) with
-    | true, true ->
-        one
-    | true, false ->
-        e2
-    | false, true ->
-        e1
-    | _ ->
-        try_eval (Binop.Mult None) e1 e2
 
 
 let rec array_index_of_exp ~include_array_indexes ~f_resolve_id ~add_deref exp typ =

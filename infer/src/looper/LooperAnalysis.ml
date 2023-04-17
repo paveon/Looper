@@ -231,9 +231,21 @@ let analyze_procedure (analysis_data : LooperSummary.t InterproceduralAnalysis.t
   List.iter edge_pairs ~f:(fun ((src, (lts_edge_data : LTS.EdgeData.t), dst), dcp_edge_data) ->
       debug_log "@[<v2>[Guard Derivation] %a ---> %a@," LTS.Node.pp src LTS.Node.pp dst ;
       DCP.EdgeData.set_edge_output_type dcp_edge_data GuardedDCP ;
-      debug_log "%a@,"
-        EdgeExp.(pp_list "Conditions" EdgeExp.pp)
-        (EdgeExp.Set.elements lts_edge_data.conditions) ;
+      let condition_str =
+        List.map lts_edge_data.conditions ~f:(fun and_terms ->
+            let and_terms_str =
+              List.map (EdgeExp.Set.elements and_terms) ~f:EdgeExp.to_string
+              |> String.concat ~sep:" && "
+            in
+            F.asprintf "(%s)" and_terms_str )
+        |> String.concat ~sep:" || "
+      in
+      debug_log "@[<v2>Conditions:@,%s@]@," condition_str ;
+      (* debug_log "(%s) ||@," and_term_str *)
+      (* debug_log "@]@," ; *)
+      (* debug_log "%a@,"
+         EdgeExp.(pp_list "Conditions" EdgeExp.pp)
+         (EdgeExp.Set.elements lts_edge_data.conditions) ; *)
       let guards = LTS.EdgeData.derive_guards lts_edge_data final_norm_set tenv active_prover in
       DCP.EdgeData.add_guards dcp_edge_data guards ;
       debug_log "Guard count: %d@," (EdgeExp.Set.cardinal guards) ;
@@ -826,6 +838,8 @@ let analyze_procedure (analysis_data : LooperSummary.t InterproceduralAnalysis.t
       norm_edge_sets
       (DCP.EdgeSet.diff scc_edges processed_edges)
   in
+  (* Re-output DCP graph with local bounds  *)
+  output_graph (proc_graph_dir ^/ ssa_dcp_fname) dcp DCP_Dot.output_graph ;
   let get_update_map norm edges (cache : LooperSummary.cache) =
     if EdgeExp.Map.mem norm cache.updates then cache
     else

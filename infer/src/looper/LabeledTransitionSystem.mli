@@ -32,7 +32,8 @@ end
 module EdgeData : sig
   type t =
     { backedge: bool
-    ; conditions: EdgeExp.Set.t
+    ; conditions: EdgeExp.Set.t list
+    ; condition_norms: EdgeExp.Set.t list
     ; assignments: (HilExp.access_expression * EdgeExp.ValuePair.t) list
     ; branch_info: (Sil.if_kind * bool * Location.t) option
     ; calls: EdgeExp.CallPair.Set.t }
@@ -43,9 +44,11 @@ module EdgeData : sig
   (* Required by Graph module interface *)
   val default : t
 
-  val set_backedge : t -> t
+  val set_backedge_flag : t -> is_backedge:bool -> t
 
   val add_condition : t -> EdgeExp.T.t -> t
+
+  val add_condition_norm : t -> EdgeExp.T.t -> t
 
   val add_assignment : t -> HilExp.access_expression -> EdgeExp.ValuePair.t -> t
 
@@ -75,7 +78,7 @@ module EdgeMap : module type of Caml.Map.Make (E)
 
 include module type of LooperUtils.DefaultDot
 
-val edge_label : EdgeData.t -> string
+val edge_label : EdgeData.t -> string option
 
 val vertex_attributes : Node.t -> Graph.Graphviz.DotAttributes.vertex list
 
