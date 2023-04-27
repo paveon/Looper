@@ -22,7 +22,7 @@ module EdgeData = struct
     ; mutable guards: EdgeExp.Set.t
     ; mutable condition_norms: EdgeExp.Set.t list
     ; mutable bound: EdgeExp.T.t option
-    ; mutable bound_norm: EdgeExp.T.t option
+    ; mutable bound_norms: EdgeExp.Set.t list
     ; mutable computing_bound: bool
     ; mutable edge_type: edge_output_type }
   [@@deriving compare]
@@ -37,7 +37,7 @@ module EdgeData = struct
     ; guards= EdgeExp.Set.empty
     ; condition_norms= lts_edge_data.condition_norms
     ; bound= None
-    ; bound_norm= None
+    ; bound_norms= []
     ; computing_bound= false
     ; edge_type= DCP }
 
@@ -102,7 +102,7 @@ module EdgeData = struct
     ; guards= EdgeExp.Set.empty
     ; condition_norms= []
     ; bound= None
-    ; bound_norm= None
+    ; bound_norms= []
     ; computing_bound= false }
 
 
@@ -160,26 +160,45 @@ let edge_attributes : E.t -> 'a list =
       in
       Some (String.concat ~sep:"\n" call_list)
   in
-  let local_bound_label, edge_color =
-    match edge_data.bound_norm with
-    | Some norm ->
-        ( Some (F.asprintf "[LB] %a" EdgeExp.pp norm)
-        , if EdgeExp.equal norm EdgeExp.one then 0x006400 else 0xFF0000 )
-    | None ->
-        (None, 4711)
+  (* let local_bound_label, edge_color =
+       match edge_data.bound_norm with
+       | Some norm ->
+           ( Some (F.asprintf "[LB] %a" EdgeExp.pp norm)
+           , if EdgeExp.equal norm EdgeExp.one then 0x006400 else 0xFF0000 )
+       | None ->
+           (None, 4711)
+     in *)
+  let edge_color =
+    match edge_data.bound_norms with
+    | [] ->
+        4711
+    | [bound_set] when Int.equal (EdgeExp.Set.cardinal bound_set) 1 ->
+        if EdgeExp.equal (EdgeExp.Set.min_elt bound_set) EdgeExp.one then 0x006400 else 0xFF0000
+    | _ ->
+        0xFF0000
+  in
+  let local_bounds_label =
+    if List.is_empty edge_data.bound_norms then None
+    else
+      Some
+        ( "[Local Bounds] "
+        ^ ( List.map edge_data.bound_norms ~f:(fun and_terms ->
+                List.map (EdgeExp.Set.elements and_terms) ~f:EdgeExp.to_string
+                |> String.concat ~sep:" &&" )
+          |> String.concat ~sep:" || " ) )
   in
   let condition_norms =
     if List.is_empty edge_data.condition_norms then None
     else
       Some
-        ( "[CONDITIONS] "
+        ( "[Condition Norms] "
         ^ ( List.map edge_data.condition_norms ~f:(fun and_terms ->
                 List.map (EdgeExp.Set.elements and_terms) ~f:EdgeExp.to_string
                 |> String.concat ~sep:" &&" )
           |> String.concat ~sep:" || " ) )
   in
   let label_parts =
-    [edge_label edge_data; backedge_label; local_bound_label; calls_str; condition_norms]
+    [edge_label edge_data; backedge_label; local_bounds_label; calls_str; condition_norms]
   in
   let label_parts =
     match edge_data.edge_type with

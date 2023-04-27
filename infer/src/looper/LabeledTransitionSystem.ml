@@ -211,7 +211,7 @@ module EdgeData = struct
       guards
 
 
-  let derive_constraint edge_data norm used_assignments formals tenv =
+  let derive_constraint edge_data norm used_assignments formals tenv proc_name =
     let get_assignment lhs_access =
       let assignment_opt =
         List.find edge_data.assignments ~f:(fun (access, _) ->
@@ -284,15 +284,14 @@ module EdgeData = struct
               if
                 (not (EdgeExp.equal norm rhs_exp))
                 && AccessExpressionSet.mem access used_assignments
-              then (
+              then
                 (* debug_log "############ FAIL ###########@,"; *)
-                (* L.die InternalError "Edge '%a = %a' assignment previously used "
-                   HilExp.AccessExpression.pp access
-                   EdgeExp.pp rhs *)
-                L.user_warning
-                  "Edge '%a = %a' assignment previously used, skipping substitution...@."
-                  HilExp.AccessExpression.pp access EdgeExp.pp rhs ;
-                (AccessExpressionSet.empty, Some norm) )
+                L.die InternalError "[%a] Edge '%a = %a' assignment previously used " Procname.pp
+                  proc_name HilExp.AccessExpression.pp access EdgeExp.pp rhs
+                (* L.user_warning
+                     "[%a] Edge '%a = %a' assignment previously used, skipping substitution...@."
+                     Procname.pp proc_name HilExp.AccessExpression.pp access EdgeExp.pp rhs ;
+                   (AccessExpressionSet.empty, Some norm) *)
               else
                 let accesses =
                   if (not (EdgeExp.equal norm rhs)) && not (EdgeExp.is_zero rhs) then
@@ -521,7 +520,18 @@ let edge_label : EdgeData.t -> string option =
       None
 
 
-let vertex_attributes node = [`Shape `Box; `Label (Node.to_string node) (* `Fontname "monospace" *)]
+let vertex_attributes node =
+  let label = Node.to_string node in
+  match node with
+  | Node.Prune _ ->
+      [`Shape `Invhouse; `Label label]
+  | Node.Join _ ->
+      [`Shape `Circle; `Label "+"]
+  | Node.Exit ->
+      [`Shape `Box; `Label label; `Color 0xFFFF00; `Style `Filled]
+  | Node.Start _ ->
+      [`Shape `Box; `Label label; `Color 0xFFFF00; `Style `Filled]
+
 
 let vertex_name vertex = string_of_int (Node.hash vertex)
 

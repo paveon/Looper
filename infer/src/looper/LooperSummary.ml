@@ -110,21 +110,21 @@ let total_bound transitions =
               EdgeExp.add bound_sum model_call.bound )
     in
     let total_edge_cost =
-      if EdgeExp.is_zero cost_of_calls then (
-        debug_log "[Edge cost] %a ---> %a: %a\n" LTS.Node.pp transition.src_node LTS.Node.pp
-          transition.dst_node EdgeExp.pp transition.bound ;
-        transition.bound )
-      else if EdgeExp.is_one cost_of_calls then (
+      if EdgeExp.is_zero cost_of_calls then
+        (* debug_log "[Edge cost] %a ---> %a: %a\n" LTS.Node.pp transition.src_node LTS.Node.pp
+           transition.dst_node EdgeExp.pp transition.bound ; *)
+        transition.bound
+      else if EdgeExp.is_one cost_of_calls then
         let value = transition.bound in
-        debug_log "[Edge cost] %a ---> %a: %a * %a = %a\n" LTS.Node.pp transition.src_node
-          LTS.Node.pp transition.dst_node EdgeExp.pp transition.bound EdgeExp.pp cost_of_calls
-          EdgeExp.pp value ;
-        value )
+        (* debug_log "[Edge cost] %a ---> %a: %a * %a = %a\n" LTS.Node.pp transition.src_node
+           LTS.Node.pp transition.dst_node EdgeExp.pp transition.bound EdgeExp.pp cost_of_calls
+           EdgeExp.pp value ; *)
+        value
       else
         let value = EdgeExp.add transition.bound (EdgeExp.mult transition.bound cost_of_calls) in
-        debug_log "[Edge cost] %a ---> %a: %a + %a * %a = %a\n" LTS.Node.pp transition.src_node
-          LTS.Node.pp transition.dst_node EdgeExp.pp transition.bound EdgeExp.pp transition.bound
-          EdgeExp.pp cost_of_calls EdgeExp.pp value ;
+        (* debug_log "[Edge cost] %a ---> %a: %a + %a * %a = %a\n" LTS.Node.pp transition.src_node
+           LTS.Node.pp transition.dst_node EdgeExp.pp transition.bound EdgeExp.pp transition.bound
+           EdgeExp.pp cost_of_calls EdgeExp.pp value ; *)
         value
     in
     total_edge_cost

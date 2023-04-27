@@ -85,7 +85,7 @@ val instantiate :
   -> (EdgeExp.T.t * Typ.t) list
   -> variable_bound:(bound_type:BoundType.t -> EdgeExp.T.t -> cache -> EdgeExp.T.t * cache)
   -> Tenv.t
-  -> LooperUtils.prover_data
+  -> Provers.prover_data
   -> cache
   -> transition list * cache
 

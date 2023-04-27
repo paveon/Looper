@@ -482,6 +482,7 @@ let deadlock =
   register ~id:"DEADLOCK" Error Starvation
     ~user_documentation:[%blob "./documentation/issues/DEADLOCK.md"]
 
+
 let divide_by_zero =
   register ~enabled:false ~id:"DIVIDE_BY_ZERO" Error Biabduction (* TODO *) ~user_documentation:""
 
@@ -679,6 +680,14 @@ let inferbo_alloc_may_be_negative =
 
 
 let infinite_cost_call ~kind = register_cost ~enabled:false "INFINITE_%s" ~kind
+
+let looper_infinite_cost =
+  register ~id:"LOOPER_INFINITE_EXECUTION_TIME" Error Looper
+    ~user_documentation:
+      "This warning indicates that Looper was not able to determine a static\n\
+      \      upper bound on the execution cost of the procedure. By default, this\n\
+      \      issue type is disabled."
+
 
 let inherently_dangerous_function =
   register_hidden ~id:"INHERENTLY_DANGEROUS_FUNCTION" Warning Biabduction

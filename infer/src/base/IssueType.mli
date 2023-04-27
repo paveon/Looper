@@ -236,6 +236,8 @@ val inferbo_alloc_may_be_negative : t
 
 val infinite_cost_call : kind:CostKind.t -> t
 
+val looper_infinite_cost : t
+
 val inherently_dangerous_function : t
 
 val insecure_intent_handling : t

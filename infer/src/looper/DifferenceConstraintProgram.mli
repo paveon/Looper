@@ -17,7 +17,7 @@ module EdgeData : sig
     ; mutable guards: EdgeExp.Set.t
     ; mutable condition_norms: EdgeExp.Set.t list
     ; mutable bound: EdgeExp.T.t option
-    ; mutable bound_norm: EdgeExp.T.t option
+    ; mutable bound_norms: EdgeExp.Set.t list
     ; mutable computing_bound: bool
     ; mutable edge_type: edge_output_type }
   [@@deriving compare]

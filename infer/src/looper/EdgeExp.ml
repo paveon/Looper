@@ -1306,7 +1306,7 @@ let base_of_pvar pvar typ = (Var.of_pvar pvar, typ)
 
 let of_pvar pvar typ = HilExp.AccessExpression.address_of_base (base_of_pvar pvar typ)
 
-let why3_get_vsymbol name (prover_data : prover_data) =
+let why3_get_vsymbol name (prover_data : Provers.prover_data) =
   match StringMap.find_opt name prover_data.vars with
   | Some vs ->
       vs
@@ -1331,7 +1331,7 @@ let rec is_typ_unsigned (typ : Typ.t) =
       assert false
 
 
-let rec to_why3_expr exp tenv (prover_data : prover_data) =
+let rec to_why3_expr exp tenv (prover_data : Provers.prover_data) =
   (* console_log "@[Exp: %a@,@]" pp exp; *)
   let plus_symbol : Why3.Term.lsymbol =
     Why3.Theory.ns_find_ls prover_data.theory.th_export ["infix +"]
@@ -1508,7 +1508,7 @@ let rec to_why3_expr exp tenv (prover_data : prover_data) =
 
 
 (* TODO: rewrite to be more general, include preconditions and reference value as parameters *)
-let rec always_positive_why3 exp tenv (prover_data : prover_data) =
+let rec always_positive_why3 exp tenv (prover_data : Provers.prover_data) =
   let aux = function
     | Const (Const.Cint x) ->
         not (IntLit.isnegative x)
@@ -1947,7 +1947,7 @@ let check_increasing_or_decreasing exp var_access =
       Monotonicity.NonIncreasing
 
 
-let determine_monotonicity exp tenv (prover_data : prover_data) =
+let determine_monotonicity exp tenv (prover_data : Provers.prover_data) =
   debug_log "@[<v2>[Determining monotonicity] %a@," pp exp ;
   let transformed, conditions = transform_shifts exp in
   debug_log "@[<v2>[Transforming shifts]@,Result: %a@," pp transformed ;
