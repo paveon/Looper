@@ -5,10 +5,6 @@ open LooperUtils
 module L = Logging
 module DC = DifferenceConstraint
 
-let debug_log : ('a, Format.formatter, unit) format -> 'a =
- fun fmt -> F.fprintf (List.hd_exn !debug_fmt) fmt
-
-
 module Node = struct
   type t =
     | Prune of (Sil.if_kind * Location.t * Procdesc.Node.id)
@@ -116,14 +112,19 @@ module EdgeData = struct
 
 
   let add_invariants edge locals =
+    (* debug_log "Locals: " ;
+       AccessExpressionSet.iter (fun x -> debug_log "%a " HilExp.AccessExpression.pp x) locals ;
+       debug_log "@," ; *)
     let with_invariants =
       AccessPath.BaseMap.fold
         (fun local_base accesses acc ->
+          (* debug_log "Local base: %a@," AccessPath.pp_base local_base ; *)
           let has_assignment assignments lhs_access =
             List.exists assignments ~f:(fun (access, _) ->
                 HilExp.AccessExpression.equal lhs_access access )
           in
           let add_assignment access assignments =
+            (* debug_log "Add invariant: %a@," HilExp.AccessExpression.pp access ; *)
             if has_assignment assignments access then assignments
             else assignments @ [(access, EdgeExp.ValuePair.V (EdgeExp.T.Access access))]
           in
@@ -147,7 +148,7 @@ module EdgeData = struct
         EdgeExp.ValuePair.V (EdgeExp.T.Access lhs_access)
 
 
-  let derive_guards edge norms tenv prover_data =
+  let derive_guards edge why3_norms tenv (prover_data : Provers.prover_data) =
     let or_terms =
       List.fold edge.conditions ~init:[] ~f:(fun or_terms and_terms ->
           let condition_set =
@@ -174,9 +175,9 @@ module EdgeData = struct
       let gt_symbol = Why3.Theory.ns_find_ls prover_data.theory.th_export ["infix >"] in
       let goal_symbol = Why3.Decl.create_prsymbol (Why3.Ident.id_fresh "is_guard") in
       let lhs_vars = Why3.Term.Mvs.keys (Why3.Term.t_vars lhs) in
-      let is_norm_guard norm =
-        let norm_why3 = EdgeExp.to_why3_expr norm tenv prover_data |> fst in
-        let rhs = Why3.Term.t_app_infer gt_symbol [norm_why3; zero_const] in
+      let is_norm_guard why3_norm =
+        (* let norm_why3 = EdgeExp.to_why3_expr norm tenv prover_data |> fst in *)
+        let rhs = Why3.Term.t_app_infer gt_symbol [why3_norm; zero_const] in
         let formula = Why3.Term.t_implies lhs rhs in
         let rhs_vars = Why3.Term.Mvs.keys (Why3.Term.t_vars rhs) in
         let free_vars = lhs_vars @ rhs_vars in
@@ -201,17 +202,13 @@ module EdgeData = struct
             assert false
       in
       let guards =
-        EdgeExp.Set.fold
-          (fun norm guard_acc ->
-            if EdgeExp.is_const norm then guard_acc
-            else if is_norm_guard norm then EdgeExp.Set.add norm guard_acc
-            else guard_acc )
-          norms EdgeExp.Set.empty
+        List.fold why3_norms ~init:EdgeExp.Set.empty ~f:(fun guard_acc (norm, why3_norm) ->
+            if is_norm_guard why3_norm then EdgeExp.Set.add norm guard_acc else guard_acc )
       in
       guards
 
 
-  let derive_constraint edge_data norm used_assignments formals tenv proc_name =
+  let derive_constraint edge_data (norm, used_assignments) formals tenv proc_name =
     let get_assignment lhs_access =
       let assignment_opt =
         List.find edge_data.assignments ~f:(fun (access, _) ->
@@ -221,8 +218,8 @@ module EdgeData = struct
       | Some assignment ->
           Some (snd assignment)
       | None ->
-          let lhs_access_base = HilExp.AccessExpression.get_base lhs_access in
-          if AccessPath.BaseSet.mem lhs_access_base formals then
+          let ((var, _) as lhs_access_base) = HilExp.AccessExpression.get_base lhs_access in
+          if AccessPath.BaseSet.mem lhs_access_base formals || Var.is_global var then
             Some (EdgeExp.ValuePair.V (EdgeExp.T.Access lhs_access))
           else None
     in
@@ -280,18 +277,15 @@ module EdgeData = struct
         match get_assignment access with
         | Some rhs -> (
             let process_value_rhs rhs =
+              debug_log "Separate: %a@," EdgeExp.pp rhs ;
               let rhs_exp, _ = EdgeExp.separate rhs in
-              if
-                (not (EdgeExp.equal norm rhs_exp))
-                && AccessExpressionSet.mem access used_assignments
-              then
-                (* debug_log "############ FAIL ###########@,"; *)
-                L.die InternalError "[%a] Edge '%a = %a' assignment previously used " Procname.pp
-                  proc_name HilExp.AccessExpression.pp access EdgeExp.pp rhs
-                (* L.user_warning
-                     "[%a] Edge '%a = %a' assignment previously used, skipping substitution...@."
-                     Procname.pp proc_name HilExp.AccessExpression.pp access EdgeExp.pp rhs ;
-                   (AccessExpressionSet.empty, Some norm) *)
+              debug_log "Norm: %a@,RHS separated: %a@," EdgeExp.pp norm EdgeExp.pp rhs_exp ;
+              if AccessExpressionSet.mem access used_assignments then (
+                L.user_warning
+                  "[%a] Edge '%a = %a' assignment previously used, skipping substitution...@."
+                  Procname.pp proc_name HilExp.AccessExpression.pp access EdgeExp.pp rhs ;
+                debug_log "Returning rhs: %a@," EdgeExp.pp norm ;
+                (AccessExpressionSet.empty, Some norm) )
               else
                 let accesses =
                   if (not (EdgeExp.equal norm rhs)) && not (EdgeExp.is_zero rhs) then
@@ -299,6 +293,25 @@ module EdgeData = struct
                   else AccessExpressionSet.empty
                 in
                 (accesses, Some rhs)
+              (* if
+                   (not (EdgeExp.equal norm rhs_exp))
+                   && AccessExpressionSet.mem access used_assignments
+                 then (
+                   (* debug_log "############ FAIL ###########@,"; *)
+                   (* L.die InternalError "[%a] Edge '%a = %a' assignment previously used " Procname.pp
+                      proc_name HilExp.AccessExpression.pp access EdgeExp.pp rhs *)
+                   L.user_warning
+                     "[%a] Edge '%a = %a' assignment previously used, skipping substitution...@."
+                     Procname.pp proc_name HilExp.AccessExpression.pp access EdgeExp.pp rhs ;
+                   debug_log "Returning rhs: %a@," EdgeExp.pp norm ;
+                   (AccessExpressionSet.empty, Some norm) )
+                 else
+                   let accesses =
+                     if (not (EdgeExp.equal norm rhs)) && not (EdgeExp.is_zero rhs) then
+                       AccessExpressionSet.singleton access
+                     else AccessExpressionSet.empty
+                   in
+                   (accesses, Some rhs) *)
             in
             match rhs with
             | EdgeExp.ValuePair.P (lower_bound, upper_bound) -> (
@@ -389,8 +402,12 @@ module EdgeData = struct
       (* Separate and simplify the rhs expression and get
        * "cannnonical" form which might be equal to the lhs
        * norm in which case we dont create a new norm *)
+      debug_log "[RHS Initial expression] %a@," EdgeExp.pp rhs_value ;
       let rhs_terms, rhs_const_opt = EdgeExp.split_exp_new rhs_value in
       let rhs_norm_terms = List.map rhs_terms ~f:EdgeExp.multiply_term_by_frac in
+      debug_log "[RHS Expression Terms] " ;
+      List.iter rhs_norm_terms ~f:(fun term -> debug_log "%a " EdgeExp.pp term) ;
+      debug_log "@," ;
       let rhs_norm = EdgeExp.merge_exp_list rhs_norm_terms in
       debug_log "[Expression] %a@," EdgeExp.pp rhs_norm ;
       if Option.is_some rhs_const_opt then
@@ -525,8 +542,9 @@ let vertex_attributes node =
   match node with
   | Node.Prune _ ->
       [`Shape `Invhouse; `Label label]
-  | Node.Join _ ->
-      [`Shape `Circle; `Label "+"]
+  | Node.Join (_, id) ->
+      let label = F.asprintf "%a\n+" Procdesc.Node.pp_id id in
+      [`Shape `Circle; `Label label; `Color 0x20ab0e; `Penwidth 3.0]
   | Node.Exit ->
       [`Shape `Box; `Label label; `Color 0xFFFF00; `Style `Filled]
   | Node.Start _ ->
@@ -556,12 +574,7 @@ let edge_attributes : E.t -> 'a list =
   in
   let condition_or_terms =
     if List.is_empty edge_data.conditions then None
-    else
-      Some
-        ( List.map edge_data.conditions ~f:(fun and_terms ->
-              List.map (EdgeExp.Set.elements and_terms) ~f:EdgeExp.to_string
-              |> String.concat ~sep:" &&" )
-        |> String.concat ~sep:" ||\n" )
+    else Some (EdgeExp.output_exp_dnf edge_data.conditions ~or_sep:" ||\n" ~and_sep:" && ")
   in
   let assignments =
     if List.is_empty edge_data.assignments then None
@@ -584,4 +597,5 @@ let edge_attributes : E.t -> 'a list =
     String.substr_replace_all label ~pattern:"\"" ~with_:"\\\""
     |> String.substr_replace_all ~pattern:"\\n" ~with_:""
   in
-  [`Label label; `Color 4711 (* `Fontname "monospace" *)]
+  let attributes = if edge_data.backedge then [`Penwidth 2.0; `Color 0xc20808] else [`Color 4711] in
+  `Label label :: attributes

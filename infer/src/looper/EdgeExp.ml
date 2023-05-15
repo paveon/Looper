@@ -5,10 +5,6 @@ open LooperUtils
 module F = Format
 module L = Logging
 
-let debug_log : ('a, Format.formatter, unit) format -> 'a =
- fun fmt -> F.fprintf (List.hd_exn !debug_fmt) fmt
-
-
 let console_log : ('a, Format.formatter, unit) format -> 'a = fun fmt -> F.printf fmt
 
 module ComplexityDegree = struct
@@ -301,6 +297,14 @@ module ValuePair = struct
         F.asprintf "(%s; %s)" (to_string lb) (to_string ub)
 
 
+  let pp_multiline fmt exp =
+    match exp with
+    | V v ->
+        F.fprintf fmt "%a" pp v
+    | P (lb, ub) ->
+        F.fprintf fmt "LB: %a@,UB: %a" pp lb pp ub
+
+
   let pp fmt exp = F.fprintf fmt "%s" (to_string exp)
 
   let make_pair exp = P (exp, exp)
@@ -453,19 +457,49 @@ module CallPair = struct
   end)
 end
 
+let rec for_all_access exp ~f =
+  match exp with
+  | Access access | Strlen access ->
+      f access
+  | BinOp (_, lexp, rexp) ->
+      for_all_access lexp ~f && for_all_access rexp ~f
+  | UnOp (Unop.Neg, exp, _) ->
+      for_all_access exp ~f
+  | UnOp (_, _, _) ->
+      assert false
+  | Max args | Min args ->
+      Set.for_all (fun arg -> for_all_access arg ~f) args
+  | Cast (_, exp) ->
+      for_all_access exp ~f
+  | Inf | Const _ | Call _ | Symbolic (_, _) ->
+      true
+
+
+let rec exists_binop exp ~f =
+  match exp with
+  | BinOp (op, lexp, rexp) ->
+      if f op then true else exists_binop lexp ~f || exists_binop rexp ~f
+  | UnOp (_, exp, _) ->
+      exists_binop exp ~f
+  | Max args | Min args ->
+      Set.exists (fun arg -> exists_binop arg ~f) args
+  | Cast (_, exp) ->
+      exists_binop exp ~f
+  | Access _ | Strlen _ | Inf | Const _ | Call _ | Symbolic (_, _) ->
+      false
+
+
 let rec is_formal_variable norm formals tenv =
   match norm with
   | Max args when Int.equal (Set.cardinal args) 1 ->
       is_formal_variable (Set.min_elt args) formals tenv
   | Access ae -> (
-      let access_base = HilExp.AccessExpression.get_base ae in
+      let ((_, typ) as access_base) = HilExp.AccessExpression.get_base ae in
       AccessPath.BaseSet.mem access_base formals
-      &&
       (* TODO: hack for now? We want to treat pointer formals as variables
        * so we can derive DCs for them and track their value so we can then
        * calculate their variable bounds later on to track function side-effects *)
-      let access_base_typ = snd access_base in
-      Typ.is_pointer access_base_typ
+      && Typ.is_pointer typ
       &&
       match ae with
       | HilExp.AccessExpression.FieldOffset (Dereference _, _)
@@ -476,6 +510,61 @@ let rec is_formal_variable norm formals tenv =
   | _ ->
       false
 
+
+let rec is_global_variable norm =
+  match norm with
+  | Max args when Int.equal (Set.cardinal args) 1 ->
+      is_global_variable (Set.min_elt args)
+  | Access ae ->
+      let var, _ = HilExp.AccessExpression.get_base ae in
+      Var.is_global var
+  | _ ->
+      false
+
+
+let rec is_chain_terminal_norm norm formals =
+  for_all_access norm ~f:(fun access ->
+      let ((var, _) as base) = HilExp.AccessExpression.get_base access in
+      Var.is_global var || AccessPath.BaseSet.mem base formals )
+
+
+(* match norm with
+   | Max args when Int.equal (Set.cardinal args) 1 ->
+       is_global_variable (Set.min_elt args)
+   | Access ae ->
+       let var, _ = HilExp.AccessExpression.get_base ae in
+       Var.is_global var
+   | _ ->
+       false *)
+
+(* let is_variable norm formals tenv =
+   let rec traverse_exp = function
+     | Access ae -> (
+         let ((_, base_typ) as base) = HilExp.AccessExpression.get_base ae in
+         debug_log "[is_variable] Checking: %a@," HilExp.AccessExpression.pp ae ;
+         if AccessPath.BaseSet.mem base formals then false
+         else
+           (* TODO: hack for now? We want to treat pointer formals as variables
+              * so we can derive DCs for them and track their value so we can then
+              * calculate their variable bounds later on to track function side-effects *)
+           Typ.is_pointer base_typ
+           &&
+           match ae with
+           | HilExp.AccessExpression.FieldOffset (Dereference _, _)
+           | HilExp.AccessExpression.Dereference _ ->
+               Option.exists (HilExp.AccessExpression.get_typ ae tenv) ~f:is_integer_type
+           | _ ->
+               false )
+     | UnOp (_, exp, _) | Cast (_, exp) ->
+         traverse_exp exp
+     | BinOp (_, lexp, rexp) ->
+         traverse_exp lexp || traverse_exp rexp
+     | Max args | Min args ->
+         Set.exists traverse_exp args
+     | Inf | Const _ | Call _ | Strlen _ | Symbolic (_, _) ->
+         false
+   in
+   traverse_exp norm *)
 
 let is_variable norm formals tenv =
   let rec traverse_exp = function
@@ -706,9 +795,75 @@ let multiply_term_by_frac (term, (num, den)) =
   else UnOp (Unop.Neg, multiplied_term, None)
 
 
+let mult_frac num_terms den_terms =
+  let num = List.reduce_exn num_terms ~f:(fun a b -> a * b) in
+  let den = List.reduce_exn den_terms ~f:(fun a b -> a * b) in
+  if Int.equal (num % den) 0 then (num / den, 1) else (num, den)
+
+
+(* Function to add or subtract two fractions *)
+let merge_fractions (n1, d1) (n2, d2) op =
+  let rec gcd a b = if Int.equal b 0 then a else gcd b (a mod b) in
+  let denominator = d1 * d2 in
+  let numerator = op (n1 * d2) (n2 * d1) in
+  let frac_gcd = gcd numerator denominator in
+  (numerator / frac_gcd, denominator / frac_gcd)
+
+
 let multiply_terms (x, (x_num, x_den)) (y, (y_num, y_den)) =
-  let count = (x_num * y_num, x_den * y_den) in
-  (BinOp (Binop.Mult None, x, y), count)
+  let frac_one = (1, 1) in
+  match (x, y) with
+  | Const (Const.Cint x_lit), Const (Const.Cint y_lit) ->
+      let num = x_num * y_num in
+      let den = x_den * y_den in
+      let remainder = num % den in
+      let const_lit = IntLit.mul x_lit y_lit in
+      if Int.equal remainder 0 then
+        let num_lit = IntLit.of_int (num / den) in
+        let const = const_lit |> IntLit.mul num_lit in
+        (Const (Const.Cint const), frac_one)
+      else
+        let const = IntLit.mul const_lit (IntLit.of_int num) in
+        (Const (Const.Cint const), (1, den))
+  | Const (Const.Cint lit), exp | exp, Const (Const.Cint lit) ->
+      let lit_int = IntLit.to_int_exn lit in
+      let count = mult_frac [lit_int * x_num * y_num] [x_den; y_den] in
+      (exp, count)
+  | _ ->
+      let count = mult_frac [x_num; y_num] [x_den; y_den] in
+      (BinOp (Binop.Mult None, x, y), count)
+
+
+let divide_terms (x, (x_num, x_den)) (y, (y_num, y_den)) =
+  let frac_one = (1, 1) in
+  match (x, y) with
+  | Const (Const.Cint x_lit), Const (Const.Cint y_lit) ->
+      let x_int, y_int = (IntLit.to_int_exn x_lit, IntLit.to_int_exn y_lit) in
+      let lhs_num = x_int * x_num in
+      let rhs_num = y_int * y_num in
+      let num = lhs_num * y_den in
+      let den = x_den * rhs_num in
+      let remainder = num % den in
+      if Int.equal remainder 0 then
+        let num_lit = IntLit.of_int (num / den) in
+        (Const (Const.Cint num_lit), frac_one)
+      else
+        let const = IntLit.of_int num in
+        (Const (Const.Cint const), (1, den))
+  | Const (Const.Cint x_lit), exp ->
+      (* let count = (x_num * y_den, x_den * y_num) in
+                (BinOp (op, x, y), count) *)
+      let x_int = IntLit.to_int_exn x_lit in
+      let count = mult_frac [x_int; x_num; y_den] [x_den; y_den] in
+      let term = BinOp (Binop.DivI, zero, exp) in
+      (term, count)
+  | exp, Const (Const.Cint y_lit) ->
+      let y_int = IntLit.to_int_exn y_lit in
+      let count = mult_frac [x_num; y_den] [y_int; x_den; y_den] in
+      (exp, count)
+  | _ ->
+      let count = mult_frac [x_num; y_den] [x_den; y_num] in
+      (BinOp (Binop.DivI, x, y), count)
 
 
 let multiply_term_lists l1 l2 =
@@ -717,14 +872,6 @@ let multiply_term_lists l1 l2 =
 
 let rec split_exp_new exp =
   let frac_one = (1, 1) in
-  (* Function to add or subtract two fractions *)
-  let merge_fractions (n1, d1) (n2, d2) op =
-    let rec gcd a b = if Int.equal b 0 then a else gcd b (a mod b) in
-    let denominator = d1 * d2 in
-    let numerator = op (n1 * d2) (n2 * d1) in
-    let frac_gcd = gcd numerator denominator in
-    (numerator / frac_gcd, denominator / frac_gcd)
-  in
   (* First symbolically multiple the terms with accumulated count fractions
        and then merge the list of terms into single expression *)
   let merge_counted_terms terms = List.map terms ~f:multiply_term_by_frac |> merge_exp_list in
@@ -759,11 +906,15 @@ let rec split_exp_new exp =
         let r_list, r_const_opt = aux rexp in
         let handle_plus_minus binop intlit_op =
           let merge_terms l1 l2 =
-            List.fold l2 ~init:l1 ~f:(fun acc r_exp -> update_exp_list acc r_exp binop)
+            List.fold l2 ~init:l1 ~f:(fun l1_acc r_exp -> update_exp_list l1_acc r_exp binop)
           in
           match (l_const_opt, r_const_opt) with
           | None, None ->
-              (merge_terms l_list r_list, None)
+              let test, opt = (merge_terms l_list r_list, None) in
+              (* debug_log "[Merged Lists] " ;
+                 List.iter test ~f:(fun (term, (num, _)) -> debug_log "%d*%a " num pp term) ;
+                 debug_log "@," ; *)
+              (test, opt)
           | (Some (Binop.PlusA _, _) as const_opt), None ->
               (merge_terms l_list r_list, const_opt)
           | None, Some (Binop.PlusA i, const) ->
@@ -793,7 +944,7 @@ let rec split_exp_new exp =
         | PlusA _ | PlusPI ->
             (* TODO: Handling of PlusA and PlusPI should be same? *)
             handle_plus_minus ( + ) IntLit.add
-        | MinusA _ | MinusPI ->
+        | MinusA _ | MinusPI | MinusPP ->
             (* TODO: Handling of MinusA and MinusPI should be same? *)
             handle_plus_minus ( - ) IntLit.sub
         | Mult _ -> (
@@ -816,6 +967,37 @@ let rec split_exp_new exp =
               let r_list_with_const = (Const (Const.Cint const), frac_one) :: r_list in
               let exp_list = multiply_term_lists l_list r_list_with_const in
               (exp_list, None)
+          | Some (Binop.PlusA _, l_const), Some (Binop.PlusA _, r_const) -> (
+              let l_list_with_const = (Const (Const.Cint l_const), frac_one) :: l_list in
+              let r_list_with_const = (Const (Const.Cint r_const), frac_one) :: r_list in
+              let exp_list = multiply_term_lists l_list_with_const r_list_with_const in
+              let var_exp_list, frac_opt =
+                List.fold exp_list ~init:([], None)
+                  ~f:(fun (terms, const_acc_opt) ((x, (num, den)) as term) ->
+                    match x with
+                    | Const (Const.Cint x_lit) ->
+                        let term_frac = mult_frac [IntLit.to_int_exn x_lit; num] [den] in
+                        let new_const =
+                          match const_acc_opt with
+                          | Some acc_frac ->
+                              Some (merge_fractions term_frac acc_frac ( + ))
+                          | None ->
+                              Some term_frac
+                        in
+                        (terms, new_const)
+                    | _ ->
+                        (term :: terms, const_acc_opt) )
+              in
+              match frac_opt with
+              | Some (num, den) ->
+                  if Int.equal (num % den) 0 then
+                    let const = IntLit.of_int (num / den) in
+                    (var_exp_list, Some (Binop.PlusA None, const))
+                  else
+                    (* The constant part cannot be a fraction so keep it as a list term *)
+                    (exp_list, None)
+              | None ->
+                  (exp_list, None) )
           | Some (Binop.PlusA _, add_const), (Some (Binop.Mult _, _) as mult_const) ->
               let l_list_with_const = (Const (Const.Cint add_const), frac_one) :: l_list in
               let exp_list = multiply_term_lists l_list_with_const r_list in
@@ -849,10 +1031,10 @@ let rec split_exp_new exp =
               (new_list, None) )
         | DivI -> (
             (* integer division *)
-            let divide_terms (x, (x_num, x_den)) (y, (y_num, y_den)) =
-              let count = (x_num * y_den, x_den * y_num) in
-              (BinOp (op, x, y), count)
-            in
+            (* let divide_terms (x, (x_num, x_den)) (y, (y_num, y_den)) =
+                 let count = (x_num * y_den, x_den * y_num) in
+                 (BinOp (op, x, y), count)
+               in *)
             let divide_lists l1 l2 =
               List.concat_map l1 ~f:(fun x_term -> List.map l2 ~f:(divide_terms x_term))
             in
@@ -887,6 +1069,37 @@ let rec split_exp_new exp =
             | (Some (Binop.Mult _, _) as mult_const), Some (r_op, r_const) ->
                 let exp_list = divide_lists l_list (add_or_apply_const r_list r_op r_const) in
                 (exp_list, mult_const)
+            (* | Some (Binop.PlusA _, l_const), Some (Binop.PlusA _, r_const) -> (
+                let l_list_with_const = (Const (Const.Cint l_const), frac_one) :: l_list in
+                let r_list_with_const = (Const (Const.Cint r_const), frac_one) :: r_list in
+                let exp_list = multiply_term_lists l_list_with_const r_list_with_const in
+                let var_exp_list, frac_opt =
+                  List.fold exp_list ~init:([], None)
+                    ~f:(fun (terms, const_acc_opt) ((x, (num, den)) as term) ->
+                      match x with
+                      | Const (Const.Cint x_lit) ->
+                          let term_frac = mult_frac [IntLit.to_int_exn x_lit; num] [den] in
+                          let new_const =
+                            match const_acc_opt with
+                            | Some acc_frac ->
+                                Some (merge_fractions term_frac acc_frac ( + ))
+                            | None ->
+                                Some term_frac
+                          in
+                          (terms, new_const)
+                      | _ ->
+                          (term :: terms, const_acc_opt) )
+                in
+                match frac_opt with
+                | Some (num, den) ->
+                    if Int.equal (num % den) 0 then
+                      let const = IntLit.of_int (num / den) in
+                      (var_exp_list, Some (Binop.PlusA None, const))
+                    else
+                      (* The constant part cannot be a fraction so keep it as a list term *)
+                      (exp_list, None)
+                | None ->
+                    (exp_list, None) ) *)
             | Some (l_op, l_const), Some (r_op, r_const) ->
                 let l_list_new = add_or_apply_const l_list l_op l_const in
                 let r_list_new = add_or_apply_const r_list r_op r_const in
@@ -957,12 +1170,12 @@ let rec split_exp_new exp =
               let rhs_term = add_or_apply_const r_list r_op r_const |> merge_counted_terms in
               let new_term = (BinOp (Shiftrt, lhs_term, rhs_term), frac_one) in
               ([new_term], None) )
-        | MinusPP | DivF | Mod ->
+        | DivF | Mod ->
             L.die InternalError "[split_exp_new] NOT YET IMPLEMENTED Binop: %a" Binop.pp op
         | Lt | Gt | Le | Ge | Eq | Ne | BAnd | BXor | BOr | LAnd | LOr ->
             L.die InternalError "[split_exp_new] NOT SUPPORTED Binop: %a" Binop.pp op )
     | UnOp (op, sub_exp, typ_opt) -> (
-        if Unop.equal Unop.Neg op then
+        if not (Unop.equal Unop.Neg op) then
           L.die InternalError "[split_exp_new] Unsupported Unop: %a" pp exp ;
         (* TODO: Implement elimination of double negation *)
         let exp_list, const_opt = aux sub_exp in
@@ -994,238 +1207,268 @@ let rec split_exp_new exp =
     | Cast (typ, sub_exp) ->
         (* TODO: Implement correct propagation of constants through casts, ignoring for now *)
         let exp_list, const_opt = aux sub_exp in
-        let exp_list' = List.map exp_list ~f:(fun (term, count) -> (Cast (typ, term), count)) in
-        (exp_list', const_opt)
+        (* let exp_list' = List.map exp_list ~f:(fun (term, count) -> (Cast (typ, term), count)) in
+           (exp_list', const_opt) *)
+        (exp_list, const_opt)
     | Const (Const.Cint c) ->
         (* TODO: Implement support for floats somehow *)
         ([], Some (Binop.PlusA None, c))
-    | Access _ | Const _ | Call _ | Max _ | Min _ | Inf | Strlen _ | Symbolic _ ->
+    | Max args ->
+        let simplified_args =
+          Set.map
+            (fun x ->
+              let terms, const_opt = aux x in
+              let exp = merge_counted_terms terms in
+              merge exp const_opt )
+            args
+        in
+        let max = Max simplified_args in
+        ([(max, frac_one)], None)
+    | Min args ->
+        let simplified_args =
+          Set.map
+            (fun x ->
+              let terms, const_opt = aux x in
+              let exp = merge_counted_terms terms in
+              merge exp const_opt )
+            args
+        in
+        let min = Min simplified_args in
+        ([(min, frac_one)], None)
+    | Access _ | Const _ | Call _ | Inf | Strlen _ | Symbolic _ ->
         ([(exp, frac_one)], None)
   in
   aux exp
 
 
-let rec separate exp =
-  let symmetric_op binop =
-    match binop with
-    | Binop.PlusA ikind_opt ->
-        Binop.MinusA ikind_opt
-    | Binop.MinusA ikind_opt ->
-        Binop.PlusA ikind_opt
-    | _ ->
-        assert false
-  in
-  match exp with
-  | Access _ ->
-      (exp, None)
-  | Const (Const.Cint c) ->
-      (zero, Some (Binop.PlusA None, c))
-  | BinOp (op, lexp, rexp) -> (
-      let lexp_derived, l_const_opt = separate lexp in
-      let rexp_derived, r_const_opt = separate rexp in
-      let lexp_derived, rexp_derived, const_part =
-        match op with
-        | Binop.PlusA _ | Binop.PlusPI -> (
-          match (l_const_opt, r_const_opt) with
-          | Some (l_op, l_const), Some (r_op, r_const) -> (
-            match (l_op, r_op) with
-            | Binop.PlusA _, Binop.PlusA _ ->
-                (lexp_derived, rexp_derived, Some (l_op, IntLit.add l_const r_const))
-            | Binop.MinusA _, Binop.PlusA _ ->
-                (lexp_derived, rexp_derived, Some (r_op, IntLit.sub r_const l_const))
-            | Binop.MinusA _, Binop.MinusA _ ->
-                (lexp_derived, rexp_derived, Some (l_op, IntLit.add r_const l_const))
-            | Binop.PlusA _, Binop.Mult _ ->
-                (lexp_derived, merge rexp_derived r_const_opt, Some (l_op, r_const))
-            | Binop.Shiftrt, Binop.PlusA _ | Binop.Mult _, Binop.PlusA _ ->
-                (merge lexp_derived l_const_opt, rexp_derived, Some (r_op, r_const))
-            | _ ->
-                console_log "exp: %a,  lop: %s, rop: %s\n" pp exp (Binop.str Pp.text l_op)
-                  (Binop.str Pp.text r_op) ;
-                assert false )
-          | Some (l_op, l_const), None -> (
-            match l_op with
-            | Binop.PlusA _ | Binop.MinusA _ ->
-                (lexp_derived, rexp_derived, Some (l_op, l_const))
-            | Binop.Shiftrt ->
-                ( (* [(lexp >> l_const) + rexp] no way to go, merge l_const back to lexp *)
-                  merge lexp_derived l_const_opt
-                , rexp_derived
-                , None )
-            | _ ->
-                assert false )
-          | None, Some (r_op, r_const) -> (
-            match r_op with
-            | Binop.PlusA _ | Binop.MinusA _ ->
-                (lexp_derived, rexp_derived, Some (r_op, r_const))
-            | Binop.Shiftrt ->
-                ( lexp_derived
-                , merge rexp_derived r_const_opt
-                , None
-                  (* debug_log "LEXP: %a   REXP: %a\n" pp lexp_derived pp rexp_derived; *)
-                  (* assert(false) *) )
-            | _ ->
-                assert false )
-          | None, None ->
-              (lexp_derived, rexp_derived, None) )
-        | Binop.MinusA typ_opt -> (
-          match (l_const_opt, r_const_opt) with
-          | Some (l_op, l_const), Some (r_op, r_const) -> (
-            match (l_op, r_op) with
-            | Binop.PlusA _, Binop.PlusA _ ->
-                (lexp_derived, rexp_derived, Some (l_op, IntLit.sub l_const r_const))
-            | Binop.MinusA _, Binop.PlusA _ | Binop.PlusA _, Binop.MinusA _ ->
-                (lexp_derived, rexp_derived, Some (l_op, IntLit.add l_const r_const))
-            | Binop.MinusA _, Binop.MinusA _ ->
-                let const = IntLit.add (IntLit.neg l_const) r_const in
-                let const_op =
-                  if IntLit.isnegative const then Binop.MinusA typ_opt else Binop.PlusA typ_opt
-                in
-                (lexp_derived, rexp_derived, Some (const_op, const))
-            | Binop.Mult _, Binop.PlusA _ | Binop.Mult _, Binop.MinusA _ ->
-                (merge lexp_derived l_const_opt, rexp_derived, Some (symmetric_op r_op, r_const))
-            | Binop.PlusA _, Binop.Mult _ | Binop.MinusA _, Binop.Mult _ ->
-                (lexp_derived, merge rexp_derived r_const_opt, Some (l_op, l_const))
-            | _ ->
-                L.die InternalError "l_op: %a, r_op: %a" Binop.pp l_op Binop.pp r_op )
-          | Some (l_op, l_const), None -> (
-            match l_op with
-            | Binop.PlusA _ | Binop.MinusA _ ->
-                (lexp_derived, rexp_derived, Some (l_op, l_const))
-            | Binop.Mult _ | Binop.DivI | Binop.Shiftlt | Binop.Shiftrt ->
-                (merge lexp_derived l_const_opt, rexp_derived, None)
-            | _ ->
-                assert false )
-          | None, Some (r_op, r_const) -> (
-            match r_op with
-            | Binop.PlusA _ | Binop.MinusA _ ->
-                (lexp_derived, rexp_derived, Some (symmetric_op r_op, r_const))
-            | Binop.Mult _ | Binop.DivI | Binop.Shiftlt | Binop.Shiftrt ->
-                (lexp_derived, merge rexp_derived r_const_opt, None)
-            | _ ->
-                assert false )
-          | None, None ->
-              (lexp_derived, rexp_derived, None) )
-        | Binop.Shiftrt -> (
-          match (l_const_opt, r_const_opt) with
-          | Some (l_op, l_const), Some (r_op, r_const) -> (
-            match (l_op, r_op) with
-            | Binop.PlusA _, Binop.PlusA _ ->
-                ( merge lexp_derived l_const_opt
-                , rexp_derived
-                , Some (Binop.Shiftrt, r_const) (* assert(false) *) )
-            | Binop.Shiftrt, Binop.PlusA _ ->
-                ( lexp_derived
-                , rexp_derived
-                , Some (Binop.Shiftrt, IntLit.add l_const r_const) (* assert(false) *) )
-            | _ ->
-                assert false
-                (* let lexp_merged = merge lexp_derived l_const_opt in
-                   lexp_merged, rexp_derived, Some (Binop.Shiftrt, r_const) *) )
-          | Some (l_op, _), None -> (
-            match l_op with
-            | Binop.PlusA _ ->
-                ((* (x + c) >> y  *)
-                 merge lexp_derived l_const_opt, rexp_derived, None)
-            | _ ->
-                assert (* TODO *)
-                       false )
-          | None, Some (r_op, r_const) -> (
-            match r_op with
-            | Binop.PlusA _ ->
-                (lexp_derived, rexp_derived, Some (Binop.Shiftrt, r_const))
-            | _ ->
-                assert false )
-          | None, None ->
-              (lexp_derived, rexp_derived, None) )
-        | _ ->
-            (merge lexp_derived l_const_opt, merge rexp_derived r_const_opt, None)
-      in
-      (* zero, None *)
+let separate exp =
+  let terms, const_part = split_exp_new exp in
+  let terms = List.map terms ~f:multiply_term_by_frac in
+  let exp = merge_exp_list terms in
+  (exp, const_part)
 
-      (* debug_log "LEXP_DERIVED: %a   |   REXP_DERIVED: %a\n" pp lexp_derived pp rexp_derived; *)
-      match (is_zero lexp_derived, is_zero rexp_derived) with
-      | true, true ->
-          (zero, const_part)
-      | false, true ->
-          (lexp_derived, const_part)
-      | true, false -> (
-        match op with
-        | Binop.MinusA _ ->
-            (UnOp (Unop.Neg, rexp_derived, None), const_part)
-        | Binop.PlusA _ ->
-            (rexp_derived, const_part)
-        | Binop.Shiftrt ->
-            (zero, None)
-        | _ ->
-            assert false )
-      | false, false -> (
-          if equal lexp_derived rexp_derived then
-            match op with
-            (* | Binop.MinusA _ -> Some (zero, IntLit.add l_const (IntLit.neg r_const)) *)
-            | Binop.MinusA _ ->
-                (zero, const_part)
-            | Binop.PlusA _ | Binop.Shiftrt ->
-                (try_eval op lexp_derived rexp_derived, const_part)
-            | Binop.Mult _ ->
-                ( (* TODO: need to make sure if this is correct? *)
-                  try_eval op lexp_derived rexp_derived
-                , const_part )
-            | _ ->
-                assert false
-          else
-            match op with
-            | Binop.MinusA _
-            | Binop.PlusA _
-            | Binop.DivI
-            | Binop.Mult _
-            | Binop.Shiftrt
-            | Binop.Shiftlt ->
-                (try_eval op lexp_derived rexp_derived, const_part)
-            | Binop.PlusPI | Binop.MinusPI | Binop.MinusPP ->
-                ( (* TODO: Should we handle pointer arithmetic differently? *)
-                  try_eval op lexp_derived rexp_derived
-                , const_part )
-            | _ -> (
-                debug_log "%a %s %a\n" pp lexp_derived (Binop.str Pp.text op) pp rexp_derived ;
-                match const_part with
-                | Some (const_op, rhs_const) ->
-                    assert
-                      (* debug_log "Const part: %s %a\n" (Binop.str Pp.text const_op) IntLit.pp rhs_const; *)
-                      false
-                | None ->
-                    assert false ) ) )
-  | Cast (typ, exp) ->
-      let derived_exp, const_opt = separate exp in
-      (Cast (typ, derived_exp), const_opt)
-  | UnOp (unop, exp, typ) -> (
-    match unop with
-    | Unop.Neg -> (
-        let derived_exp, const_opt = separate exp in
-        (* let derived_exp = if is_zero derived_exp then derived_exp else UnOp (unop, derived_exp, typ) in *)
-        match const_opt with
-        | Some (binop, const) -> (
-            if IntLit.iszero const then (UnOp (unop, derived_exp, typ), None)
-            else
-              match binop with
-              | Binop.PlusA ikind_opt ->
-                  (UnOp (unop, derived_exp, typ), Some (Binop.MinusA ikind_opt, const))
-              | Binop.MinusA ikind_opt ->
-                  (UnOp (unop, derived_exp, typ), Some (Binop.PlusA ikind_opt, const))
-              | _ ->
-                  assert false )
-        | None ->
-            let ikind = Option.value_map typ ~default:None ~f:(fun x -> Typ.get_ikind_opt x) in
-            (derived_exp, Some (Binop.Mult ikind, IntLit.minus_one))
-        (* | None -> UnOp (unop, derived_exp, typ), None *) )
-    | _ ->
-        assert false )
-  | Max _ | Min _ ->
-      ((* TODO: should we somehow separate min/max expressions? *)
-       exp, None)
-  | _ ->
-      (exp, None)
 
+(* let rec separate exp =
+   let symmetric_op binop =
+     match binop with
+     | Binop.PlusA ikind_opt ->
+         Binop.MinusA ikind_opt
+     | Binop.MinusA ikind_opt ->
+         Binop.PlusA ikind_opt
+     | _ ->
+         assert false
+   in
+   match exp with
+   | Access _ ->
+       (exp, None)
+   | Const (Const.Cint c) ->
+       (zero, Some (Binop.PlusA None, c))
+   | BinOp (op, lexp, rexp) -> (
+       let lexp_derived, l_const_opt = separate lexp in
+       let rexp_derived, r_const_opt = separate rexp in
+       let lexp_derived, rexp_derived, const_part =
+         match op with
+         | Binop.PlusA _ | Binop.PlusPI -> (
+           match (l_const_opt, r_const_opt) with
+           | Some (l_op, l_const), Some (r_op, r_const) -> (
+             match (l_op, r_op) with
+             | Binop.PlusA _, Binop.PlusA _ ->
+                 (lexp_derived, rexp_derived, Some (l_op, IntLit.add l_const r_const))
+             | Binop.MinusA _, Binop.PlusA _ ->
+                 (lexp_derived, rexp_derived, Some (r_op, IntLit.sub r_const l_const))
+             | Binop.MinusA _, Binop.MinusA _ ->
+                 (lexp_derived, rexp_derived, Some (l_op, IntLit.add r_const l_const))
+             | Binop.PlusA _, Binop.Mult _ ->
+                 (lexp_derived, merge rexp_derived r_const_opt, Some (l_op, r_const))
+             | Binop.Shiftrt, Binop.PlusA _ | Binop.Mult _, Binop.PlusA _ ->
+                 (merge lexp_derived l_const_opt, rexp_derived, Some (r_op, r_const))
+             | _ ->
+                 console_log "exp: %a,  lop: %s, rop: %s\n" pp exp (Binop.str Pp.text l_op)
+                   (Binop.str Pp.text r_op) ;
+                 assert false )
+           | Some (l_op, l_const), None -> (
+             match l_op with
+             | Binop.PlusA _ | Binop.MinusA _ ->
+                 (lexp_derived, rexp_derived, Some (l_op, l_const))
+             | Binop.Shiftrt ->
+                 ( (* [(lexp >> l_const) + rexp] no way to go, merge l_const back to lexp *)
+                   merge lexp_derived l_const_opt
+                 , rexp_derived
+                 , None )
+             | _ ->
+                 assert false )
+           | None, Some (r_op, r_const) -> (
+             match r_op with
+             | Binop.PlusA _ | Binop.MinusA _ ->
+                 (lexp_derived, rexp_derived, Some (r_op, r_const))
+             | Binop.Shiftrt ->
+                 ( lexp_derived
+                 , merge rexp_derived r_const_opt
+                 , None
+                   (* debug_log "LEXP: %a   REXP: %a\n" pp lexp_derived pp rexp_derived; *)
+                   (* assert(false) *) )
+             | _ ->
+                 assert false )
+           | None, None ->
+               (lexp_derived, rexp_derived, None) )
+         | Binop.MinusA typ_opt -> (
+           match (l_const_opt, r_const_opt) with
+           | Some (l_op, l_const), Some (r_op, r_const) -> (
+             match (l_op, r_op) with
+             | Binop.PlusA _, Binop.PlusA _ ->
+                 (lexp_derived, rexp_derived, Some (l_op, IntLit.sub l_const r_const))
+             | Binop.MinusA _, Binop.PlusA _ | Binop.PlusA _, Binop.MinusA _ ->
+                 (lexp_derived, rexp_derived, Some (l_op, IntLit.add l_const r_const))
+             | Binop.MinusA _, Binop.MinusA _ ->
+                 let const = IntLit.add (IntLit.neg l_const) r_const in
+                 let const_op =
+                   if IntLit.isnegative const then Binop.MinusA typ_opt else Binop.PlusA typ_opt
+                 in
+                 (lexp_derived, rexp_derived, Some (const_op, const))
+             | Binop.Mult _, Binop.PlusA _ | Binop.Mult _, Binop.MinusA _ ->
+                 (merge lexp_derived l_const_opt, rexp_derived, Some (symmetric_op r_op, r_const))
+             | Binop.PlusA _, Binop.Mult _ | Binop.MinusA _, Binop.Mult _ ->
+                 (lexp_derived, merge rexp_derived r_const_opt, Some (l_op, l_const))
+             | _ ->
+                 L.die InternalError "l_op: %a, r_op: %a" Binop.pp l_op Binop.pp r_op )
+           | Some (l_op, l_const), None -> (
+             match l_op with
+             | Binop.PlusA _ | Binop.MinusA _ ->
+                 (lexp_derived, rexp_derived, Some (l_op, l_const))
+             | Binop.Mult _ | Binop.DivI | Binop.Shiftlt | Binop.Shiftrt ->
+                 (merge lexp_derived l_const_opt, rexp_derived, None)
+             | _ ->
+                 assert false )
+           | None, Some (r_op, r_const) -> (
+             match r_op with
+             | Binop.PlusA _ | Binop.MinusA _ ->
+                 (lexp_derived, rexp_derived, Some (symmetric_op r_op, r_const))
+             | Binop.Mult _ | Binop.DivI | Binop.Shiftlt | Binop.Shiftrt ->
+                 (lexp_derived, merge rexp_derived r_const_opt, None)
+             | _ ->
+                 assert false )
+           | None, None ->
+               (lexp_derived, rexp_derived, None) )
+         | Binop.Shiftrt -> (
+           match (l_const_opt, r_const_opt) with
+           | Some (l_op, l_const), Some (r_op, r_const) -> (
+             match (l_op, r_op) with
+             | Binop.PlusA _, Binop.PlusA _ ->
+                 ( merge lexp_derived l_const_opt
+                 , rexp_derived
+                 , Some (Binop.Shiftrt, r_const) (* assert(false) *) )
+             | Binop.Shiftrt, Binop.PlusA _ ->
+                 ( lexp_derived
+                 , rexp_derived
+                 , Some (Binop.Shiftrt, IntLit.add l_const r_const) (* assert(false) *) )
+             | _ ->
+                 assert false
+                 (* let lexp_merged = merge lexp_derived l_const_opt in
+                    lexp_merged, rexp_derived, Some (Binop.Shiftrt, r_const) *) )
+           | Some (l_op, _), None -> (
+             match l_op with
+             | Binop.PlusA _ ->
+                 ((* (x + c) >> y  *)
+                  merge lexp_derived l_const_opt, rexp_derived, None)
+             | _ ->
+                 assert (* TODO *)
+                        false )
+           | None, Some (r_op, r_const) -> (
+             match r_op with
+             | Binop.PlusA _ ->
+                 (lexp_derived, rexp_derived, Some (Binop.Shiftrt, r_const))
+             | _ ->
+                 assert false )
+           | None, None ->
+               (lexp_derived, rexp_derived, None) )
+         | _ ->
+             (merge lexp_derived l_const_opt, merge rexp_derived r_const_opt, None)
+       in
+       (* zero, None *)
+
+       (* debug_log "LEXP_DERIVED: %a   |   REXP_DERIVED: %a\n" pp lexp_derived pp rexp_derived; *)
+       match (is_zero lexp_derived, is_zero rexp_derived) with
+       | true, true ->
+           (zero, const_part)
+       | false, true ->
+           (lexp_derived, const_part)
+       | true, false -> (
+         match op with
+         | Binop.MinusA _ ->
+             (UnOp (Unop.Neg, rexp_derived, None), const_part)
+         | Binop.PlusA _ ->
+             (rexp_derived, const_part)
+         | Binop.Shiftrt ->
+             (zero, None)
+         | _ ->
+             assert false )
+       | false, false -> (
+           if equal lexp_derived rexp_derived then
+             match op with
+             (* | Binop.MinusA _ -> Some (zero, IntLit.add l_const (IntLit.neg r_const)) *)
+             | Binop.MinusA _ ->
+                 (zero, const_part)
+             | Binop.PlusA _ | Binop.Shiftrt ->
+                 (try_eval op lexp_derived rexp_derived, const_part)
+             | Binop.Mult _ ->
+                 ( (* TODO: need to make sure if this is correct? *)
+                   try_eval op lexp_derived rexp_derived
+                 , const_part )
+             | _ ->
+                 assert false
+           else
+             match op with
+             | Binop.MinusA _
+             | Binop.PlusA _
+             | Binop.DivI
+             | Binop.Mult _
+             | Binop.Shiftrt
+             | Binop.Shiftlt ->
+                 (try_eval op lexp_derived rexp_derived, const_part)
+             | Binop.PlusPI | Binop.MinusPI | Binop.MinusPP ->
+                 ( (* TODO: Should we handle pointer arithmetic differently? *)
+                   try_eval op lexp_derived rexp_derived
+                 , const_part )
+             | _ -> (
+                 debug_log "%a %s %a\n" pp lexp_derived (Binop.str Pp.text op) pp rexp_derived ;
+                 match const_part with
+                 | Some (const_op, rhs_const) ->
+                     assert
+                       (* debug_log "Const part: %s %a\n" (Binop.str Pp.text const_op) IntLit.pp rhs_const; *)
+                       false
+                 | None ->
+                     assert false ) ) )
+   | Cast (typ, exp) ->
+       let derived_exp, const_opt = separate exp in
+       (Cast (typ, derived_exp), const_opt)
+   | UnOp (unop, exp, typ) -> (
+     match unop with
+     | Unop.Neg -> (
+         let derived_exp, const_opt = separate exp in
+         (* let derived_exp = if is_zero derived_exp then derived_exp else UnOp (unop, derived_exp, typ) in *)
+         match const_opt with
+         | Some (binop, const) -> (
+             if IntLit.iszero const then (UnOp (unop, derived_exp, typ), None)
+             else
+               match binop with
+               | Binop.PlusA ikind_opt ->
+                   (UnOp (unop, derived_exp, typ), Some (Binop.MinusA ikind_opt, const))
+               | Binop.MinusA ikind_opt ->
+                   (UnOp (unop, derived_exp, typ), Some (Binop.PlusA ikind_opt, const))
+               | _ ->
+                   assert false )
+         | None ->
+             let ikind = Option.value_map typ ~default:None ~f:(fun x -> Typ.get_ikind_opt x) in
+             (derived_exp, Some (Binop.Mult ikind, IntLit.minus_one))
+         (* | None -> UnOp (unop, derived_exp, typ), None *) )
+     | _ ->
+         assert false )
+   | Max _ | Min _ ->
+       ((* TODO: should we somehow separate min/max expressions? *)
+        exp, None)
+   | _ ->
+       (exp, None)
+*)
 
 let simplify exp =
   let frac_terms, const_opt = split_exp_new exp in
@@ -1325,73 +1568,86 @@ let rec is_typ_unsigned (typ : Typ.t) =
   | Tarray {elt} ->
       is_typ_unsigned elt
   | Tptr (ptr_type, _) ->
-      is_typ_unsigned ptr_type
+      true (* is_typ_unsigned ptr_type *)
   | _ ->
       debug_log "Unknown type: %s\n" (Typ.desc_to_string typ.desc) ;
       assert false
 
 
-let rec to_why3_expr exp tenv (prover_data : Provers.prover_data) =
+let rec to_why3_expr exp tenv
+    ({ge; gt; le; lt; minus; uminus; plus; mul; div; zero_const} as prover_data :
+      Provers.prover_data ) =
   (* console_log "@[Exp: %a@,@]" pp exp; *)
-  let plus_symbol : Why3.Term.lsymbol =
-    Why3.Theory.ns_find_ls prover_data.theory.th_export ["infix +"]
-  in
-  let minus_symbol : Why3.Term.lsymbol =
-    Why3.Theory.ns_find_ls prover_data.theory.th_export ["infix -"]
-  in
-  let unary_minus_symbol : Why3.Term.lsymbol =
-    Why3.Theory.ns_find_ls prover_data.theory.th_export ["prefix -"]
-  in
-  let mul_symbol : Why3.Term.lsymbol =
-    Why3.Theory.ns_find_ls prover_data.theory.th_export ["infix *"]
-  in
-  let div_symbol : Why3.Term.lsymbol =
-    Why3.Theory.ns_find_ls prover_data.theory.th_export ["infix /"]
-  in
-  let ge_symbol = Why3.Theory.ns_find_ls prover_data.theory.th_export ["infix >="] in
-  let gt_symbol = Why3.Theory.ns_find_ls prover_data.theory.th_export ["infix >"] in
-  let le_symbol = Why3.Theory.ns_find_ls prover_data.theory.th_export ["infix <="] in
-  let lt_symbol = Why3.Theory.ns_find_ls prover_data.theory.th_export ["infix <"] in
-  let two_const : Why3.Term.term = Why3.Term.t_real_const (Why3.BigInt.of_int 2) in
-  let zero_const = Why3.Term.t_real_const (Why3.BigInt.of_int 0) in
+  (* let plus_symbol : Why3.Term.lsymbol =
+       Why3.Theory.ns_find_ls prover_data.theory.th_export ["infix +"]
+     in
+     let minus_symbol : Why3.Term.lsymbol =
+       Why3.Theory.ns_find_ls prover_data.theory.th_export ["infix -"]
+     in
+     let unary_minus_symbol : Why3.Term.lsymbol =
+       Why3.Theory.ns_find_ls prover_data.theory.th_export ["prefix -"]
+     in
+     let mul_symbol : Why3.Term.lsymbol =
+       Why3.Theory.ns_find_ls prover_data.theory.th_export ["infix *"]
+     in
+     let div_symbol : Why3.Term.lsymbol =
+       Why3.Theory.ns_find_ls prover_data.theory.th_export ["infix /"]
+     in
+     let ge_symbol = Why3.Theory.ns_find_ls prover_data.theory.th_export ["infix >="] in
+     let gt_symbol = Why3.Theory.ns_find_ls prover_data.theory.th_export ["infix >"] in
+     let le_symbol = Why3.Theory.ns_find_ls prover_data.theory.th_export ["infix <="] in
+     let lt_symbol = Why3.Theory.ns_find_ls prover_data.theory.th_export ["infix <"] in
+     let two_const : Why3.Term.term = Why3.Term.t_real_const (Why3.BigInt.of_int 2) in
+     let zero_const = Why3.Term.t_real_const (Why3.BigInt.of_int 0) in *)
   let why3_make_access_term name typ =
     let var = why3_get_vsymbol name prover_data in
     let var_term = Why3.Term.t_var var in
     if is_typ_unsigned typ then
-      let condition = Why3.Term.ps_app ge_symbol [var_term; zero_const] in
+      let condition = Why3.Term.ps_app ge [var_term; zero_const] in
       (var_term, Why3.Term.Sterm.singleton condition)
     else (var_term, Why3.Term.Sterm.empty)
   in
   let mk_const_term value = Why3.Term.t_real_const (Why3.BigInt.of_int value) in
-  let convert_min_max symbol args =
-    let why3_args, type_constraints =
-      Set.fold
-        (fun arg (args, constraints) ->
-          let why3_arg, arg_type_constraints = to_why3_expr arg tenv prover_data in
-          (why3_arg :: args, Why3.Term.Sterm.union arg_type_constraints constraints) )
-        args ([], Why3.Term.Sterm.empty)
-    in
-    assert (Set.cardinal args > 0) ;
-    if Set.cardinal args < 2 then
-      let arg = List.hd_exn why3_args in
-      let ite_condition = Why3.Term.ps_app symbol [arg; zero_const] in
-      (* TODO: should we include conditions "x >= 0" for each "max(x, 0)" expression? *)
-      (arg, Why3.Term.Sterm.add ite_condition type_constraints)
-    else
-      (* TODO: Could we potentially extract single max(...) argument based on
-       * currently examined bound parameter when checking monotony? (with some 
-       * exceptions of course) This could help use get rid of max expressions in
-       * Z3 altogether for those usecases.
-       * This seems to be necessary if we want to avoid Z3 loops and unknown results *)
-      let min_max_expr =
-        List.reduce_exn why3_args ~f:(fun x y ->
-            Why3.Term.t_if (Why3.Term.ps_app symbol [x; y]) x y )
-      in
-      (min_max_expr, type_constraints)
+  let convert_term_set terms =
+    Set.fold
+      (fun term (term_acc, constraints) ->
+        let why3_arg, arg_type_constraints = to_why3_expr term tenv prover_data in
+        (why3_arg :: term_acc, Why3.Term.Sterm.union arg_type_constraints constraints) )
+      terms ([], Why3.Term.Sterm.empty)
   in
+  (* let convert_min_max symbol args =
+       let why3_args, type_constraints =
+         Set.fold
+           (fun arg (args, constraints) ->
+             let why3_arg, arg_type_constraints = to_why3_expr arg tenv prover_data in
+             (why3_arg :: args, Why3.Term.Sterm.union arg_type_constraints constraints) )
+           args ([], Why3.Term.Sterm.empty)
+       in
+       assert (Set.cardinal args > 0) ;
+       if Set.cardinal args < 2 then
+         let arg = List.hd_exn why3_args in
+         let ite_condition = Why3.Term.ps_app symbol [arg; zero_const] in
+         (* TODO: should we include conditions "x >= 0" for each "max(x, 0)" expression? *)
+         (arg, Why3.Term.Sterm.add ite_condition type_constraints)
+       else
+         (* TODO: Could we potentially extract single max(...) argument based on
+          * currently examined bound parameter when checking monotony? (with some
+          * exceptions of course) This could help use get rid of max expressions in
+          * Z3 altogether for those usecases.
+          * This seems to be necessary if we want to avoid Z3 loops and unknown results *)
+         let min_max_expr =
+           List.reduce_exn why3_args ~f:(fun x y ->
+               Why3.Term.t_if (Why3.Term.ps_app symbol [x; y]) x y )
+         in
+         (min_max_expr, type_constraints)
+     in *)
   match exp with
   | Const (Const.Cint const) ->
-      (mk_const_term (IntLit.to_int_exn const), Why3.Term.Sterm.empty)
+      (* Check for NULL and transform to zero *)
+      let const = if IntLit.isnull const then IntLit.zero else const in
+      debug_log "Const to Why3: %a@," IntLit.pp const ;
+      ( Why3.Term.t_real_const (Why3.BigInt.of_string (IntLit.to_string const))
+      , Why3.Term.Sterm.empty )
   | Const (Const.Cfloat const) ->
       (mk_const_term (int_of_float const), Why3.Term.Sterm.empty)
   | Strlen access ->
@@ -1410,9 +1666,7 @@ let rec to_why3_expr exp tenv (prover_data : Provers.prover_data) =
       let why3_subexp, constraints = to_why3_expr subexp tenv prover_data in
       let constraints =
         if Typ.is_unsigned_int typ then
-          Why3.Term.Sterm.add
-            (Why3.Term.t_app_infer ge_symbol [why3_subexp; zero_const])
-            constraints
+          Why3.Term.Sterm.add (Why3.Term.t_app_infer ge [why3_subexp; zero_const]) constraints
         else constraints
       in
       (why3_subexp, constraints)
@@ -1437,27 +1691,27 @@ let rec to_why3_expr exp tenv (prover_data : Provers.prover_data) =
       let expr_z3, constraints =
         match op with
         | Binop.Lt ->
-            (Why3.Term.ps_app lt_symbol [why3_lexp; why3_rexp], Why3.Term.Sterm.empty)
+            (Why3.Term.ps_app lt [why3_lexp; why3_rexp], Why3.Term.Sterm.empty)
         | Binop.Le ->
-            (Why3.Term.ps_app le_symbol [why3_lexp; why3_rexp], Why3.Term.Sterm.empty)
+            (Why3.Term.ps_app le [why3_lexp; why3_rexp], Why3.Term.Sterm.empty)
         | Binop.Gt ->
-            (Why3.Term.ps_app gt_symbol [why3_lexp; why3_rexp], Why3.Term.Sterm.empty)
+            (Why3.Term.ps_app gt [why3_lexp; why3_rexp], Why3.Term.Sterm.empty)
         | Binop.Ge ->
-            (Why3.Term.ps_app ge_symbol [why3_lexp; why3_rexp], Why3.Term.Sterm.empty)
+            (Why3.Term.ps_app ge [why3_lexp; why3_rexp], Why3.Term.Sterm.empty)
         | Binop.Eq ->
             (Why3.Term.t_equ why3_lexp why3_rexp, Why3.Term.Sterm.empty)
         | Binop.Ne ->
             (Why3.Term.t_neq why3_lexp why3_rexp, Why3.Term.Sterm.empty)
         | Binop.MinusA ikind_opt ->
-            aux (Why3.Term.t_app_infer minus_symbol [why3_lexp; why3_rexp]) ikind_opt
+            aux (Why3.Term.t_app_infer minus [why3_lexp; why3_rexp]) ikind_opt
         | Binop.PlusA ikind_opt ->
-            aux (Why3.Term.t_app_infer plus_symbol [why3_lexp; why3_rexp]) ikind_opt
+            aux (Why3.Term.t_app_infer plus [why3_lexp; why3_rexp]) ikind_opt
         | Binop.Mult ikind_opt ->
-            aux (Why3.Term.t_app_infer mul_symbol [why3_lexp; why3_rexp]) ikind_opt
+            aux (Why3.Term.t_app_infer mul [why3_lexp; why3_rexp]) ikind_opt
         | Binop.PlusPI ->
-            (Why3.Term.t_app_infer plus_symbol [why3_lexp; why3_rexp], Why3.Term.Sterm.empty)
+            (Why3.Term.t_app_infer plus [why3_lexp; why3_rexp], Why3.Term.Sterm.empty)
         | Binop.MinusPI | Binop.MinusPP ->
-            (Why3.Term.t_app_infer minus_symbol [why3_lexp; why3_rexp], Why3.Term.Sterm.empty)
+            (Why3.Term.t_app_infer minus [why3_lexp; why3_rexp], Why3.Term.Sterm.empty)
         | Binop.DivI ->
             let conditions =
               if is_const rexp then (
@@ -1465,18 +1719,18 @@ let rec to_why3_expr exp tenv (prover_data : Provers.prover_data) =
                 Why3.Term.Sterm.empty )
               else Why3.Term.Sterm.singleton (Why3.Term.t_neq_simp why3_rexp zero_const)
             in
-            (Why3.Term.t_app_infer div_symbol [why3_lexp; why3_rexp], conditions)
+            (Why3.Term.t_app_infer div [why3_lexp; why3_rexp], conditions)
         | Binop.Shiftrt ->
             (* Assumption: valid unsigned shifting *)
             let rexp = eval_power rexp in
-            let condition = Why3.Term.t_app_infer ge_symbol [why3_rexp; zero_const] in
-            let expr_why3 = Why3.Term.t_app_infer div_symbol [why3_lexp; rexp] in
+            let condition = Why3.Term.t_app_infer ge [why3_rexp; zero_const] in
+            let expr_why3 = Why3.Term.t_app_infer div [why3_lexp; rexp] in
             (expr_why3, Why3.Term.Sterm.singleton condition)
         | Binop.Shiftlt ->
             (* Assumption: valid unsigned shifting *)
             let rexp = eval_power rexp in
-            let condition = Why3.Term.t_app_infer ge_symbol [why3_rexp; zero_const] in
-            let expr_why3 = Why3.Term.t_app_infer mul_symbol [why3_lexp; rexp] in
+            let condition = Why3.Term.t_app_infer ge [why3_rexp; zero_const] in
+            let expr_why3 = Why3.Term.t_app_infer mul [why3_lexp; rexp] in
             (expr_why3, Why3.Term.Sterm.singleton condition)
         | _ ->
             L.(die InternalError)
@@ -1487,15 +1741,32 @@ let rec to_why3_expr exp tenv (prover_data : Provers.prover_data) =
           (Why3.Term.Sterm.union why3_lexp_constraints why3_rexp_constraints) )
   | UnOp (Unop.Neg, subexp, _) ->
       let subexp, conditions = to_why3_expr subexp tenv prover_data in
-      (Why3.Term.t_app_infer unary_minus_symbol [subexp], conditions)
+      (Why3.Term.t_app_infer uminus [subexp], conditions)
   | UnOp (Unop.LNot, subexp, _) ->
       let subexp, conditions = to_why3_expr subexp tenv prover_data in
       (Why3.Term.t_not subexp, conditions)
       (* (Why3.Term.t_app_infer unary_minus_symbol [subexp], conditions) *)
   | Max max_args ->
-      convert_min_max ge_symbol max_args
+      let why3_args, type_constraints = convert_term_set max_args in
+      assert (Set.cardinal max_args > 0) ;
+      if Set.cardinal max_args < 2 then
+        let arg = List.hd_exn why3_args in
+        let ite_condition = Why3.Term.ps_app ge [arg; zero_const] in
+        (arg, Why3.Term.Sterm.add ite_condition type_constraints)
+      else
+        let min_max_expr =
+          List.reduce_exn why3_args ~f:(fun x y -> Why3.Term.t_if (Why3.Term.ps_app ge [x; y]) x y)
+        in
+        (min_max_expr, type_constraints)
   | Min min_args ->
-      convert_min_max le_symbol min_args
+      let why3_args, type_constraints = convert_term_set min_args in
+      assert (Set.cardinal min_args > 0) ;
+      let term =
+        if Set.cardinal min_args < 2 then List.hd_exn why3_args
+        else
+          List.reduce_exn why3_args ~f:(fun x y -> Why3.Term.t_if (Why3.Term.ps_app ge [x; y]) x y)
+      in
+      (term, type_constraints)
   | Const _ ->
       L.(die InternalError)
         "[EdgeExp.T.to_why3_expr] Expression '%a' contains invalid const!" pp exp
@@ -1593,7 +1864,7 @@ let get_accesses exp =
 let get_access_exp_set exp = get_accesses_poly exp Set.empty ~f:Set.add ~g:(fun x -> Access x)
 
 (* TODO: rewrite/get rid of *)
-let map_accesses bound ~f acc =
+let map_accesses bound ~f ~init =
   let rec aux bound acc =
     let process_min_max args ~f ~g =
       let args, acc =
@@ -1633,7 +1904,7 @@ let map_accesses bound ~f acc =
     | _ ->
         (bound, acc)
   in
-  aux bound acc
+  aux bound init
 
 
 let subst bound args formal_map =
@@ -1644,15 +1915,20 @@ let subst bound args formal_map =
     in
     match bound with
     | Access access -> (
-        let base = HilExp.AccessExpression.get_base access in
-        if HilExp.AccessExpression.is_base access then (
+        let ((var, _) as base) = HilExp.AccessExpression.get_base access in
+        if HilExp.AccessExpression.is_base access then
           match FormalMap.get_formal_index base formal_map with
           | Some idx ->
               List.nth_exn args idx |> fst
           | None ->
-              debug_log "[EdgeExp.subst] No formal mapping for base '%a'@,"
-                HilExp.AccessExpression.pp access ;
-              bound )
+              if Var.is_global var then (
+                debug_log "[EdgeExp.subst] Global variable '%a', skipping@,"
+                  HilExp.AccessExpression.pp access ;
+                bound )
+              else (
+                debug_log "[EdgeExp.subst] No formal mapping for base '%a'@,"
+                  HilExp.AccessExpression.pp access ;
+                bound )
         else
           (* Try to replace expression base with corresponding argument *)
           match FormalMap.get_formal_index base formal_map with
@@ -1759,6 +2035,7 @@ let normalize_condition exp tenv =
            | None ->
                UnOp (Unop.LNot, subexp, typ), None *)
     | BinOp (op, lexp, rexp) ->
+        (* debug_log "Condition %a %a %a@," pp lexp Binop.pp op pp rexp ; *)
         let negated_exp = if negate then negate_lop (op, lexp, rexp) else (op, lexp, rexp) in
         let norm =
           match negated_exp with
@@ -1790,7 +2067,14 @@ let normalize_condition exp tenv =
     | _ ->
         (BinOp (Binop.Ne, exp, zero), None)
   in
-  create_condition exp false
+  let ignored_operators = [Binop.BAnd; Binop.BXor; Binop.BOr] in
+  let contains_ignored_op =
+    exists_binop exp ~f:(fun op -> List.mem ignored_operators op ~equal:Binop.equal)
+  in
+  if contains_ignored_op then (None, None)
+  else
+    let cond, norm = create_condition exp false in
+    (Some cond, norm)
 
 
 (* match create_condition exp with
@@ -1879,10 +2163,10 @@ let multiply_exps lexp_parts rexp_parts =
           multiplied_exp :: acc ) )
 
 
-let rec partial_derivative_new exp ~derivation_var =
+let rec partial_diff exp ~diff_var =
   let derivative_plus_minus binop lexp rexp =
-    let rexp_derivative = partial_derivative_new rexp ~derivation_var in
-    let lexp_derivative = partial_derivative_new lexp ~derivation_var in
+    let rexp_derivative = partial_diff rexp ~diff_var in
+    let lexp_derivative = partial_diff lexp ~diff_var in
     BinOp (binop, lexp_derivative, rexp_derivative)
   in
   match exp with
@@ -1893,87 +2177,151 @@ let rec partial_derivative_new exp ~derivation_var =
       derivative_plus_minus op lexp rexp
   | BinOp (Binop.Mult kind, lexp, rexp) ->
       (* f(x) = g(x) * h(x), then f'(x) = g'(x) * h(x) + g(x) * h'(x) *)
-      let lexp' = partial_derivative_new lexp ~derivation_var in
-      let rexp' = partial_derivative_new rexp ~derivation_var in
+      let lexp' = partial_diff lexp ~diff_var in
+      let rexp' = partial_diff rexp ~diff_var in
       let lhs = BinOp (Binop.Mult kind, lexp', rexp) in
       let rhs = BinOp (Binop.Mult kind, lexp, rexp') in
       BinOp (Binop.PlusA kind, lhs, rhs)
   | BinOp (Binop.DivI, lexp, rexp) ->
       (* f(x) = g(x) / h(x), then f'(x) = (g'(x) * h(x) - g(x) * h'(x)) / h(x)^2. *)
-      let lexp' = partial_derivative_new lexp ~derivation_var in
-      let rexp' = partial_derivative_new rexp ~derivation_var in
+      let lexp' = partial_diff lexp ~diff_var in
+      let rexp' = partial_diff rexp ~diff_var in
       let num_lhs = BinOp (Binop.Mult None, lexp', rexp) in
       let num_rhs = BinOp (Binop.Mult None, lexp, rexp') in
       let numerator = BinOp (Binop.MinusA None, num_lhs, num_rhs) in
       let denominator = BinOp (Binop.Mult None, rexp, rexp) in
       BinOp (Binop.DivI, numerator, denominator)
   | UnOp (Unop.Neg, exp, typ) ->
-      UnOp (Unop.Neg, partial_derivative_new exp ~derivation_var, typ)
+      UnOp (Unop.Neg, partial_diff exp ~diff_var, typ)
+  | Cast (_, subexp) ->
+      partial_diff subexp ~diff_var
   | Const (Const.Cint _) ->
       zero
+  | Max args | Min args ->
+      (* TODO: This is just crude heuristic, come up with a better solution later *)
+      let args = Set.elements args in
+      let derived_args = List.map args ~f:(fun arg -> partial_diff arg ~diff_var) in
+      let exp = List.reduce_exn derived_args ~f:(fun x y -> BinOp (Binop.PlusA None, x, y)) in
+      exp
   | Access access ->
-      if HilExp.AccessExpression.equal access derivation_var then one else zero
+      if HilExp.AccessExpression.equal access diff_var then one else zero
   | Strlen string_access ->
-      if HilExp.AccessExpression.equal string_access derivation_var then one else zero
-  | Cast (_, subexp) ->
-      partial_derivative_new subexp ~derivation_var
+      if HilExp.AccessExpression.equal string_access diff_var then one else zero
   | exp ->
       (* TODO: implement remaining possible cases *)
       (* How to derivate calls, min/max, etc? *)
       L.die InternalError "[Partial derivative (%a)] Unsupported expression: %a"
-        HilExp.AccessExpression.pp derivation_var pp exp
+        HilExp.AccessExpression.pp diff_var pp exp
+
+
+let why3_solve_task task (prover_data : Provers.prover_data) =
+  let prover_call =
+    Why3.Driver.prove_task ~config:prover_data.main ~command:prover_data.prover_conf.command
+      ~limit:{Why3.Call_provers.empty_limit with limit_time= 10.}
+      prover_data.driver task
+  in
+  Why3.Call_provers.wait_on_call prover_call
 
 
 (* TODO: This should be decidable! Use Why3 to check more robustly *)
 (* Try to check monotonicity property based if no root exists  *)
-let check_increasing_or_decreasing exp var_access =
-  (* TODO: needs more robust solution, this is just a "heuristic" *)
-  debug_log "Var access: %a@," HilExp.AccessExpression.pp var_access ;
-  let value_map_one = AccessExpressionMap.singleton var_access 1.0 in
-  let value_map_two = AccessExpressionMap.singleton var_access 2.0 in
-  let y1 = evaluate exp value_map_one 1.0 in
-  let y2 = evaluate exp value_map_two 1.0 in
-  debug_log "y1 =  %f, y2 = %f@," y1 y2 ;
-  match Float.compare y2 y1 with
-  | 0 ->
-      (* TODO: function can be locally constant, must come up with some
-           * better way to determine if it is increasing/decreasing *)
-      L.die InternalError "[evaluate_monotonicity] TODO: locally constant function"
-  | x when x > 0 ->
+let incr_or_decr exp var_access tenv ({gt; lt} as prover_data : Provers.prover_data) =
+  let access_name = F.asprintf "%a" HilExp.AccessExpression.pp var_access in
+  let why3_exp, type_constraints = to_why3_expr exp tenv prover_data in
+  let constraints = Why3.Term.t_and_simp_l (Why3.Term.Sterm.elements type_constraints) in
+  let access_vs = why3_get_vsymbol access_name prover_data in
+  let x1_vs = why3_get_vsymbol "x1" prover_data in
+  let x2_vs = why3_get_vsymbol "x2" prover_data in
+  let x1 = Why3.Term.t_var x1_vs in
+  let x2 = Why3.Term.t_var x2_vs in
+  let consequent_x1 =
+    Why3.Term.t_v_map
+      (fun vsymbol -> if Why3.Term.vs_equal vsymbol access_vs then x1 else Why3.Term.t_var vsymbol)
+      why3_exp
+  in
+  let consequent_x2 =
+    Why3.Term.t_v_map
+      (fun vsymbol -> if Why3.Term.vs_equal vsymbol access_vs then x2 else Why3.Term.t_var vsymbol)
+      why3_exp
+  in
+  let mk_incr_decr_task goal_name symbol =
+    (* let positive_derivative = Why3.Term.t_app_infer ge [why3_derivative; zero_const] in
+       let negative_derivative = Why3.Term.t_app_infer le [why3_derivative; zero_const] in
+       let positive_implication = Why3.Term.t_implies_simp constraints positive_derivative in
+       let negative_implication = Why3.Term.t_implies_simp constraints negative_derivative in
+       let free_vars = Why3.Term.Mvs.keys (Why3.Term.t_vars positive_implication) in
+       let positive_forall = Why3.Term.t_forall_close_simp free_vars [] positive_implication in
+       let negative_forall = Why3.Term.t_forall_close_simp free_vars [] negative_implication in
+       let goal_formula = Why3.Term.t_or_simp positive_forall negative_forall in
+    *)
+    let premise = Why3.Term.t_and_l [Why3.Term.t_app_infer symbol [x2; x1]; constraints] in
+    let consequent = Why3.Term.t_app_infer symbol [consequent_x2; consequent_x1] in
+    let implication = Why3.Term.t_implies_simp premise consequent in
+    let free_vars = Why3.Term.Mvs.keys (Why3.Term.t_vars implication) in
+    let impl_exists = Why3.Term.t_exists_close_simp free_vars [] implication in
+    let base_task = Why3.Task.use_export None prover_data.theory in
+    let goal = Why3.Decl.create_prsymbol (Why3.Ident.id_fresh goal_name) in
+    Why3.Task.add_prop_decl base_task Why3.Decl.Pgoal goal impl_exists
+  in
+  let incr_task = mk_incr_decr_task "incr_goal" gt in
+  let decr_task = mk_incr_decr_task "decr_goal" lt in
+  let incr_result = (why3_solve_task incr_task prover_data).pr_answer in
+  let decr_result = (why3_solve_task decr_task prover_data).pr_answer in
+  match (incr_result, decr_result) with
+  | Why3.Call_provers.Valid, _ ->
       debug_log "Monotonicity: Non-decreasing" ;
       Monotonicity.NonDecreasing
-  | _ ->
+  | _, Why3.Call_provers.Valid ->
       debug_log "Monotonicity: Non-increasing" ;
       Monotonicity.NonIncreasing
+  | _ ->
+      assert false
 
 
-let determine_monotonicity exp tenv (prover_data : Provers.prover_data) =
+(* let positive_derivative = Why3.Term.t_app_infer ge [why3_derivative; zero_const] in
+   let negative_derivative = Why3.Term.t_app_infer le [why3_derivative; zero_const] in
+   let positive_implication = Why3.Term.t_implies_simp constraints positive_derivative in
+   let negative_implication = Why3.Term.t_implies_simp constraints negative_derivative in
+   let free_vars = Why3.Term.Mvs.keys (Why3.Term.t_vars positive_implication) in
+   let positive_forall = Why3.Term.t_forall_close_simp free_vars [] positive_implication in
+   let negative_forall = Why3.Term.t_forall_close_simp free_vars [] negative_implication in
+*)
+(* TODO: needs more robust solution, this is just a "heuristic" *)
+(* debug_log "[incr_or_decr] %a[%a / (1, 2)]@," pp exp HilExp.AccessExpression.pp var_access ;
+   (* debug_log "Var access: %a@," HilExp.AccessExpression.pp var_access ; *)
+   let value_map_one = AccessExpressionMap.singleton var_access 1.0 in
+   let value_map_two = AccessExpressionMap.singleton var_access 2.0 in
+   let y1 = evaluate exp value_map_one 1.0 in
+   let y2 = evaluate exp value_map_two 1.0 in
+   debug_log "y1 =  %f, y2 = %f@," y1 y2 ;
+   match Float.compare y2 y1 with
+   | 0 ->
+       (* TODO: function can be locally constant, must come up with some
+            * better way to determine if it is increasing/decreasing *)
+       L.die InternalError "[evaluate_monotonicity] TODO: locally constant function"
+   | x when x > 0 ->
+       debug_log "Monotonicity: Non-decreasing" ;
+       Monotonicity.NonDecreasing
+   | _ ->
+       debug_log "Monotonicity: Non-increasing" ;
+       Monotonicity.NonIncreasing *)
+
+let determine_monotonicity exp tenv ({ge; le; zero_const} as prover_data : Provers.prover_data) =
   debug_log "@[<v2>[Determining monotonicity] %a@," pp exp ;
-  let transformed, conditions = transform_shifts exp in
-  debug_log "@[<v2>[Transforming shifts]@,Result: %a@," pp transformed ;
-  if Set.is_empty conditions |> not then (
-    debug_log "Value conditions: " ;
-    Set.iter (fun condition -> debug_log "%a@ " pp condition) conditions ) ;
+  (* let transformed, conditions = transform_shifts exp in *)
+  (* debug_log "@[<v2>[Transforming shifts]@,Result: %a@," pp transformed ; *)
+  (* if Set.is_empty conditions |> not then (
+     debug_log "Value conditions: " ;
+     Set.iter (fun condition -> debug_log "%a@ " pp condition) conditions ) ; *)
   let exp_simplified = simplify exp in
-  let why3_solve_task task =
-    let prover_call =
-      Why3.Driver.prove_task ~config:prover_data.main ~command:prover_data.prover_conf.command
-        ~limit:{Why3.Call_provers.empty_limit with limit_time= 10.}
-        prover_data.driver task
-    in
-    Why3.Call_provers.wait_on_call prover_call
-  in
-  let why3_conditions =
-    Set.fold
-      (fun condition acc ->
-        let cond, _ = to_why3_expr condition tenv prover_data in
-        (* debug_log "[Why3 Condition] %a\n" Why3.Pretty.print_term cond; *)
-        cond :: acc )
-      conditions []
-  in
-  let zero_const = Why3.Term.t_real_const (Why3.BigInt.of_int 0) in
-  let ge_symbol = Why3.Theory.ns_find_ls prover_data.theory.th_export ["infix >="] in
-  let le_symbol = Why3.Theory.ns_find_ls prover_data.theory.th_export ["infix <="] in
+  (* let why3_conditions =
+       Set.fold
+         (fun condition acc ->
+           let cond, _ = to_why3_expr condition tenv prover_data in
+           (* debug_log "[Why3 Condition] %a\n" Why3.Pretty.print_term cond; *)
+           cond :: acc )
+         conditions []
+     in *)
   let base_task = Why3.Task.use_export None prover_data.theory in
   let nonzero_goal = Why3.Decl.create_prsymbol (Why3.Ident.id_fresh "nonzero_goal") in
   debug_log "@[<v2>[Calculating partial derivatives for expression]@," ;
@@ -1981,58 +2329,61 @@ let determine_monotonicity exp tenv (prover_data : Provers.prover_data) =
   debug_log "Analyzed expression: %a@,%a@," pp exp_simplified
     (pp_list "Derivation variables" HilExp.AccessExpression.pp)
     (AccessExpressionSet.elements derivative_variables) ;
-  let monotonicities =
-    AccessExpressionSet.fold
-      (fun derivation_var acc ->
-        debug_log "@[<v2>[Derivation variable: %a]@," HilExp.AccessExpression.pp derivation_var ;
-        let derivative = partial_derivative_new exp_simplified ~derivation_var |> simplify in
-        debug_log "Derivative: %a@," pp derivative ;
-        let monotonicity =
-          if is_const derivative then
-            let exp_monotonicity = check_increasing_or_decreasing exp_simplified derivation_var in
-            AccessExpressionMap.add derivation_var exp_monotonicity acc
-          else
-            let why3_derivative, type_constraints = to_why3_expr derivative tenv prover_data in
-            let constraints =
-              Why3.Term.t_and_simp_l (Why3.Term.Sterm.elements type_constraints @ why3_conditions)
-            in
-            let positive_derivative =
-              Why3.Term.t_app_infer ge_symbol [why3_derivative; zero_const]
-            in
-            let negative_derivative =
-              Why3.Term.t_app_infer le_symbol [why3_derivative; zero_const]
-            in
-            let positive_implication = Why3.Term.t_implies_simp constraints positive_derivative in
-            let negative_implication = Why3.Term.t_implies_simp constraints negative_derivative in
-            let free_vars = Why3.Term.Mvs.keys (Why3.Term.t_vars positive_implication) in
-            let positive_forall = Why3.Term.t_forall_close_simp free_vars [] positive_implication in
-            let negative_forall = Why3.Term.t_forall_close_simp free_vars [] negative_implication in
-            let goal_formula = Why3.Term.t_or_simp positive_forall negative_forall in
-            let task =
-              Why3.Task.add_prop_decl base_task Why3.Decl.Pgoal nonzero_goal goal_formula
-            in
-            (* debug_log "@[<v2>[Why3 Info]@,Task formula: %a@,Task: %a@]@,"
-               Why3.Pretty.print_term goal_formula
-               Why3.Driver.(print_task prover_data.driver) task; *)
-            match (why3_solve_task task).pr_answer with
-            | Why3.Call_provers.Valid ->
-                debug_log "Derivative does not change sign. Checking monotonicity type@," ;
-                let exp_monotonicity =
-                  check_increasing_or_decreasing exp_simplified derivation_var
-                in
-                AccessExpressionMap.add derivation_var exp_monotonicity acc
-            | Why3.Call_provers.Invalid | Why3.Call_provers.Unknown _ ->
-                debug_log "Derivative changes sign. Not monotonic" ;
-                AccessExpressionMap.add derivation_var Monotonicity.NotMonotonic acc
-            | _ ->
-                assert false
-        in
-        debug_log "@]@," ;
-        monotonicity )
-      derivative_variables AccessExpressionMap.empty
-  in
-  debug_log "@]@]@," ;
-  monotonicities
+  try
+    let monotonicities =
+      AccessExpressionSet.fold
+        (fun diff_var acc ->
+          debug_log "@[<v2>[Derivation variable: %a]@," HilExp.AccessExpression.pp diff_var ;
+          let derivative = partial_diff exp_simplified ~diff_var |> simplify in
+          debug_log "Derivative: %a@," pp derivative ;
+          let monotonicity =
+            if is_const derivative then
+              let exp_monotonicity = incr_or_decr exp_simplified diff_var tenv prover_data in
+              AccessExpressionMap.add diff_var exp_monotonicity acc
+            else
+              let why3_derivative, type_constraints = to_why3_expr derivative tenv prover_data in
+              (* Why3.Term.t_and_simp_l (Why3.Term.Sterm.elements type_constraints @ why3_conditions) *)
+              let constraints =
+                Why3.Term.t_and_simp_l (Why3.Term.Sterm.elements type_constraints)
+              in
+              let positive_derivative = Why3.Term.t_app_infer ge [why3_derivative; zero_const] in
+              let negative_derivative = Why3.Term.t_app_infer le [why3_derivative; zero_const] in
+              let positive_implication = Why3.Term.t_implies_simp constraints positive_derivative in
+              let negative_implication = Why3.Term.t_implies_simp constraints negative_derivative in
+              let free_vars = Why3.Term.Mvs.keys (Why3.Term.t_vars positive_implication) in
+              let positive_forall =
+                Why3.Term.t_forall_close_simp free_vars [] positive_implication
+              in
+              let negative_forall =
+                Why3.Term.t_forall_close_simp free_vars [] negative_implication
+              in
+              let goal_formula = Why3.Term.t_or_simp positive_forall negative_forall in
+              let task =
+                Why3.Task.add_prop_decl base_task Why3.Decl.Pgoal nonzero_goal goal_formula
+              in
+              (* debug_log "@[<v2>[Why3 Info]@,Task formula: %a@,Task: %a@]@,"
+                 Why3.Pretty.print_term goal_formula
+                 Why3.Driver.(print_task prover_data.driver) task; *)
+              match (why3_solve_task task prover_data).pr_answer with
+              | Why3.Call_provers.Valid ->
+                  debug_log "Derivative does not change sign. Checking monotonicity type@," ;
+                  let exp_monotonicity = incr_or_decr exp_simplified diff_var tenv prover_data in
+                  AccessExpressionMap.add diff_var exp_monotonicity acc
+              | Why3.Call_provers.Invalid | Why3.Call_provers.Unknown _ ->
+                  debug_log "Derivative changes sign. Not monotonic" ;
+                  AccessExpressionMap.add diff_var Monotonicity.NotMonotonic acc
+              | _ ->
+                  assert false
+          in
+          debug_log "@]@," ;
+          monotonicity )
+        derivative_variables AccessExpressionMap.empty
+    in
+    debug_log "@]@]@," ;
+    monotonicities
+  with error ->
+    debug_log "@]@]@]@," ;
+    raise error
 
 
 let rec array_index_of_exp ~include_array_indexes ~f_resolve_id ~add_deref exp typ =
@@ -2050,16 +2401,14 @@ and access_exprs_of_exp ~include_array_indexes ~f_resolve_id ~test_resolver ~add
     match (exp : Exp.t) with
     | Var id -> (
       match test_resolver (Var.of_id id) with
-      | Some value_pair -> (
+      | Some value_pair, _ -> (
           let process_value value =
             (* TODO: This seems sketchy, we're working with more
                complex expressions instead of just access expressions
                as it was originally *)
-            map_accesses value
-              ~f:(fun ae None ->
+            map_accesses value ~init:None ~f:(fun ae None ->
                 let ae = if add_deref then HilExp.AccessExpression.dereference ae else ae in
                 (Access (add_accesses ae), None) )
-              None
             |> fst
           in
           match value_pair with
@@ -2067,7 +2416,7 @@ and access_exprs_of_exp ~include_array_indexes ~f_resolve_id ~test_resolver ~add
               ValuePair.V (process_value value) :: acc
           | ValuePair.P (lb, ub) ->
               ValuePair.P (process_value lb, process_value ub) :: acc )
-      | None ->
+      | None, missing_id ->
           let ae = HilExp.AccessExpression.address_of_base (base_of_id id typ) in
           let ae = if add_deref then HilExp.AccessExpression.dereference ae else ae in
           ValuePair.V (Access (add_accesses ae)) :: acc
@@ -2085,13 +2434,12 @@ and access_exprs_of_exp ~include_array_indexes ~f_resolve_id ~test_resolver ~add
                  add_accesses access_expr' :: acc *) )
     | Lvar pvar when Pvar.is_ssa_frontend_tmp pvar -> (
       match test_resolver (Var.of_pvar pvar) with
-      | Some value_pair -> (
+      | Some value_pair, _ -> (
           let process_value value =
             (* TODO: This seems sketchy, we're working with more
                complex expressions instead of just access expressions
                as it was originally *)
-            map_accesses value
-              ~f:(fun ae None ->
+            map_accesses value ~init:None ~f:(fun ae None ->
                 (* do not need to add deref here as it was added implicitly in the binding *)
                 (* but need to remove it if add_deref is false *)
                 let ae =
@@ -2100,7 +2448,6 @@ and access_exprs_of_exp ~include_array_indexes ~f_resolve_id ~test_resolver ~add
                   else ae
                 in
                 (Access (add_accesses ae), None) )
-              None
             |> fst
           in
           match value_pair with
@@ -2108,7 +2455,7 @@ and access_exprs_of_exp ~include_array_indexes ~f_resolve_id ~test_resolver ~add
               ValuePair.V (process_value value) :: acc
           | ValuePair.P (lb, ub) ->
               ValuePair.P (process_value lb, process_value ub) :: acc )
-      | None ->
+      | None, missing_id ->
           let access_expr = of_pvar pvar typ in
           let access_expr =
             if add_deref then HilExp.AccessExpression.dereference access_expr else access_expr
@@ -2236,13 +2583,11 @@ and of_sil_exp ~include_array_indexes ~f_resolve_id ~test_resolver ~add_deref ex
     match exp with
     | Exp.Var id -> (
       match test_resolver (Var.of_id id) with
-      | Some value_pair -> (
+      | Some value_pair, _ -> (
           let process_value value =
-            map_accesses value
-              ~f:(fun ae None ->
+            map_accesses value ~init:None ~f:(fun ae None ->
                 let ae = if add_deref then HilExp.AccessExpression.dereference ae else ae in
                 (Access ae, None) )
-              None
             |> fst
           in
           match value_pair with
@@ -2250,7 +2595,7 @@ and of_sil_exp ~include_array_indexes ~f_resolve_id ~test_resolver ~add_deref ex
               ValuePair.V (process_value value)
           | ValuePair.P (lb, ub) ->
               ValuePair.P (process_value lb, process_value ub) )
-      | None ->
+      | None, missing ->
           let access_expr = HilExp.AccessExpression.of_id id typ in
           let access_expr =
             if add_deref then HilExp.AccessExpression.dereference access_expr else access_expr
@@ -2343,3 +2688,108 @@ and of_sil_exp ~include_array_indexes ~f_resolve_id ~test_resolver ~add_deref ex
         L.(die InternalError) "[EdgeExp.of_sil_exp] Unsupported Closure expression %a!" Exp.pp exp
   in
   of_sil_ exp typ
+
+
+let output_exp_dnf terms ~and_sep ~or_sep =
+  List.map terms ~f:(fun and_terms ->
+      let and_terms_str =
+        List.map (Set.elements and_terms) ~f:to_string |> String.concat ~sep:and_sep
+      in
+      F.asprintf "(%s)" and_terms_str )
+  |> String.concat ~sep:or_sep
+
+
+let rec contains_inf exp =
+  match exp with
+  | BinOp (_, lexp, rexp) ->
+      contains_inf lexp || contains_inf rexp
+  | UnOp (_, exp, _) ->
+      contains_inf exp
+  | Max args | Min args ->
+      Set.exists (fun arg -> contains_inf arg) args
+  | Cast (_, exp) ->
+      contains_inf exp
+  | Access _ | Strlen _ | Const _ | Call _ | Symbolic _ ->
+      false
+  | Inf ->
+      true
+
+
+(* "bound": "((Strlen(name) + [(Strlen(name) - 1)]) + 1)", *)
+
+(* "hum_polynomial": "12 + 7 ⋅ (name->strlen.ub(u) - 1) + (max(1, name->strlen.lb(u)))",
+   "hum_degree": "1",
+   "big_o": "O(name->strlen.ub(u))" *)
+
+let rec get_degrees exp =
+  match exp with
+  | BinOp (op, lexp, rexp) -> (
+      let lexp_degrees, rexp_degrees = (get_degrees lexp, get_degrees rexp) in
+      match op with
+      | Binop.PlusA _ | Binop.MinusA _ ->
+          (* Merge degrees and choose the bigger ones if collisions happen *)
+          (* Map.union (fun _ v1 v2 -> if v1 > v2 then Some v1 else Some v2) lexp_degrees rexp_degrees *)
+          lexp_degrees @ rexp_degrees
+      | Binop.Mult _ ->
+          let multiply_terms (lexp_term : int Map.t) (rexp_term : int Map.t) =
+            Map.union (fun _ d1 d2 -> Some (d1 * d2)) lexp_term rexp_term
+          in
+          (* List.concat_map l1 ~f:(fun x_term -> List.map l2 ~f:(multiply_terms x_term)) *)
+          List.concat_map lexp_degrees ~f:(fun lexp_term ->
+              List.map rexp_degrees ~f:(multiply_terms lexp_term) )
+      | Binop.DivI -> (
+        match (lexp_degrees, rexp_degrees) with
+        | [], [] ->
+            []
+        | degrees, [] ->
+            degrees
+        | [], degrees ->
+            assert false
+        | lexp, rexp ->
+            assert false )
+      | _ ->
+          assert false )
+  | UnOp (_, exp, _) ->
+      get_degrees exp
+  | Max args | Min args ->
+      Set.fold
+        (fun arg acc ->
+          let arg_degress = get_degrees arg in
+          arg_degress @ acc )
+        args []
+      (* let degrees =
+           Set.fold
+             (fun arg acc ->
+               let degrees = get_degrees arg in
+               Map.union (fun _ v1 v2 -> if v1 > v2 then Some v1 else Some v2) acc degrees )
+             args Map.empty
+         in
+         degrees *)
+  | Cast (_, exp) ->
+      get_degrees exp
+  | Access _ | Strlen _ | Call _ ->
+      [Map.singleton exp 1]
+  | Const _ | Symbolic _ | Inf ->
+      []
+
+
+let big_o exp =
+  if contains_inf exp then "O(Top)"
+  else
+    match evaluate_const_exp exp with
+    | Some _ ->
+        "O(1)"
+    | None -> (
+        let degrees = get_degrees exp in
+        let max_degree =
+          List.max_elt degrees ~compare:(fun x y ->
+              Map.compare (fun v1 v2 -> Int.compare v1 v2) x y )
+        in
+        match max_degree with
+        | Some terms ->
+            let test =
+              Map.fold (fun exp degree acc -> F.asprintf "%a^%d * %s" pp exp degree acc) terms ""
+            in
+            F.asprintf "O(%s)" test
+        | None ->
+            "None" )

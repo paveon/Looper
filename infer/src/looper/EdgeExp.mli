@@ -52,6 +52,8 @@ module ValuePair : sig
 
   val to_string : t -> string
 
+  val pp_multiline : F.formatter -> t -> unit
+
   val pp : F.formatter -> t -> unit
 
   val get_lb : t -> T.t
@@ -107,6 +109,10 @@ val is_const : T.t -> bool
 
 val is_formal_variable : T.t -> AccessPath.BaseSet.t -> Tenv.t -> bool
 
+val is_global_variable : T.t -> bool
+
+val is_chain_terminal_norm : T.t -> AccessPath.BaseSet.t -> bool
+
 val is_variable : T.t -> AccessPath.BaseSet.t -> Tenv.t -> bool
 
 val is_symbolic_const : T.t -> AccessPath.BaseSet.t -> Tenv.t -> bool
@@ -150,7 +156,7 @@ val evaluate_const_exp : T.t -> IntLit.t option
 val of_sil_exp :
      include_array_indexes:bool
   -> f_resolve_id:(Var.t -> HilExp.access_expression option)
-  -> test_resolver:(Var.t -> ValuePair.t option)
+  -> test_resolver:(Var.t -> ValuePair.t option * bool)
   -> add_deref:bool
   -> Exp.t
   -> Typ.t
@@ -164,11 +170,15 @@ val get_accesses : T.t -> LooperUtils.AccessExpressionSet.t
 
 val get_access_exp_set : T.t -> Set.t
 
-val map_accesses : T.t -> f:(HilExp.access_expression -> 'a -> T.t * 'a) -> 'a -> T.t * 'a
+val map_accesses : T.t -> f:(HilExp.access_expression -> 'a -> T.t * 'a) -> init:'a -> T.t * 'a
+
+val for_all_access : T.t -> f:(HilExp.access_expression -> bool) -> bool
+
+val exists_binop : t -> f:(Binop.t -> bool) -> bool
 
 val subst : T.t -> (T.t * Typ.t) list -> FormalMap.t -> T.t
 
-val normalize_condition : T.t -> Tenv.t -> T.t * T.t option
+val normalize_condition : T.t -> Tenv.t -> T.t option * T.t option
 
 val deduplicate_exp_list : T.t list -> T.t list
 
@@ -183,3 +193,7 @@ val add : T.t -> T.t -> T.t
 val sub : T.t -> T.t -> T.t
 
 val mult : T.t -> T.t -> T.t
+
+val output_exp_dnf : Set.t list -> and_sep:string -> or_sep:string -> string
+
+val big_o : T.t -> string

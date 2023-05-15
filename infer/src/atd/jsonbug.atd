@@ -175,10 +175,9 @@ type config_impact_item = {
 
 type config_impact_report = config_impact_item list
 
-
-type bound_info = {
-  bound : string;
-  return_bound : string option;
+type exec_cost_t = {
+  cost : string;
+  big_o: string;
 }
 
 type looper_item = {
@@ -186,5 +185,6 @@ type looper_item = {
   loc : loc;
   procedure_name : string;
   procedure_id : string;
-  bounds : bound_info;
+  exec_cost : exec_cost_t;
+  ?return_bound : (string list) option;
 }

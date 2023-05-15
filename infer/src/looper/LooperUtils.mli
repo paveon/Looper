@@ -5,6 +5,8 @@ module F = Format
 
 val debug_fmt : F.formatter list ref
 
+val debug_log : ('a, F.formatter, unit) IStd.format -> 'a
+
 module PvarMap : sig
   include module type of Caml.Map.Make (Pvar)
 
@@ -14,6 +16,8 @@ module PvarMap : sig
 end
 
 module StringMap : Caml.Map.S with type key = string
+
+module IntMap : Caml.Map.S with type key = int
 
 module AccessSet : Caml.Set.S with type elt = AccessPath.t
 

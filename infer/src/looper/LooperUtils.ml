@@ -5,6 +5,10 @@ module F = Format
 
 let debug_fmt = ref [F.std_formatter]
 
+let debug_log : ('a, Format.formatter, unit) format -> 'a =
+ fun fmt -> F.fprintf (List.hd_exn !debug_fmt) fmt
+
+
 module PvarMap = struct
   include Caml.Map.Make (Pvar)
 
@@ -20,6 +24,12 @@ module StringMap = Caml.Map.Make (struct
   type nonrec t = string
 
   let compare = compare_string
+end)
+
+module IntMap = Caml.Map.Make (struct
+  type nonrec t = int
+
+  let compare = Int.compare
 end)
 
 module AccessSet = Caml.Set.Make (struct

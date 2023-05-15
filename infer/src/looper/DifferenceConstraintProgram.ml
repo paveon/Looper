@@ -6,10 +6,6 @@ module F = Format
 module DC = DifferenceConstraint
 module LTS = LabeledTransitionSystem
 
-let debug_log : ('a, Format.formatter, unit) format -> 'a =
- fun fmt -> F.fprintf (List.hd_exn !debug_fmt) fmt
-
-
 (* Difference Constraint Program *)
 type edge_output_type = GuardedDCP | DCP [@@deriving compare]
 
@@ -135,8 +131,21 @@ let edge_label : EdgeData.t -> string option =
       None
 
 
+(* let vertex_attributes node =
+   [`Shape `Box; `Label (LTS.Node.to_string node) (* `Fontname "monospace" *)] *)
+
 let vertex_attributes node =
-  [`Shape `Box; `Label (LTS.Node.to_string node) (* `Fontname "monospace" *)]
+  let label = LTS.Node.to_string node in
+  match node with
+  | LTS.Node.Prune _ ->
+      [`Shape `Invhouse; `Label label]
+  | LTS.Node.Join (_, id) ->
+      let label = F.asprintf "%a\n+" Procdesc.Node.pp_id id in
+      [`Shape `Circle; `Label label; `Color 0x20ab0e; `Penwidth 3.0]
+  | LTS.Node.Exit ->
+      [`Shape `Box; `Label label; `Color 0xFFFF00; `Style `Filled]
+  | LTS.Node.Start _ ->
+      [`Shape `Box; `Label label; `Color 0xFFFF00; `Style `Filled]
 
 
 let vertex_name vertex = string_of_int (LTS.Node.hash vertex)
@@ -160,42 +169,29 @@ let edge_attributes : E.t -> 'a list =
       in
       Some (String.concat ~sep:"\n" call_list)
   in
-  (* let local_bound_label, edge_color =
-       match edge_data.bound_norm with
-       | Some norm ->
-           ( Some (F.asprintf "[LB] %a" EdgeExp.pp norm)
-           , if EdgeExp.equal norm EdgeExp.one then 0x006400 else 0xFF0000 )
-       | None ->
-           (None, 4711)
-     in *)
-  let edge_color =
+  let attributes =
     match edge_data.bound_norms with
     | [] ->
-        4711
+        [`Color 4711]
     | [bound_set] when Int.equal (EdgeExp.Set.cardinal bound_set) 1 ->
-        if EdgeExp.equal (EdgeExp.Set.min_elt bound_set) EdgeExp.one then 0x006400 else 0xFF0000
+        if EdgeExp.equal (EdgeExp.Set.min_elt bound_set) EdgeExp.one then [`Color 0x006400]
+        else [`Penwidth 2.0; `Color 0xFF0000]
     | _ ->
-        0xFF0000
+        [`Penwidth 2.0; `Color 0xFF0000]
   in
   let local_bounds_label =
     if List.is_empty edge_data.bound_norms then None
     else
       Some
         ( "[Local Bounds] "
-        ^ ( List.map edge_data.bound_norms ~f:(fun and_terms ->
-                List.map (EdgeExp.Set.elements and_terms) ~f:EdgeExp.to_string
-                |> String.concat ~sep:" &&" )
-          |> String.concat ~sep:" || " ) )
+        ^ EdgeExp.output_exp_dnf edge_data.bound_norms ~and_sep:" && " ~or_sep:" || " )
   in
   let condition_norms =
     if List.is_empty edge_data.condition_norms then None
     else
       Some
         ( "[Condition Norms] "
-        ^ ( List.map edge_data.condition_norms ~f:(fun and_terms ->
-                List.map (EdgeExp.Set.elements and_terms) ~f:EdgeExp.to_string
-                |> String.concat ~sep:" &&" )
-          |> String.concat ~sep:" || " ) )
+        ^ EdgeExp.output_exp_dnf edge_data.condition_norms ~and_sep:" && " ~or_sep:" || " )
   in
   let label_parts =
     [edge_label edge_data; backedge_label; local_bounds_label; calls_str; condition_norms]
@@ -227,4 +223,4 @@ let edge_attributes : E.t -> 'a list =
     |> (* Remove newlines from string arguments of function calls and such to make it more readable *)
     String.substr_replace_all ~pattern:"\\n" ~with_:""
   in
-  [`Label label; `Color edge_color (* `Fontname "monospace" *)]
+  `Label label :: attributes

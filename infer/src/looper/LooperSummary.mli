@@ -29,7 +29,7 @@ type model_call =
   { name: Procname.t
   ; loc: Location.t
   ; bound: EdgeExp.T.t
-  ; monotony_map: Monotonicity.t AccessExpressionMap.t }
+  ; monotonicity_map: Monotonicity.t AccessExpressionMap.t }
 
 type real_call = {name: Procname.t; loc: Location.t; bounds: transition list}
 
@@ -45,49 +45,36 @@ and transition =
 type t =
   { formal_map: FormalMap.t
   ; bounds: transition list
-  ; return_bound: EdgeExp.ValuePair.pair option
-  ; return_monotonicity_map:
-      Monotonicity.t AccessExpressionMap.t * Monotonicity.t AccessExpressionMap.t
-  ; formal_bounds: EdgeExp.ValuePair.pair EdgeExp.Map.t
-  ; formal_monotonicity_map:
-      Monotonicity.t AccessExpressionMap.t * Monotonicity.t AccessExpressionMap.t }
-
-(* module ComplexityDegree : sig
-     type t =
-       | Linear
-       | Log
-       | Linearithmic
-   end *)
+  ; return_bound: EdgeExp.ValuePair.t option
+  ; formal_bounds: EdgeExp.ValuePair.pair EdgeExp.Map.t }
 
 module Model : sig
   type t =
-    { (* args: EdgeExp.ValuePair.t list;
-         complexity: EdgeExp.ComplexityDegree.t;
-         return_bound: EdgeExp.ValuePair.t option; *)
-      name: string
-    ; complexity: EdgeExp.ValuePair.t
-    ; return_bound: EdgeExp.ValuePair.t option }
-
-  val pp : F.formatter -> t -> unit
+    { name: string
+    ; return_bound: EdgeExp.ValuePair.t option
+    ; monotonicity_map: Monotonicity.t IntMap.t
+    ; side_effects: EdgeExp.ValuePair.pair EdgeExp.Map.t
+    ; compute_complexity:
+           (EdgeExp.T.t * Typ.t) list
+        -> cache
+        -> variable_bound:(bound_type:BoundType.t -> EdgeExp.T.t -> cache -> EdgeExp.T.t * cache)
+        -> EdgeExp.T.t * cache }
 end
-
-(* type model = {
-     complexity: ComplexityDegree.t;
-     args: EdgeExp.ValuePair.t list;
-   } *)
 
 type model_summary = Real of t | Model of Model.t
 
 val total_bound : transition list -> EdgeExp.T.t
 
 val instantiate :
-     t
+     model_summary
+  -> Procname.t
   -> (EdgeExp.T.t * Typ.t) list
+  -> Location.t
   -> variable_bound:(bound_type:BoundType.t -> EdgeExp.T.t -> cache -> EdgeExp.T.t * cache)
   -> Tenv.t
   -> Provers.prover_data
   -> cache
-  -> transition list * cache
+  -> call * cache
 
 val pp : F.formatter -> t -> unit
 

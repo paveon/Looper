@@ -56,13 +56,13 @@ module EdgeData : sig
 
   val get_assignment_rhs : t -> HilExp.access_expression -> EdgeExp.ValuePair.t
 
-  val derive_guards : t -> EdgeExp.Set.t -> Tenv.t -> Provers.prover_data -> EdgeExp.Set.t
+  val derive_guards :
+    t -> (EdgeExp.T.t * Why3.Term.term) list -> Tenv.t -> Provers.prover_data -> EdgeExp.Set.t
 
   (* Derive difference constraint "x <= y + c" based on edge assignments *)
   val derive_constraint :
        t
-    -> EdgeExp.T.t
-    -> LooperUtils.AccessExpressionSet.t
+    -> EdgeExp.T.t * LooperUtils.AccessExpressionSet.t
     -> AccessPath.BaseSet.t
     -> Tenv.t
     -> Procname.t

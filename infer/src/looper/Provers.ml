@@ -10,6 +10,17 @@ type prover_data =
   ; driver: Why3.Driver.driver
   ; main: Why3.Whyconf.main
   ; theory: Why3.Theory.theory
+  ; plus: Why3.Term.lsymbol
+  ; minus: Why3.Term.lsymbol
+  ; uminus: Why3.Term.lsymbol
+  ; mul: Why3.Term.lsymbol
+  ; div: Why3.Term.lsymbol
+  ; ge: Why3.Term.lsymbol
+  ; gt: Why3.Term.lsymbol
+  ; le: Why3.Term.lsymbol
+  ; lt: Why3.Term.lsymbol
+  ; two_const: Why3.Term.term
+  ; zero_const: Why3.Term.term
   ; mutable idents: Why3.Ident.preid StringMap.t
   ; mutable vars: Why3.Term.vsymbol StringMap.t }
 
@@ -82,6 +93,17 @@ let get_prover_map {InterproceduralAnalysis.proc_desc; err_log} : prover_data Pr
               ; theory= real_theory
               ; idents= StringMap.empty
               ; vars= StringMap.empty
+              ; plus= Why3.Theory.ns_find_ls real_theory.th_export ["infix +"]
+              ; minus= Why3.Theory.ns_find_ls real_theory.th_export ["infix -"]
+              ; uminus= Why3.Theory.ns_find_ls real_theory.th_export ["prefix -"]
+              ; mul= Why3.Theory.ns_find_ls real_theory.th_export ["infix *"]
+              ; div= Why3.Theory.ns_find_ls real_theory.th_export ["infix /"]
+              ; ge= Why3.Theory.ns_find_ls real_theory.th_export ["infix >="]
+              ; gt= Why3.Theory.ns_find_ls real_theory.th_export ["infix >"]
+              ; le= Why3.Theory.ns_find_ls real_theory.th_export ["infix <="]
+              ; lt= Why3.Theory.ns_find_ls real_theory.th_export ["infix <"]
+              ; two_const= Why3.Term.t_real_const (Why3.BigInt.of_int 2)
+              ; zero_const= Why3.Term.t_real_const (Why3.BigInt.of_int 0)
               ; prover_conf=
                   { why3_prover_cfg with
                     command= prover_cfg.command
