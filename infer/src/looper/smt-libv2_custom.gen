@@ -17,10 +17,12 @@ prelude "(set-logic AUFNIRA)"
 *)
 
 filename "%f-%t-%g.smt2"
-unknown "^\\(unknown\\|sat\\|Fail\\)$" "\\1"
+(* unknown "^\\(unknown\\|sat\\|Fail\\)$" "\\1" *)
+unknown "^\\(unknown\\|Fail\\)$" "\\1"
 unknown "^(:reason-unknown \\([^)]*\\))$" "\\1"
 time "why3cpulimit time : %s s"
 valid "^unsat$"
+invalid "^sat$"
 
 theory BuiltIn
   syntax type int   "Int"
@@ -32,7 +34,6 @@ theory BuiltIn
 end
 
 theory int.Int
-
   prelude ";;; SMT-LIB2: integer arithmetic"
 
   syntax function zero "0"
@@ -65,12 +66,33 @@ theory int.Int
   remove prop Total
   remove prop NonTrivialRing
   remove prop CompatOrderAdd
+  remove prop CompatOrderMult
   remove prop ZeroLessOne
+  remove allprops
+end
 
+theory int.EuclideanDivision
+  prelude ";;; Why3: int.EuclideanDivision"
+  syntax function div "(div %1 %2)"
+  syntax function mod "(mod %1 %2)"
+  remove prop Mod_bound
+  remove prop Div_mod
+  remove prop Mod_1
+  remove prop Div_1
+  remove allprops
+end
+
+
+theory int.Abs
+  (* Remove definition of ABS function which screws up everything in Z3 *)
+  syntax function abs ""
+
+  remove prop Abs_le
+  remove prop Abs_pos
+  remove allprops
 end
 
 theory real.Real
-
   prelude ";;; SMT-LIB2: real arithmetic"
 
   syntax function zero "0.0"

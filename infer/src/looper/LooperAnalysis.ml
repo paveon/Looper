@@ -69,10 +69,8 @@ let analyze_procedure ({InterproceduralAnalysis.proc_desc; exe_env} as analysis_
   let is_initializer_proc =
     String.is_prefix proc_name_str ~prefix:Config.clang_initializer_prefix
   in
-  if is_initializer_proc then (
-    (* Ignore clang initializers *)
-    debug_log "" ;
-    None )
+  if is_initializer_proc then (* Ignore clang initializers *)
+    None
   else
     let report_issue =
       Reporting.log_issue analysis_data.proc_desc analysis_data.err_log
@@ -274,7 +272,11 @@ let analyze_procedure ({InterproceduralAnalysis.proc_desc; exe_env} as analysis_
           (fun norm norms_acc ->
             if EdgeExp.is_const norm then norms_acc
             else
-              let why3_exp = EdgeExp.to_why3_expr norm tenv active_prover |> fst in
+              let why3_exp =
+                EdgeExp.to_why3_expr norm tenv ~selected_theory:active_prover.real_data
+                  active_prover
+                |> fst
+              in
               (norm, why3_exp) :: norms_acc )
           final_norm_set []
       in
@@ -294,19 +296,23 @@ let analyze_procedure ({InterproceduralAnalysis.proc_desc; exe_env} as analysis_
              (EdgeExp.Set.elements lts_edge_data.conditions) ; *)
           let guards = LTS.EdgeData.derive_guards lts_edge_data why3_norms tenv active_prover in
           DCP.EdgeData.add_guards dcp_edge_data guards ;
-          debug_log "Guard count: %d@," (EdgeExp.Set.cardinal guards) ;
           debug_log "%a@]@," EdgeExp.(pp_list "Guards" EdgeExp.pp) (EdgeExp.Set.elements guards) ;
           DCP.add_edge_e dcp (src, dcp_edge_data, dst) ) ;
+      debug_log "@[<v2>Guarded nodes:@," ;
       let guarded_nodes =
         DCP.fold_edges_e
           (fun (_, edge_data, dst) acc ->
-            if EdgeExp.Set.is_empty edge_data.guards then acc else LTS.NodeSet.add dst acc )
+            if EdgeExp.Set.is_empty edge_data.guards then acc
+            else (
+              debug_log "%a@," LTS.Node.pp dst ;
+              LTS.NodeSet.add dst acc ) )
           dcp LTS.NodeSet.empty
       in
+      debug_log "@]" ;
       (* Propagate guard to all outgoing edges if all incoming edges
          * are guarded by this guard and the guard itself is not decreased
          * on any of those incoming edges (guard is a norm) *)
-      debug_log "@.@,==========[Propagating guards]====================@," ;
+      debug_log "@,==========[Propagating guards]====================@," ;
       let rec propagate_guards : LTS.NodeSet.t -> unit =
        fun nodes ->
         if not (LTS.NodeSet.is_empty nodes) then
@@ -324,48 +330,22 @@ let analyze_procedure ({InterproceduralAnalysis.proc_desc; exe_env} as analysis_
           (* Pop one node from set of unprocessed nodes *)
           let node = LTS.NodeSet.min_elt nodes in
           let nodes = LTS.NodeSet.remove node nodes in
-          let in_backedges, in_edges =
+          let _, in_edges =
             List.partition_tf (DCP.pred_e dcp node) ~f:(fun (_, edge_data, _) ->
                 DCP.EdgeData.is_backedge edge_data )
           in
           let guards = get_shared_guards in_edges in
           let out_edges = DCP.succ_e dcp node in
-          let guards, out_edges =
-            if LTS.Node.is_loophead node then (
-              (* assert (Int.equal (List.length out_edges) 2) ; *)
-              let true_branches, false_branches =
-                List.partition_tf out_edges ~f:(fun (_, edge_data, _) ->
-                    DCP.EdgeData.branch_type edge_data )
-              in
-              (* let (src, branch_true, dst), branch_false =
-                   (List.hd_exn branch_true, List.hd_exn branch_false)
-                 in *)
-              List.iter true_branches ~f:(fun (src, (edge_data : DCP.EdgeData.t), dst) ->
-                  edge_data.guards <- EdgeExp.Set.union guards edge_data.guards ;
-                  if (not (LTS.Node.equal src dst)) && not (DCP.EdgeData.is_backedge edge_data) then
-                    propagate_guards (LTS.NodeSet.add dst nodes) ) ;
-              (* branch_true.guards <- EdgeExp.Set.union guards branch_true.guards ; *)
-              (* if (not (LTS.Node.equal src dst)) && not (DCP.EdgeData.is_backedge branch_true) then
-                 propagate_guards (LTS.NodeSet.add dst nodes) ; *)
-              let guards =
-                if List.is_empty in_backedges then guards
-                else
-                  let _, backedge, _ = List.hd_exn in_backedges in
-                  let backedge_guards = DCP.EdgeData.active_guards backedge in
-                  EdgeExp.Set.inter guards backedge_guards
-              in
-              (* (guards, [branch_false])  *)
-              (guards, false_branches) )
-            else (guards, out_edges)
-          in
           let nodes =
-            if EdgeExp.Set.is_empty guards then nodes
-            else
-              (* Propagate guards to all outgoing edges and add
-                 * destination nodes of those edges to the processing queue *)
-              List.fold out_edges ~init:nodes ~f:(fun acc (_, (edge_data : DCP.EdgeData.t), dst) ->
+            List.fold out_edges ~init:nodes
+              ~f:(fun nodes_acc (_, (edge_data : DCP.EdgeData.t), dst) ->
+                let updated_guards = EdgeExp.Set.union guards edge_data.guards in
+                let old_count = EdgeExp.Set.cardinal edge_data.guards in
+                let new_count = EdgeExp.Set.cardinal updated_guards in
+                if new_count > old_count then (
                   edge_data.guards <- EdgeExp.Set.union guards edge_data.guards ;
-                  if DCP.EdgeData.is_backedge edge_data then acc else LTS.NodeSet.add dst acc )
+                  LTS.NodeSet.add dst nodes_acc )
+                else nodes_acc )
           in
           propagate_guards nodes
       in
@@ -380,10 +360,8 @@ let analyze_procedure ({InterproceduralAnalysis.proc_desc; exe_env} as analysis_
             norm
         | EdgeExp.T.Access access -> (
             let access_typ = HilExp.AccessExpression.get_typ access tenv in
-            debug_log "wrap_norm: %a@," EdgeExp.pp norm ;
             match access_typ with
             | Some typ -> (
-                debug_log "typ: %a@," Typ.(pp Pp.text) typ ;
                 if Typ.is_pointer typ then norm
                 else
                   match Typ.get_ikind_opt typ with
@@ -521,15 +499,12 @@ let analyze_procedure ({InterproceduralAnalysis.proc_desc; exe_env} as analysis_
                   ~f:(fun used_variables_acc (lhs_norm, dc_rhs) ->
                     let dst_node = (lhs_norm, dst) in
                     let lhs_is_var = EdgeExp.Set.mem lhs_norm variables in
-                    debug_log "LHS '%a' IS VAR: %B@," EdgeExp.pp lhs_norm lhs_is_var ;
                     let vfg_add_node node =
                       if not (VFG.mem_vertex vfg node) then VFG.add_vertex vfg node
                     in
                     let process_value_rhs used_variables_acc (rhs_norm, _, _) =
                       let rhs_is_var = EdgeExp.Set.mem rhs_norm variables in
-                      debug_log "RHS '%a' IS VAR: %B@," EdgeExp.pp rhs_norm rhs_is_var ;
-                      if EdgeExp.Set.mem lhs_norm variables && EdgeExp.Set.mem rhs_norm variables
-                      then (
+                      if lhs_is_var && rhs_is_var then (
                         let src_node = (rhs_norm, src) in
                         vfg_add_node dst_node ;
                         vfg_add_node src_node ;
@@ -987,15 +962,15 @@ let analyze_procedure ({InterproceduralAnalysis.proc_desc; exe_env} as analysis_
                 else sets ) )
           scc_edges EdgeExp.Map.empty
       in
+      debug_log "@[<v>" ;
       EdgeExp.Map.iter
         (fun norm edge_set ->
           if not (DCP.EdgeSet.is_empty edge_set) then (
             debug_log "@[<v2>E(%a):@," EdgeExp.pp norm ;
-            DCP.EdgeSet.iter
-              (fun (src, _, dst) -> debug_log "%a ----> %a@," LTS.Node.pp src LTS.Node.pp dst)
-              edge_set ;
+            DCP.EdgeSet.iter (fun edge -> debug_log "%a@," DCP.pp_edge edge) edge_set ;
             debug_log "@]@," ) )
         norm_edge_sets ;
+      debug_log "@]@," ;
       (* Find local bounds for remaining edges that were not processed by
          * the first or second step. Use previously constructed E(v) sets
          * and for each set try to remove edges from the DCP graph. If some
@@ -1162,24 +1137,26 @@ let analyze_procedure ({InterproceduralAnalysis.proc_desc; exe_env} as analysis_
                   let binop_bound = EdgeExp.add var_bound const_bound in
                   (binop_bound, cache)
               in
-              let fold_aux (dcp_edge : DCP.E.t) (args, cache) =
-                let bound, cache = transition_bound dcp_edge cache in
-                (EdgeExp.Set.add bound args, cache)
-              in
+              debug_log "Calculating TBs of reset chain transitions@," ;
               let reset_exp, cache =
                 if EdgeExp.is_zero max_exp then (max_exp, cache)
                 else
-                  let args, cache =
-                    DCP.EdgeSet.fold fold_aux (RG.Chain.transitions chain) (EdgeExp.Set.empty, cache)
+                  let reset_transition_bounds, cache =
+                    DCP.EdgeSet.fold
+                      (fun dcp_edge (args, cache_acc) ->
+                        let bound, cache_acc = transition_bound dcp_edge cache_acc in
+                        (EdgeExp.Set.add bound args, cache_acc) )
+                      (RG.Chain.transitions chain) (EdgeExp.Set.empty, cache)
                   in
-                  let args =
-                    if EdgeExp.Set.exists EdgeExp.is_zero args then
+                  let reset_transition_bounds =
+                    if EdgeExp.Set.exists EdgeExp.is_zero reset_transition_bounds then
                       EdgeExp.Set.singleton EdgeExp.zero
-                    else args
+                    else reset_transition_bounds
                   in
                   let edge_bound =
-                    if Int.equal (EdgeExp.Set.cardinal args) 1 then EdgeExp.Set.min_elt args
-                    else EdgeExp.T.Min args
+                    if Int.equal (EdgeExp.Set.cardinal reset_transition_bounds) 1 then
+                      EdgeExp.Set.min_elt reset_transition_bounds
+                    else EdgeExp.T.Min reset_transition_bounds
                   in
                   if EdgeExp.is_one edge_bound then (max_exp, cache)
                   else (EdgeExp.mult edge_bound max_exp, cache)
@@ -1346,7 +1323,6 @@ let analyze_procedure ({InterproceduralAnalysis.proc_desc; exe_env} as analysis_
                   in
                   (chains, cache_acc)
             in
-            RG.Chain.Set.iter (fun chain -> debug_log "%a@," RG.Chain.pp chain) reset_chains ;
             debug_log "@]@," ;
             let norms =
               RG.Chain.Set.fold
@@ -1365,14 +1341,12 @@ let analyze_procedure ({InterproceduralAnalysis.proc_desc; exe_env} as analysis_
             (bound, cache)
         | None -> (
             (* Infinite recursion guard, might occur with exponential bounds which are not supported *)
-            if edge_data.computing_bound then raise Exit ;
+            if edge_data.computing_bound then
+              L.die InternalError "TB(t): Infinite recursion guard encountered" ;
             edge_data.computing_bound <- true ;
             match edge_data.bound_norms with
             | [] ->
                 debug_log "Missing Local Bound@," ;
-                (* L.(die InternalError)
-                   "[Transition Bound] Transition '%a ---> %a' has no local bound!" LTS.Node.pp src
-                   LTS.Node.pp dst ; *)
                 let bound = EdgeExp.T.Inf in
                 debug_log "Final TB: %a@]@," EdgeExp.pp bound ;
                 edge_data.bound <- Some bound ;
@@ -1424,28 +1398,6 @@ let analyze_procedure ({InterproceduralAnalysis.proc_desc; exe_env} as analysis_
                   | Some payload ->
                       LooperSummary.instantiate payload proc_name args loc tenv active_prover cache
                         ~variable_bound
-                  (* | Some (LooperSummary.Real payload) ->
-                         let call_transitions, new_cache =
-                           LooperSummary.instantiate payload args tenv active_prover cache
-                             ~variable_bound
-                         in
-                         let instantiated_call : LooperSummary.call =
-                           RealCall {name= proc_name; loc; bounds= call_transitions}
-                         in
-                         (instantiated_call, new_cache)
-                     | Some (LooperSummary.Model model_payload) ->
-                         let instantiated_call : LooperSummary.call =
-                           ModelCall
-                             { name= proc_name
-                             ; loc
-                             ; bound=
-                                 (* TODO: Shouldn't the bound be value pair here too? Use upper bound for now.
-                                    Probably will have to change the call summary definitions and usage too. *)
-                                 EdgeExp.ValuePair.get_ub model_payload.complexity
-                                 (* TODO: This is probably not right? *)
-                             ; monotonicity_map= model_payload.monotonicity_map }
-                         in
-                         (instantiated_call, cache) *)
                   | None ->
                       (LooperSummary.RealCall {name= proc_name; loc; bounds= []}, cache_acc)
                 in

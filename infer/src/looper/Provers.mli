@@ -1,23 +1,21 @@
 module F = Format
 module L = Logging
 
+type theory_data =
+  { theory: Why3.Theory.theory
+  ; theory_extras: Why3.Theory.theory list
+  ; symbols: Why3.Term.lsymbol LooperUtils.StringMap.t
+  ; var_typ: Why3.Ty.ty
+  ; mk_const: Why3.BigInt.t -> Why3.Term.term
+  ; get_op: string -> Why3.Term.lsymbol }
+
 type prover_data =
   { name: string
   ; prover_conf: Why3.Whyconf.config_prover
   ; driver: Why3.Driver.driver
   ; main: Why3.Whyconf.main
-  ; theory: Why3.Theory.theory
-  ; plus: Why3.Term.lsymbol
-  ; minus: Why3.Term.lsymbol
-  ; uminus: Why3.Term.lsymbol
-  ; mul: Why3.Term.lsymbol
-  ; div: Why3.Term.lsymbol
-  ; ge: Why3.Term.lsymbol
-  ; gt: Why3.Term.lsymbol
-  ; le: Why3.Term.lsymbol
-  ; lt: Why3.Term.lsymbol
-  ; two_const: Why3.Term.term
-  ; zero_const: Why3.Term.term
+  ; real_data: theory_data
+  ; int_data: theory_data
   ; mutable idents: Why3.Ident.preid LooperUtils.StringMap.t
   ; mutable vars: Why3.Term.vsymbol LooperUtils.StringMap.t }
 
@@ -29,6 +27,7 @@ type prover_cfg =
   { prover_type: prover
   ; name: string
   ; driver_path: string
+  ; extras_path: string list
   ; command: string
   ; command_steps: string option }
 

@@ -222,3 +222,5 @@ _coverage
 /facebook-clang-plugins/clang/src/download
 /facebook-clang-plugins/libtooling/build
 /facebook-clang-plugins/xcode/*
+
+*.dot

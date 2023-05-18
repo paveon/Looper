@@ -86,3 +86,5 @@ val vertex_attributes : Node.t -> Graph.Graphviz.DotAttributes.vertex list
 val vertex_name : Node.t -> string
 
 val edge_attributes : E.t -> Graph.Graphviz.DotAttributes.edge list
+
+val pp_edge : Format.formatter -> E.t -> unit

@@ -78,14 +78,40 @@ module EdgeData = struct
   let is_backedge edge = edge.backedge
 
   let active_guards edge =
-    EdgeExp.Set.fold
-      (fun guard acc ->
-        match get_dc guard edge.constraints with
-        | Some dc ->
-            if DC.is_decreasing dc && DC.same_norms dc then acc else EdgeExp.Set.add guard acc
-        | _ ->
-            EdgeExp.Set.add guard acc )
-      edge.guards EdgeExp.Set.empty
+    let normal_guards =
+      EdgeExp.Set.fold
+        (fun guard acc ->
+          match get_dc guard edge.constraints with
+          | Some dc ->
+              if DC.is_decreasing dc && DC.same_norms dc then acc else EdgeExp.Set.add guard acc
+          | _ ->
+              EdgeExp.Set.add guard acc )
+        edge.guards EdgeExp.Set.empty
+    in
+    let guards_via_constant_reset =
+      List.filter_map edge.constraints ~f:(fun (lhs_norm, rhs) ->
+          let process_value (rhs_norm, op, const) =
+            if EdgeExp.is_zero rhs_norm then
+              match op with
+              | (Binop.PlusA _ | Binop.PlusPI) when IntLit.gt const IntLit.zero ->
+                  true
+              | _ ->
+                  false
+            else
+              match EdgeExp.evaluate_const_exp rhs_norm with
+              | Some value ->
+                  let total_value = EdgeExp.eval_consts op value const in
+                  if IntLit.gt total_value IntLit.zero then true else false
+              | None ->
+                  false
+          in
+          match rhs with
+          | DC.Value v ->
+              if process_value v then Some lhs_norm else None
+          | DC.Pair (lb, ub) ->
+              if process_value lb && process_value ub then Some lhs_norm else None )
+    in
+    EdgeExp.Set.union normal_guards (EdgeExp.Set.of_list guards_via_constant_reset)
 
 
   (* Required by Graph module interface *)
@@ -224,3 +250,6 @@ let edge_attributes : E.t -> 'a list =
     String.substr_replace_all ~pattern:"\\n" ~with_:""
   in
   `Label label :: attributes
+
+
+let pp_edge fmt (src, _, dst) = F.fprintf fmt "%a ----> %a" LTS.Node.pp src LTS.Node.pp dst

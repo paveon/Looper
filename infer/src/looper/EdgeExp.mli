@@ -162,9 +162,12 @@ val of_sil_exp :
   -> Typ.t
   -> ValuePair.t
 
-val to_why3_expr : T.t -> Tenv.t -> Provers.prover_data -> Why3.Term.term * Why3.Term.Sterm.t
-
-val always_positive_why3 : T.t -> Tenv.t -> Provers.prover_data -> bool
+val to_why3_expr :
+     T.t
+  -> Tenv.t
+  -> selected_theory:Provers.theory_data
+  -> Provers.prover_data
+  -> Why3.Term.term * Why3.Term.Sterm.t
 
 val get_accesses : T.t -> LooperUtils.AccessExpressionSet.t
 
@@ -187,6 +190,8 @@ val determine_monotonicity :
   -> Tenv.t
   -> Provers.prover_data
   -> LooperUtils.Monotonicity.t LooperUtils.AccessExpressionMap.t
+
+val always_false : T.t -> Tenv.t -> Provers.prover_data -> bool
 
 val add : T.t -> T.t -> T.t
 

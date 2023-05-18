@@ -149,6 +149,7 @@ module EdgeData = struct
 
 
   let derive_guards edge why3_norms tenv (prover_data : Provers.prover_data) =
+    let selected_theory = prover_data.real_data in
     let or_terms =
       List.fold edge.conditions ~init:[] ~f:(fun or_terms and_terms ->
           let condition_set =
@@ -157,9 +158,17 @@ module EdgeData = struct
                 match cond with
                 | EdgeExp.T.BinOp (_, EdgeExp.T.Const _, EdgeExp.T.Const _) ->
                     acc
-                | EdgeExp.T.UnOp _ | EdgeExp.T.BinOp _ ->
-                    let cond_why3, type_conditions = EdgeExp.to_why3_expr cond tenv prover_data in
+                | EdgeExp.T.UnOp _ | EdgeExp.T.BinOp _ -> (
+                  try
+                    let cond_why3, type_conditions =
+                      EdgeExp.to_why3_expr cond tenv ~selected_theory prover_data
+                    in
                     Why3.Term.Sterm.add cond_why3 (Why3.Term.Sterm.union type_conditions acc)
+                  with error ->
+                    debug_log
+                      "Failed to transform condition '%a' to Why3 expression, skipping: %a@,"
+                      EdgeExp.pp cond Exn.pp error ;
+                    acc )
                 | _ ->
                     L.(die InternalError)
                       "[Guards] Condition of form '%a' is not supported" EdgeExp.pp cond )
@@ -171,18 +180,17 @@ module EdgeData = struct
     if List.is_empty or_terms then EdgeExp.Set.empty
     else
       let lhs = Why3.Term.t_or_l or_terms in
-      let zero_const = Why3.Term.t_real_const (Why3.BigInt.of_int 0) in
-      let gt_symbol = Why3.Theory.ns_find_ls prover_data.theory.th_export ["infix >"] in
+      let gt = selected_theory.get_op ">" in
+      let zero_const = selected_theory.mk_const (Why3.BigInt.of_int 0) in
       let goal_symbol = Why3.Decl.create_prsymbol (Why3.Ident.id_fresh "is_guard") in
       let lhs_vars = Why3.Term.Mvs.keys (Why3.Term.t_vars lhs) in
       let is_norm_guard why3_norm =
-        (* let norm_why3 = EdgeExp.to_why3_expr norm tenv prover_data |> fst in *)
-        let rhs = Why3.Term.t_app_infer gt_symbol [why3_norm; zero_const] in
+        let rhs = Why3.Term.t_app_infer gt [why3_norm; zero_const] in
         let formula = Why3.Term.t_implies lhs rhs in
         let rhs_vars = Why3.Term.Mvs.keys (Why3.Term.t_vars rhs) in
         let free_vars = lhs_vars @ rhs_vars in
         let quantified_fmla = Why3.Term.t_forall_close free_vars [] formula in
-        let task = Why3.Task.use_export None prover_data.theory in
+        let task = Why3.Task.use_export None selected_theory.theory in
         let task = Why3.Task.add_prop_decl task Why3.Decl.Pgoal goal_symbol quantified_fmla in
         let prover_call =
           Why3.Driver.prove_task prover_data.driver task ~config:prover_data.main
@@ -414,8 +422,9 @@ module EdgeData = struct
         debug_log "[Expression const] %a@," DifferenceConstraint.pp_const_part
           (Option.value_exn rhs_const_opt) ;
       let rhs_simplified = EdgeExp.merge rhs_norm rhs_const_opt in
-      if EdgeExp.equal norm rhs_value || EdgeExp.equal norm rhs_simplified then
-        (DC.make_value_rhs norm, EdgeExp.Set.empty)
+      if EdgeExp.equal norm rhs_value || EdgeExp.equal norm rhs_simplified then (
+        debug_log "Equal norms, returning %a as rhs norm@," EdgeExp.pp norm ;
+        (DC.make_value_rhs norm, EdgeExp.Set.empty) )
       else
         (* Derived RHS expression is not equal to the original norm *)
         let lhs_norm, lhs_const_opt = EdgeExp.separate norm in
@@ -477,11 +486,11 @@ module EdgeData = struct
           (* TODO: this is incorrect. If we return rhs_norm which is different from  *)
           let value_rhs =
             match rhs_const_opt with
-            | Some (rhs_op, rhs_const) ->
+            | Some ((rhs_op, rhs_const) as const_part) ->
                 if EdgeExp.is_variable rhs_norm formals tenv then
                   match rhs_op with
                   | Binop.PlusA _ ->
-                      DC.make_value_rhs ~const_part:(rhs_op, rhs_const) rhs_norm
+                      DC.make_value_rhs ~const_part rhs_norm
                   | Binop.MinusA typ_opt ->
                       DC.make_value_rhs
                         ~const_part:(Binop.PlusA typ_opt, IntLit.neg rhs_const)
@@ -489,13 +498,15 @@ module EdgeData = struct
                   | Binop.Shiftrt ->
                       (* TODO *)
                       (* debug_log "Merged: %a\n" EdgeExp.pp rhs_simplified; *)
-                      DC.make_value_rhs ~const_part:(rhs_op, rhs_const) rhs_norm
+                      DC.make_value_rhs ~const_part rhs_norm
                   | Binop.Mult _ ->
                       DC.make_value_rhs rhs_simplified
                   | _ ->
                       L.die InternalError "lhs_norm: %a, rhs_norm: %a, rhs_op: %a, rhs_const: %a"
                         EdgeExp.pp lhs_norm EdgeExp.pp rhs_norm Binop.pp rhs_op IntLit.pp rhs_const
-                else DC.make_value_rhs rhs_simplified
+                else (
+                  debug_log "LHS and RHS norms not equal, RHS not variable@," ;
+                  DC.make_value_rhs rhs_norm ~const_part )
             | None ->
                 DC.make_value_rhs rhs_norm
           in
@@ -599,3 +610,6 @@ let edge_attributes : E.t -> 'a list =
   in
   let attributes = if edge_data.backedge then [`Penwidth 2.0; `Color 0xc20808] else [`Color 4711] in
   `Label label :: attributes
+
+
+let pp_edge fmt (src, _, dst) = F.fprintf fmt "%a ----> %a" Node.pp src Node.pp dst
