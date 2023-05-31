@@ -18,6 +18,8 @@ module Node : sig
 
   val is_join : t -> bool
 
+  val is_start : t -> bool
+
   val is_loophead : t -> bool
 
   val get_location : t -> Location.t
@@ -29,12 +31,18 @@ module Node : sig
   module Map : Caml.Map.S with type key = t
 end
 
+type assignment = HilExp.access_expression * EdgeExp.ValuePair.t [@@deriving compare, equal]
+
+val pp_assignment : Format.formatter -> assignment -> unit
+
+val is_const_assignment : assignment -> Const.t option
+
 module EdgeData : sig
   type t =
     { backedge: bool
     ; conditions: EdgeExp.Set.t list
     ; condition_norms: EdgeExp.Set.t list
-    ; assignments: (HilExp.access_expression * EdgeExp.ValuePair.t) list
+    ; assignments: assignment list
     ; branch_info: (Sil.if_kind * bool * Location.t) option
     ; calls: EdgeExp.CallPair.Set.t }
   [@@deriving compare]
@@ -43,6 +51,8 @@ module EdgeData : sig
 
   (* Required by Graph module interface *)
   val default : t
+
+  val get_const_assignments : t -> assignment list
 
   val set_backedge_flag : t -> is_backedge:bool -> t
 
@@ -62,11 +72,11 @@ module EdgeData : sig
   (* Derive difference constraint "x <= y + c" based on edge assignments *)
   val derive_constraint :
        t
-    -> EdgeExp.T.t * LooperUtils.AccessExpressionSet.t
+    -> EdgeExp.T.t * EdgeExp.AssignmentSet.t
     -> AccessPath.BaseSet.t
     -> Tenv.t
     -> Procname.t
-    -> LooperUtils.AccessExpressionSet.t * DC.rhs option * EdgeExp.Set.t
+    -> EdgeExp.AssignmentSet.t * DC.rhs option * EdgeExp.Set.t
 end
 
 include module type of Graph.Imperative.Digraph.ConcreteBidirectionalLabeled (Node) (EdgeData)

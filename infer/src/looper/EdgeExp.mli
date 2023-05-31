@@ -50,6 +50,8 @@ module ValuePair : sig
 
   type t = V of T.t | P of pair [@@deriving compare]
 
+  val equal : t -> t -> bool
+
   val to_string : t -> string
 
   val pp_multiline : F.formatter -> t -> unit
@@ -107,6 +109,8 @@ val is_one : T.t -> bool
 
 val is_const : T.t -> bool
 
+val is_formal_access : T.t -> AccessPath.BaseSet.t -> bool
+
 val is_formal_variable : T.t -> AccessPath.BaseSet.t -> Tenv.t -> bool
 
 val is_global_variable : T.t -> bool
@@ -157,6 +161,7 @@ val of_sil_exp :
      include_array_indexes:bool
   -> f_resolve_id:(Var.t -> HilExp.access_expression option)
   -> test_resolver:(Var.t -> ValuePair.t option * bool)
+  -> formal_map:HilExp.access_expression LooperUtils.AccessExpressionMap.t
   -> add_deref:bool
   -> Exp.t
   -> Typ.t
@@ -177,7 +182,11 @@ val map_accesses : T.t -> f:(HilExp.access_expression -> 'a -> T.t * 'a) -> init
 
 val for_all_access : T.t -> f:(HilExp.access_expression -> bool) -> bool
 
-val exists_binop : t -> f:(Binop.t -> bool) -> bool
+val exists_access : T.t -> f:(HilExp.access_expression -> bool) -> bool
+
+val exists_binop : T.t -> f:(Binop.t -> bool) -> bool
+
+val flatten_min_max : T.t -> T.t
 
 val subst : T.t -> (T.t * Typ.t) list -> FormalMap.t -> T.t
 
@@ -191,7 +200,8 @@ val determine_monotonicity :
   -> Provers.prover_data
   -> LooperUtils.Monotonicity.t LooperUtils.AccessExpressionMap.t
 
-val always_false : T.t -> Tenv.t -> Provers.prover_data -> bool
+val always_false :
+  T.t -> Const.t LooperUtils.AccessExpressionMap.t -> Tenv.t -> Provers.prover_data -> bool
 
 val add : T.t -> T.t -> T.t
 
@@ -202,3 +212,5 @@ val mult : T.t -> T.t -> T.t
 val output_exp_dnf : Set.t list -> and_sep:string -> or_sep:string -> string
 
 val big_o : T.t -> string
+
+module AssignmentSet : Caml.Set.S with type elt = HilExp.access_expression * T.t

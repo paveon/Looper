@@ -55,7 +55,8 @@ and transition =
   ; dst_node: LTS.Node.t
   ; bound: EdgeExp.T.t
   ; monotony_map: Monotonicity.t AccessExpressionMap.t
-  ; calls: call list }
+  ; calls: call list
+  ; backedge: bool }
 
 type t =
   { formal_map: FormalMap.t
@@ -93,24 +94,31 @@ let total_bound transitions =
           | ModelCall model_call ->
               EdgeExp.add bound_sum model_call.bound )
     in
+    let calls_mult = EdgeExp.mult transition.bound cost_of_calls in
     let total_edge_cost =
-      if EdgeExp.is_zero cost_of_calls then
-        (* debug_log "[Edge cost] %a ---> %a: %a\n" LTS.Node.pp transition.src_node LTS.Node.pp
-           transition.dst_node EdgeExp.pp transition.bound ; *)
-        transition.bound
-      else if EdgeExp.is_one cost_of_calls then
-        let value = transition.bound in
-        (* debug_log "[Edge cost] %a ---> %a: %a * %a = %a\n" LTS.Node.pp transition.src_node
-           LTS.Node.pp transition.dst_node EdgeExp.pp transition.bound EdgeExp.pp cost_of_calls
-           EdgeExp.pp value ; *)
-        value
-      else
-        let value = EdgeExp.add transition.bound (EdgeExp.mult transition.bound cost_of_calls) in
-        (* debug_log "[Edge cost] %a ---> %a: %a + %a * %a = %a\n" LTS.Node.pp transition.src_node
-           LTS.Node.pp transition.dst_node EdgeExp.pp transition.bound EdgeExp.pp transition.bound
-           EdgeExp.pp cost_of_calls EdgeExp.pp value ; *)
-        value
+      if transition.backedge then EdgeExp.add transition.bound calls_mult else calls_mult
     in
+    (* let total_edge_cost =
+         if EdgeExp.is_zero cost_of_calls then
+           (* debug_log "[Edge cost] %a ---> %a: %a\n" LTS.Node.pp transition.src_node LTS.Node.pp
+              transition.dst_node EdgeExp.pp transition.bound ; *)
+           transition.bound
+         else if EdgeExp.is_one cost_of_calls then
+           let value = transition.bound in
+           (* debug_log "[Edge cost] %a ---> %a: %a * %a = %a\n" LTS.Node.pp transition.src_node
+              LTS.Node.pp transition.dst_node EdgeExp.pp transition.bound EdgeExp.pp cost_of_calls
+              EdgeExp.pp value ; *)
+           value
+         else
+           (* TODO: How should we properly calculate this to get accurate bound reflecting
+              back-edge execution count? *)
+           (* let value = EdgeExp.add transition.bound (EdgeExp.mult transition.bound cost_of_calls) in *)
+           let value = EdgeExp.mult transition.bound cost_of_calls in
+           (* debug_log "[Edge cost] %a ---> %a: %a + %a * %a = %a\n" LTS.Node.pp transition.src_node
+              LTS.Node.pp transition.dst_node EdgeExp.pp transition.bound EdgeExp.pp transition.bound
+              EdgeExp.pp cost_of_calls EdgeExp.pp value ; *)
+           value
+       in *)
     total_edge_cost
   in
   let costs = List.map transitions ~f:calculate_transition_cost in
@@ -158,7 +166,7 @@ let instantiate (summary : model_summary) proc_name args loc ~variable_bound ten
           | Monotonicity.NotMonotonic ->
               assert false )
     in
-    (evaluated_arg, cache_acc)
+    (EdgeExp.flatten_min_max evaluated_arg, cache_acc)
   in
   let minimize_arg_exp arg_exp arg_monotonicity_map cache =
     (* Bound decreases with the increasing value of this parameter.
@@ -174,7 +182,7 @@ let instantiate (summary : model_summary) proc_name args loc ~variable_bound ten
           | Monotonicity.NotMonotonic ->
               assert false )
     in
-    (evaluated_arg, cache_acc)
+    (EdgeExp.flatten_min_max evaluated_arg, cache_acc)
   in
   let evaluate_bound_argument formal_monotonicity arg_exp arg_monotonicity_map cache =
     match formal_monotonicity with
@@ -258,12 +266,14 @@ let instantiate (summary : model_summary) proc_name args loc ~variable_bound ten
                 HilExp.AccessExpression.pp formal_access )
     in
     try
-      let instantiated_bound =
+      let instantiated_bound, cache =
         if EdgeExp.is_const bound then (bound, cache)
         else EdgeExp.map_accesses bound ~init:cache ~f:substitute_access
       in
+      let instantiated_bound = EdgeExp.flatten_min_max instantiated_bound in
+      debug_log "Instantiated TB: %a@," EdgeExp.pp instantiated_bound ;
       debug_log "@]@]@," ;
-      instantiated_bound
+      (instantiated_bound, cache)
     with error ->
       debug_log "@]@]@," ;
       raise error

@@ -19,6 +19,8 @@ module Node = struct
 
   let is_join : t -> bool = function Join _ -> true | _ -> false
 
+  let is_start : t -> bool = function Start _ -> true | _ -> false
+
   let is_loophead node =
     match node with
     | Prune (kind, _, _) -> (
@@ -57,12 +59,22 @@ module Node = struct
   end)
 end
 
+type assignment = HilExp.access_expression * EdgeExp.ValuePair.t [@@deriving compare, equal]
+
+let pp_assignment fmt (lhs, rhs) =
+  F.fprintf fmt "%a = %a" HilExp.AccessExpression.pp lhs EdgeExp.ValuePair.pp rhs
+
+
+let is_const_assignment (_, rhs) =
+  match rhs with EdgeExp.ValuePair.V (Const const) -> Some const | _ -> None
+
+
 module EdgeData = struct
   type t =
     { backedge: bool
     ; conditions: EdgeExp.Set.t list
     ; condition_norms: EdgeExp.Set.t list
-    ; assignments: (HilExp.access_expression * EdgeExp.ValuePair.t) list
+    ; assignments: assignment list
     ; branch_info: (Sil.if_kind * bool * Location.t) option
     ; calls: EdgeExp.CallPair.Set.t }
   [@@deriving compare]
@@ -80,6 +92,17 @@ module EdgeData = struct
 
 
   let set_backedge_flag edge ~is_backedge = {edge with backedge= is_backedge}
+
+  let get_const_assignments edge =
+    List.filter edge.assignments ~f:(fun (_, rhs) ->
+        match rhs with
+        | EdgeExp.ValuePair.V (Const _) ->
+            true
+        | EdgeExp.ValuePair.P (Const c1, Const c2) when Const.equal c1 c2 ->
+            true
+        | _ ->
+            false )
+
 
   let add_condition edge cond =
     if EdgeExp.is_zero cond then edge
@@ -160,6 +183,7 @@ module EdgeData = struct
                     acc
                 | EdgeExp.T.UnOp _ | EdgeExp.T.BinOp _ -> (
                   try
+                    debug_log "Transforming: %a@," EdgeExp.pp cond ;
                     let cond_why3, type_conditions =
                       EdgeExp.to_why3_expr cond tenv ~selected_theory prover_data
                     in
@@ -217,14 +241,21 @@ module EdgeData = struct
 
 
   let derive_constraint edge_data (norm, used_assignments) formals tenv proc_name =
+    (* List.iter edge_data.assignments ~f:(fun (lhs, rhs) ->
+        debug_log "Assignment: %a = %a@," HilExp.AccessExpression.pp lhs EdgeExp.ValuePair.pp rhs ) ; *)
     let get_assignment lhs_access =
-      let assignment_opt =
-        List.find edge_data.assignments ~f:(fun (access, _) ->
-            HilExp.AccessExpression.equal lhs_access access )
+      debug_log "get_assignment: %a@," HilExp.AccessExpression.pp lhs_access ;
+      let lhs_access_stripped =
+        HilExp.AccessExpression.get_base lhs_access |> HilExp.AccessExpression.base
       in
-      match assignment_opt with
-      | Some assignment ->
-          Some (snd assignment)
+      let assignment_rhs_opt =
+        List.find_map edge_data.assignments ~f:(fun (access, rhs) ->
+            if HilExp.AccessExpression.equal lhs_access access then Some rhs else None )
+      in
+      match assignment_rhs_opt with
+      | Some assignment_rhs ->
+          debug_log "found: %a@," EdgeExp.ValuePair.pp assignment_rhs ;
+          Some assignment_rhs
       | None ->
           let ((var, _) as lhs_access_base) = HilExp.AccessExpression.get_base lhs_access in
           if AccessPath.BaseSet.mem lhs_access_base formals || Var.is_global var then
@@ -247,19 +278,20 @@ module EdgeData = struct
       | None ->
           None
     in
-    let rec derive_rhs norm =
+    let rec derive_rhs : DC.norm -> EdgeExp.AssignmentSet.t * EdgeExp.ValuePair.t option =
+     fun norm ->
       let process_min_max args ~min_max_f =
         (* Derive each argument and collect set of accesses *)
-        let accesses, derived_args =
+        let assignments, derived_args =
           EdgeExp.Set.fold
             (fun arg (accesses_acc, args_acc) ->
               let accesses, derived_arg = derive_rhs arg in
-              (AccessExpressionSet.union accesses_acc accesses, args_acc @ [derived_arg]) )
-            args (AccessExpressionSet.empty, [])
+              (EdgeExp.AssignmentSet.union accesses_acc accesses, args_acc @ [derived_arg]) )
+            args (EdgeExp.AssignmentSet.empty, [])
         in
         (* Return derived min/max expression only if all variables
            * of all arguments are defined at this LTS location *)
-        if List.exists derived_args ~f:Option.is_none then (AccessExpressionSet.empty, None)
+        if List.exists derived_args ~f:Option.is_none then (EdgeExp.AssignmentSet.empty, None)
         else
           (* Arguments might contain intervals. Derive two sets for
            * lower and upper bounds and propagate the Interval to
@@ -278,7 +310,7 @@ module EdgeData = struct
             if EdgeExp.Set.equal lb_set ub_set then Some (EdgeExp.ValuePair.V (min_max_f lb_set))
             else Some (EdgeExp.ValuePair.P (min_max_f lb_set, min_max_f ub_set))
           in
-          (accesses, rhs)
+          (assignments, rhs)
       in
       match norm with
       | EdgeExp.T.Access access -> (
@@ -288,17 +320,17 @@ module EdgeData = struct
               debug_log "Separate: %a@," EdgeExp.pp rhs ;
               let rhs_exp, _ = EdgeExp.separate rhs in
               debug_log "Norm: %a@,RHS separated: %a@," EdgeExp.pp norm EdgeExp.pp rhs_exp ;
-              if AccessExpressionSet.mem access used_assignments then (
+              if EdgeExp.AssignmentSet.mem (access, rhs) used_assignments then (
                 L.user_warning
                   "[%a] Edge '%a = %a' assignment previously used, skipping substitution...@."
                   Procname.pp proc_name HilExp.AccessExpression.pp access EdgeExp.pp rhs ;
                 debug_log "Returning rhs: %a@," EdgeExp.pp norm ;
-                (AccessExpressionSet.empty, Some norm) )
+                (EdgeExp.AssignmentSet.empty, Some norm) )
               else
                 let accesses =
                   if (not (EdgeExp.equal norm rhs)) && not (EdgeExp.is_zero rhs) then
-                    AccessExpressionSet.singleton access
-                  else AccessExpressionSet.empty
+                    EdgeExp.AssignmentSet.singleton (access, rhs)
+                  else EdgeExp.AssignmentSet.empty
                 in
                 (accesses, Some rhs)
               (* if
@@ -323,25 +355,25 @@ module EdgeData = struct
             in
             match rhs with
             | EdgeExp.ValuePair.P (lower_bound, upper_bound) -> (
-                let lb_accesses, lb_rhs_opt = process_value_rhs lower_bound in
-                let ub_accesses, ub_rhs_opt = process_value_rhs upper_bound in
+                let lb_assignments, lb_rhs_opt = process_value_rhs lower_bound in
+                let ub_assignments, ub_rhs_opt = process_value_rhs upper_bound in
                 match (lb_rhs_opt, ub_rhs_opt) with
                 | Some lb_rhs, Some ub_rhs ->
-                    ( AccessExpressionSet.union lb_accesses ub_accesses
+                    ( EdgeExp.AssignmentSet.union lb_assignments ub_assignments
                     , Some (EdgeExp.ValuePair.P (lb_rhs, ub_rhs)) )
                 | _ ->
-                    (AccessExpressionSet.empty, None) )
+                    (EdgeExp.AssignmentSet.empty, None) )
             | EdgeExp.ValuePair.V value_rhs -> (
-                let accesses, rhs_opt = process_value_rhs value_rhs in
+                let assignments, rhs_opt = process_value_rhs value_rhs in
                 match rhs_opt with
                 | Some rhs ->
-                    (accesses, Some (EdgeExp.ValuePair.V rhs))
+                    (assignments, Some (EdgeExp.ValuePair.V rhs))
                 | None ->
-                    (accesses, None) ) )
+                    (assignments, None) ) )
         | None ->
-            (AccessExpressionSet.empty, None) )
+            (EdgeExp.AssignmentSet.empty, None) )
       | EdgeExp.T.Const (Const.Cint _) ->
-          (AccessExpressionSet.empty, Some (EdgeExp.ValuePair.V norm))
+          (EdgeExp.AssignmentSet.empty, Some (EdgeExp.ValuePair.V norm))
       | EdgeExp.T.BinOp (op, lexp, rexp) -> (
           let process_value_binop op lexp rexp =
             match op with
@@ -356,32 +388,32 @@ module EdgeData = struct
             | _ ->
                 EdgeExp.T.BinOp (op, lexp, rexp)
           in
-          let lexp_accesses, lexp_derived_opt = derive_rhs lexp in
-          let rexp_accesses, rexp_derived_opt = derive_rhs rexp in
+          let lexp_assignments, lexp_derived_opt = derive_rhs lexp in
+          let rexp_assignments, rexp_derived_opt = derive_rhs rexp in
           match (lexp_derived_opt, rexp_derived_opt) with
           | Some lexp_derived, Some rexp_derived -> (
             match (lexp_derived, rexp_derived) with
             | EdgeExp.ValuePair.P (lexp_lb, lexp_ub), EdgeExp.ValuePair.P (rexp_lb, rexp_ub) ->
                 let lb = process_value_binop op lexp_lb rexp_lb in
                 let ub = process_value_binop op lexp_ub rexp_ub in
-                ( AccessExpressionSet.union lexp_accesses rexp_accesses
+                ( EdgeExp.AssignmentSet.union lexp_assignments rexp_assignments
                 , Some (EdgeExp.ValuePair.P (lb, ub)) )
             | EdgeExp.ValuePair.V lexp_value, EdgeExp.ValuePair.P (rexp_lb, rexp_ub) ->
                 let lb = process_value_binop op lexp_value rexp_lb in
                 let ub = process_value_binop op lexp_value rexp_ub in
-                ( AccessExpressionSet.union lexp_accesses rexp_accesses
+                ( EdgeExp.AssignmentSet.union lexp_assignments rexp_assignments
                 , Some (EdgeExp.ValuePair.P (lb, ub)) )
             | EdgeExp.ValuePair.P (lexp_lb, lexp_ub), EdgeExp.ValuePair.V rexp_value ->
                 let lb = process_value_binop op lexp_lb rexp_value in
                 let ub = process_value_binop op lexp_ub rexp_value in
-                ( AccessExpressionSet.union lexp_accesses rexp_accesses
+                ( EdgeExp.AssignmentSet.union lexp_assignments rexp_assignments
                 , Some (EdgeExp.ValuePair.P (lb, ub)) )
             | EdgeExp.ValuePair.V lexp_value, EdgeExp.ValuePair.V rexp_value ->
-                ( AccessExpressionSet.union lexp_accesses rexp_accesses
+                ( EdgeExp.AssignmentSet.union lexp_assignments rexp_assignments
                 , Some (EdgeExp.ValuePair.V (process_value_binop op lexp_value rexp_value)) ) )
           | _ ->
               (* Some expression variable is not defined on this edge *)
-              (AccessExpressionSet.empty, None) )
+              (EdgeExp.AssignmentSet.empty, None) )
       | EdgeExp.T.Cast (typ, exp) ->
           let cast_derived_value exp =
             if EdgeExp.is_zero exp then exp else EdgeExp.T.Cast (typ, exp)
@@ -401,7 +433,7 @@ module EdgeData = struct
       | EdgeExp.T.Min args ->
           process_min_max args ~min_max_f:(fun x -> EdgeExp.T.Min x)
       | _ ->
-          (AccessExpressionSet.empty, Some (EdgeExp.ValuePair.V norm))
+          (EdgeExp.AssignmentSet.empty, Some (EdgeExp.ValuePair.V norm))
     in
     (* Separate assignment_rhs.Value into norm and constant part and create
      * DC.rhs.Value out of it. Do additional processing and simplify, try to
@@ -505,8 +537,10 @@ module EdgeData = struct
                       L.die InternalError "lhs_norm: %a, rhs_norm: %a, rhs_op: %a, rhs_const: %a"
                         EdgeExp.pp lhs_norm EdgeExp.pp rhs_norm Binop.pp rhs_op IntLit.pp rhs_const
                 else (
+                  (* RHS is formal expression, merge in the constant *)
                   debug_log "LHS and RHS norms not equal, RHS not variable@," ;
-                  DC.make_value_rhs rhs_norm ~const_part )
+                  let rhs_norm = EdgeExp.merge rhs_norm (Some const_part) in
+                  DC.make_value_rhs rhs_norm )
             | None ->
                 DC.make_value_rhs rhs_norm
           in
@@ -515,18 +549,19 @@ module EdgeData = struct
     let substituted_accesses, derived_rhs_opt = derive_rhs norm in
     match derived_rhs_opt with
     | Some derived_rhs -> (
-      match derived_rhs with
-      | EdgeExp.ValuePair.V derived_rhs_value ->
-          let dc_rhs, norm_set = process_assignment_rhs_value derived_rhs_value in
-          (substituted_accesses, Some (DC.Value dc_rhs), norm_set)
-      | EdgeExp.ValuePair.P (lb, ub) ->
-          let lb_dc_rhs, lb_norm_set = process_assignment_rhs_value lb in
-          let ub_dc_rhs, ub_norm_set = process_assignment_rhs_value ub in
-          ( substituted_accesses
-          , Some (DC.Pair (lb_dc_rhs, ub_dc_rhs))
-          , EdgeExp.Set.union lb_norm_set ub_norm_set ) )
+        debug_log "Derived RHS: %a@," EdgeExp.ValuePair.pp derived_rhs ;
+        match derived_rhs with
+        | EdgeExp.ValuePair.V derived_rhs_value ->
+            let dc_rhs, norm_set = process_assignment_rhs_value derived_rhs_value in
+            (substituted_accesses, Some (DC.Value dc_rhs), norm_set)
+        | EdgeExp.ValuePair.P (lb, ub) ->
+            let lb_dc_rhs, lb_norm_set = process_assignment_rhs_value lb in
+            let ub_dc_rhs, ub_norm_set = process_assignment_rhs_value ub in
+            ( substituted_accesses
+            , Some (DC.Pair (lb_dc_rhs, ub_dc_rhs))
+            , EdgeExp.Set.union lb_norm_set ub_norm_set ) )
     | None ->
-        (AccessExpressionSet.empty, None, EdgeExp.Set.empty)
+        (EdgeExp.AssignmentSet.empty, None, EdgeExp.Set.empty)
 end
 
 include Graph.Imperative.Digraph.ConcreteBidirectionalLabeled (Node) (EdgeData)

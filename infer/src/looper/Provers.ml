@@ -10,7 +10,9 @@ type theory_data =
   ; symbols: Why3.Term.lsymbol LooperUtils.StringMap.t
   ; var_typ: Why3.Ty.ty
   ; mk_const: Why3.BigInt.t -> Why3.Term.term
-  ; get_op: string -> Why3.Term.lsymbol }
+  ; get_op: string -> Why3.Term.lsymbol
+  ; zero: Why3.Term.term
+  ; one: Why3.Term.term }
 
 type prover_data =
   { name: string
@@ -140,14 +142,18 @@ let get_prover_map {InterproceduralAnalysis.proc_desc; err_log} : prover_data Pr
                   ; symbols= real_ls
                   ; var_typ= Why3.Ty.ty_real
                   ; mk_const= Why3.Term.t_real_const
-                  ; get_op= (fun name -> StringMap.find name real_ls) }
+                  ; get_op= (fun name -> StringMap.find name real_ls)
+                  ; zero= Why3.Term.t_real_const (Why3.BigInt.of_int 0)
+                  ; one= Why3.Term.t_real_const (Why3.BigInt.of_int 1) }
               ; int_data=
                   { theory= int_theory
                   ; theory_extras= [division_theory]
                   ; symbols= int_ls
                   ; var_typ= Why3.Ty.ty_int
                   ; mk_const= Why3.Term.t_int_const
-                  ; get_op= (fun name -> StringMap.find name int_ls) }
+                  ; get_op= (fun name -> StringMap.find name int_ls)
+                  ; zero= Why3.Term.t_int_const (Why3.BigInt.of_int 0)
+                  ; one= Why3.Term.t_int_const (Why3.BigInt.of_int 1) }
               ; idents= StringMap.empty
               ; vars= StringMap.empty
               ; prover_conf=

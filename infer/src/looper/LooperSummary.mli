@@ -40,7 +40,8 @@ and transition =
   ; dst_node: LTS.Node.t
   ; bound: EdgeExp.T.t
   ; monotony_map: Monotonicity.t AccessExpressionMap.t
-  ; calls: call list }
+  ; calls: call list
+  ; backedge: bool }
 
 type t =
   { formal_map: FormalMap.t

@@ -7,7 +7,9 @@ type theory_data =
   ; symbols: Why3.Term.lsymbol LooperUtils.StringMap.t
   ; var_typ: Why3.Ty.ty
   ; mk_const: Why3.BigInt.t -> Why3.Term.term
-  ; get_op: string -> Why3.Term.lsymbol }
+  ; get_op: string -> Why3.Term.lsymbol
+  ; zero: Why3.Term.term
+  ; one: Why3.Term.term }
 
 type prover_data =
   { name: string

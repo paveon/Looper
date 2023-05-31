@@ -689,6 +689,12 @@ let looper_infinite_cost =
       \      issue type is disabled."
 
 
+let looper_condition_always_false =
+  register ~id:"LOOPER_CONDITION_ALWAYS_FALSE" Warning Looper
+    ~user_documentation:
+      "This warning indicates that Looper determined a condition to be always false."
+
+
 let inherently_dangerous_function =
   register_hidden ~id:"INHERENTLY_DANGEROUS_FUNCTION" Warning Biabduction
 

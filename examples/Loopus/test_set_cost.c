@@ -2,6 +2,7 @@
 
 /* t is also in control variables but once we have invariant analysis, it
  * shouldn't be */
+// [p]
 int break_loop(int p, int t) {
   for (int i = 0; i < p; i++) {
     // do something
@@ -14,6 +15,7 @@ int break_loop(int p, int t) {
 
 /* t will be in control variables but once we have invariant analysis,
  * it shouldn't be. */
+// [p]
 int break_loop_with_t(int p, int t) {
   for (int i = 0; i < p; i++) {
     // do something
@@ -29,6 +31,7 @@ int break_loop_with_t(int p, int t) {
 /* calling break_loop with a negative t should give constant
    cost. Currently, this doesn't work since we can't do case analysis
    on the domain. */
+// 1
 int break_constant_FP(int p) { return break_loop(p, -1); }
 
 /* while loop that contains && in the guard. It gives the correct bound.
@@ -52,6 +55,43 @@ B:
   }
   return k;
 }
+
+// int do_while_test(int p) {
+//   int k = 0;
+//   int j = 0;
+//   do {
+//     j++;
+//   } while (k == 0 && j < 100);
+//   return k;
+// }
+
+// //[Final bound] 1100
+// int double_do_while_test(int p) {
+//   int k = 0;
+//   int j = 0;
+//   do {
+//     j++;
+//     int x = 0;
+//     do {
+//       x++;
+//     } while (x < 10);
+//   } while (k == 0 && j < 100);
+//   return k;
+// }
+
+// //[Final bound] 1100
+// int while_test(int p) {
+//   int k = 0;
+//   int j = 0;
+//   while (k == 0 && j < 100) {
+//     j++;
+//     int x = 0;
+//     while (x < 10) {
+//       x++;
+//     }
+//   }
+//   return k;
+// }
 
 /* simulated goto that contains && */
 int simulated_while_with_and_linear(int p) {
@@ -83,6 +123,12 @@ B:
 }
 
 /* p should be in control vars. If p is 1, can run forever */
+// For now the implication "p == 1 || (i < 30 && i >= 0) => (30 - i) > 0"
+// does not hold so "(30 - i) > 0" is not derived as a guard and thus
+// the decrement is eliminated and no local bound is found. We would have
+// to implement some sort of multiple-case pre-conditions to support cases
+// like this. For now we return INF which is technically right but not very
+// precise.
 void while_and_or(int p) {
   int i = 0;
   while (p == 1 || (i < 30 && i >= 0)) {
@@ -373,7 +419,11 @@ int while_upto20(int m) {
 
 void call_while_upto20_minus100_constant() { while_upto20(-100); }
 
-void call_while_upto20_10_constant() { while_upto20(10); }
+void call_while_upto20_10_constant() {
+  for (int i = 0; i < 10; i++) {
+    while_upto20(10);
+  }
+}
 
 void call_while_upto20_unsigned(unsigned x) { while_upto20(x); }
 
@@ -386,6 +436,14 @@ void infinite_FN() {
   int z;
   for (int i = 0; always(i) != 0; i++) {
     z += i;
+  }
+  int x = 5;
+  for (int i = 0; i < 5; i++) {
+    if (i < 2) {
+      x = 10;
+    } else {
+      x = 5;
+    }
   }
 }
 
@@ -424,6 +482,7 @@ void compute_exit_unreachable() {
   exit(0);
 }
 
+// [p]
 void linear(int p) {
   for (int i = 0; i < p; i++) {
   }
@@ -533,6 +592,13 @@ int loop_always_linear(int p, int k) {
   return 1;
 }
 
+void do_while_test(int k) {
+  int i = 0;
+  do {
+    i++;
+  } while (i < k);
+}
+
 int jump_inside_loop_constant_linear(int p, int k) {
   int i = 0;
   if (p > 0) {
@@ -603,6 +669,14 @@ void larger_state_FN() {
   }
 }
 
+// void simple_loop(int n) {
+//   int i = n;
+//   while (i > 0) {
+//     foo(i);
+//     i--;
+//   }
+// }
+
 static int array1[] = {1, 2, 3};
 static int array2[] = {};
 
@@ -623,9 +697,14 @@ void ptr_cmp(char* end, int size) {
   }
 }
 
-void (*fun_ptr)(int);
+void test(int x) {
+  for (int i = 0; i < x; i++) {
+  }
+}
+
 // just to sanity check that we don't fail on cost with purity analysis enabled
 int loop(int k) {
+  void (*fun_ptr)(int) = test;
   int p = 0;
   for (int i = 0; i < 1000; i++) {
     p = 3;

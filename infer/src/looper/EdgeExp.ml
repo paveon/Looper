@@ -177,8 +177,15 @@ let zero = Const (Const.Cint IntLit.zero)
 
 let try_eval op e1 e2 =
   match (e1, e2) with
-  | Const (Const.Cint c1), Const (Const.Cint c2) ->
-      Const (Const.Cint (eval_consts op c1 c2))
+  | Const (Const.Cint c1), Const (Const.Cint c2) -> (
+    match op with
+    | Binop.DivI ->
+        let remainder = IntLit.rem c1 c2 in
+        if IntLit.eq remainder IntLit.zero then Const (Const.Cint (eval_consts op c1 c2))
+        else (* Cannot divide *)
+          BinOp (op, e1, e2)
+    | _ ->
+        Const (Const.Cint (eval_consts op c1 c2)) )
   | Const (Const.Cint c), exp when IntLit.iszero c -> (
     match op with
     | Binop.PlusA _ ->
@@ -289,6 +296,10 @@ module ValuePair = struct
 
   type t = V of T.t | P of pair [@@deriving compare]
 
+  let _equal = equal
+
+  let equal p1 p2 = Int.equal (compare p1 p2) 0
+
   let to_string value_pair =
     match value_pair with
     | V rhs_value ->
@@ -392,7 +403,7 @@ module ValuePair = struct
         | V value ->
             V value
         | P (lb, ub) ->
-            if equal lb ub then V lb else P (lb, ub) )
+            if _equal lb ub then V lb else P (lb, ub) )
       | BinOp (op, lexp, rexp) ->
           create_binop op (aux lexp) (aux rexp)
       | Cast (typ, subexp) -> (
@@ -475,6 +486,24 @@ let rec for_all_access exp ~f =
       true
 
 
+let rec exists_access exp ~f =
+  match exp with
+  | Access access | Strlen access ->
+      f access
+  | BinOp (_, lexp, rexp) ->
+      exists_access lexp ~f || exists_access rexp ~f
+  | UnOp (Unop.Neg, exp, _) ->
+      exists_access exp ~f
+  | UnOp (_, _, _) ->
+      assert false
+  | Max args | Min args ->
+      Set.exists (fun arg -> exists_access arg ~f) args
+  | Cast (_, exp) ->
+      exists_access exp ~f
+  | Inf | Const _ | Call _ | Symbolic (_, _) ->
+      false
+
+
 let rec exists_binop exp ~f =
   match exp with
   | BinOp (op, lexp, rexp) ->
@@ -486,6 +515,15 @@ let rec exists_binop exp ~f =
   | Cast (_, exp) ->
       exists_binop exp ~f
   | Access _ | Strlen _ | Inf | Const _ | Call _ | Symbolic (_, _) ->
+      false
+
+
+let is_formal_access exp formals =
+  match exp with
+  | Access access ->
+      let base = HilExp.AccessExpression.get_base access in
+      AccessPath.BaseSet.mem base formals
+  | _ ->
       false
 
 
@@ -1373,19 +1411,68 @@ let rec is_typ_unsigned (typ : Typ.t) =
       assert false
 
 
+let lookup_field_type_annot tenv base_typ field_name =
+  let lookup = Tenv.lookup tenv in
+  Struct.get_field_type_and_annotation ~lookup field_name base_typ
+
+
+let rec get_typ_test (t : HilExp.AccessExpression.t) tenv : Typ.t option =
+  match t with
+  | Base (_, typ) ->
+      Some typ
+  | FieldOffset (ae, fld) -> (
+      debug_log "FieldOffset@," ;
+      let base_typ_opt = get_typ_test ae tenv in
+      match base_typ_opt with
+      | Some base_typ ->
+          debug_log "lookup_field_type_annot@," ;
+          Option.map (lookup_field_type_annot tenv base_typ fld) ~f:fst
+      | None ->
+          None )
+  | ArrayOffset (_, typ, _) ->
+      Some typ
+  | AddressOf ae ->
+      let base_typ_opt = get_typ_test ae tenv in
+      Option.map base_typ_opt ~f:(fun base_typ -> Typ.mk (Tptr (base_typ, Pk_pointer)))
+  | Dereference ae -> (
+      let base_typ_opt = get_typ_test ae tenv in
+      match base_typ_opt with Some {Typ.desc= Tptr (typ, _)} -> Some typ | _ -> None )
+
+
+let why3_mk_var exp tenv ({var_typ; get_op; zero} : Provers.theory_data)
+    (prover_data : Provers.prover_data) =
+  let name, typ =
+    match exp with
+    | Strlen access ->
+        let term_name = F.asprintf "Strlen(%a)" HilExp.AccessExpression.pp access in
+        (term_name, Typ.mk (Typ.Tint Typ.IULong))
+    | Call (typ, procname, _, _) ->
+        (* Treat function without summary as constant *)
+        (Procname.to_string procname, typ)
+    | Access access -> (
+        let _, base_typ = HilExp.AccessExpression.get_base access in
+        debug_log "[why3_mk_var] get_typ: %a, base type: %a@," HilExp.AccessExpression.pp access
+          Typ.(pp Pp.text)
+          base_typ ;
+        match get_typ_test access tenv with
+        | Some typ ->
+            (F.asprintf "%a" HilExp.AccessExpression.pp access, typ)
+        | _ ->
+            assert false )
+    | _ ->
+        assert false
+  in
+  let var = why3_get_vsymbol name var_typ prover_data |> Why3.Term.t_var in
+  if is_typ_unsigned typ then
+    let condition = Why3.Term.ps_app (get_op ">=") [var; zero] in
+    (var, Why3.Term.Sterm.singleton condition)
+  else (var, Why3.Term.Sterm.empty)
+
+
 let rec to_why3_expr exp tenv
-    ~selected_theory:({var_typ; mk_const; get_op} as selected_theory : Provers.theory_data)
+    ~selected_theory:({mk_const; get_op; zero} as selected_theory : Provers.theory_data)
     (prover_data : Provers.prover_data) =
   let mk_const_term value = mk_const (Why3.BigInt.of_int value) in
-  let zero_const = mk_const_term 0 in
-  let why3_make_access_term name typ =
-    let var = why3_get_vsymbol name var_typ prover_data in
-    let var_term = Why3.Term.t_var var in
-    if is_typ_unsigned typ then
-      let condition = Why3.Term.ps_app (get_op ">=") [var_term; zero_const] in
-      (var_term, Why3.Term.Sterm.singleton condition)
-    else (var_term, Why3.Term.Sterm.empty)
-  in
   let convert_term_set terms =
     Set.fold
       (fun term (term_acc, constraints) ->
@@ -1401,25 +1488,13 @@ let rec to_why3_expr exp tenv
       (mk_const (Why3.BigInt.of_string (IntLit.to_string const)), Why3.Term.Sterm.empty)
   | Const (Const.Cfloat const) ->
       (mk_const_term (int_of_float const), Why3.Term.Sterm.empty)
-  | Strlen access ->
-      let term_name = F.asprintf "Strlen(%a)" HilExp.AccessExpression.pp access in
-      why3_make_access_term term_name (Typ.mk (Typ.Tint Typ.IULong))
-  | Call (typ, procname, _, _) ->
-      (* Treat function without summary as constant *)
-      why3_make_access_term (Procname.to_string procname) typ
-  | Access access -> (
-    match HilExp.AccessExpression.get_typ access tenv with
-    | Some typ ->
-        why3_make_access_term (F.asprintf "%a" HilExp.AccessExpression.pp access) typ
-    | _ ->
-        assert false )
+  | Strlen _ | Call _ | Access _ ->
+      why3_mk_var exp tenv selected_theory prover_data
   | Cast (typ, subexp) ->
       let why3_subexp, constraints = to_why3_expr subexp tenv ~selected_theory prover_data in
       let constraints =
         if Typ.is_unsigned_int typ then
-          Why3.Term.Sterm.add
-            (Why3.Term.t_app_infer (get_op ">=") [why3_subexp; zero_const])
-            constraints
+          Why3.Term.Sterm.add (Why3.Term.t_app_infer (get_op ">=") [why3_subexp; zero]) constraints
         else constraints
       in
       (why3_subexp, constraints)
@@ -1443,6 +1518,10 @@ let rec to_why3_expr exp tenv
       in
       let expr_z3, constraints =
         match op with
+        | Binop.LAnd ->
+            (Why3.Term.t_and_simp why3_lexp why3_rexp, Why3.Term.Sterm.empty)
+        | Binop.LOr ->
+            (Why3.Term.t_or_simp why3_lexp why3_rexp, Why3.Term.Sterm.empty)
         | Binop.Lt ->
             (Why3.Term.ps_app (get_op "<") [why3_lexp; why3_rexp], Why3.Term.Sterm.empty)
         | Binop.Le ->
@@ -1470,19 +1549,19 @@ let rec to_why3_expr exp tenv
               if is_const rexp then (
                 assert (not (is_zero rexp)) ;
                 Why3.Term.Sterm.empty )
-              else Why3.Term.Sterm.singleton (Why3.Term.t_neq_simp why3_rexp zero_const)
+              else Why3.Term.Sterm.singleton (Why3.Term.t_neq_simp why3_rexp zero)
             in
             (Why3.Term.t_app_infer (get_op "/") [why3_lexp; why3_rexp], conditions)
         | Binop.Shiftrt ->
             (* Assumption: valid unsigned shifting *)
             let rexp = eval_power rexp in
-            let condition = Why3.Term.t_app_infer (get_op ">=") [why3_rexp; zero_const] in
+            let condition = Why3.Term.t_app_infer (get_op ">=") [why3_rexp; zero] in
             let expr_why3 = Why3.Term.t_app_infer (get_op "/") [why3_lexp; rexp] in
             (expr_why3, Why3.Term.Sterm.singleton condition)
         | Binop.Shiftlt ->
             (* Assumption: valid unsigned shifting *)
             let rexp = eval_power rexp in
-            let condition = Why3.Term.t_app_infer (get_op ">=") [why3_rexp; zero_const] in
+            let condition = Why3.Term.t_app_infer (get_op ">=") [why3_rexp; zero] in
             let expr_why3 = Why3.Term.t_app_infer (get_op "*") [why3_lexp; rexp] in
             (expr_why3, Why3.Term.Sterm.singleton condition)
         | Binop.Mod ->
@@ -1506,7 +1585,7 @@ let rec to_why3_expr exp tenv
       assert (Set.cardinal max_args > 0) ;
       if Set.cardinal max_args < 2 then
         let arg = List.hd_exn why3_args in
-        let ite_condition = Why3.Term.ps_app (get_op ">=") [arg; zero_const] in
+        let ite_condition = Why3.Term.ps_app (get_op ">=") [arg; zero] in
         (arg, Why3.Term.Sterm.add ite_condition type_constraints)
       else
         let min_max_expr =
@@ -1586,6 +1665,8 @@ let map_accesses bound ~f ~init =
     | BinOp (op, lexp, rexp) ->
         let lexp, acc = aux lexp acc in
         let rexp, acc = aux rexp acc in
+        let evaluated = try_eval op lexp rexp in
+        debug_log "Try eval: %a@," pp evaluated ;
         (try_eval op lexp rexp, acc)
     | UnOp (Unop.Neg, exp, typ) -> (
         let exp, acc = aux exp acc in
@@ -1606,6 +1687,30 @@ let map_accesses bound ~f ~init =
         (bound, acc)
   in
   aux bound init
+
+
+let rec flatten_min_max exp =
+  match exp with
+  | BinOp (op, lexp, rexp) ->
+      BinOp (op, flatten_min_max lexp, flatten_min_max rexp)
+  | UnOp (op, exp, typ) ->
+      UnOp (op, flatten_min_max exp, typ)
+  | Cast (typ, exp) ->
+      Cast (typ, flatten_min_max exp)
+  | Access _ | Const _ | Call _ | Inf | Strlen _ | Symbolic _ ->
+      exp
+  | Max args ->
+      let args = Set.map flatten_min_max args in
+      if Int.equal (Set.cardinal args) 1 then
+        let arg = Set.min_elt args in
+        match arg with Max _ -> arg | _ -> Max args
+      else Max args
+  | Min args ->
+      let args = Set.map flatten_min_max args in
+      if Int.equal (Set.cardinal args) 1 then
+        let arg = Set.min_elt args in
+        match arg with Min _ -> arg | _ -> Min args
+      else Min args
 
 
 let subst bound args formal_map =
@@ -2077,7 +2182,8 @@ let determine_monotonicity exp tenv (prover_data : Provers.prover_data) =
     raise error
 
 
-let always_false exp tenv (prover_data : Provers.prover_data) =
+let always_false exp (constants : Const.t AccessExpressionMap.t) tenv
+    (prover_data : Provers.prover_data) =
   if is_zero exp then true
   else if is_one exp then false
   else
@@ -2087,15 +2193,40 @@ let always_false exp tenv (prover_data : Provers.prover_data) =
       in
       if contains_int_op then prover_data.int_data else prover_data.real_data
     in
+    let mk_const = theory_data.mk_const in
+    let premise_terms =
+      AccessExpressionMap.fold
+        (fun access constant acc ->
+          match constant with
+          | Const.Cint value ->
+              let const_why3 = mk_const (Why3.BigInt.of_string (IntLit.to_string value)) in
+              let lhs_why3, _ = why3_mk_var (Access access) tenv theory_data prover_data in
+              Why3.Term.t_equ_simp lhs_why3 const_why3 :: acc
+          | Const.Cfloat value ->
+              (* TODO: Not sure if this is correct, should investigate if BigInt can store reals
+                 and also if it causes any Why3 type mismatches *)
+              let const_why3 = mk_const (Why3.BigInt.of_string (string_of_float value)) in
+              let lhs_why3, _ = why3_mk_var (Access access) tenv theory_data prover_data in
+              Why3.Term.t_equ_simp lhs_why3 const_why3 :: acc
+          | _ ->
+              acc )
+        constants []
+    in
     let always_false_goal = Why3.Decl.create_prsymbol (Why3.Ident.id_fresh "always_false_goal") in
     let why3_condition, _ = to_why3_expr exp tenv ~selected_theory:theory_data prover_data in
     let negation = Why3.Term.t_not_simp why3_condition in
-    let free_vars = Why3.Term.Mvs.keys (Why3.Term.t_vars negation) in
+    let formula =
+      if List.is_empty premise_terms then negation
+      else
+        let premise = List.reduce_exn premise_terms ~f:(fun x y -> Why3.Term.t_and_simp x y) in
+        Why3.Term.t_implies_simp premise negation
+    in
+    let free_vars = Why3.Term.Mvs.keys (Why3.Term.t_vars formula) in
     let formula =
       if List.is_empty free_vars then (
         debug_log "No free vars for %a@," pp exp ;
-        negation )
-      else Why3.Term.t_forall_close_simp free_vars [] negation
+        formula )
+      else Why3.Term.t_forall_close_simp free_vars [] formula
     in
     let base_task =
       List.fold (theory_data.theory :: theory_data.theory_extras) ~init:None ~f:(fun acc extra ->
@@ -2103,7 +2234,8 @@ let always_false exp tenv (prover_data : Provers.prover_data) =
     in
     let task = Why3.Task.add_prop_decl base_task Why3.Decl.Pgoal always_false_goal formula in
     (* debug_log "@[<v>Task: %a@]@," Why3.Pretty.print_task task ;
-       debug_log "@[<v>Driver task: %a@]@," Why3.Driver.(print_task prover_data.driver) task ; *)
+        *)
+    (* debug_log "@[<v>Driver task: %a@]@," Why3.Driver.(print_task prover_data.driver) task ; *)
     match (why3_solve_task task prover_data).pr_answer with
     | Why3.Call_provers.Valid ->
         debug_log "Expression '%a' is always false@," pp exp ;
@@ -2131,6 +2263,14 @@ let always_false exp tenv (prover_data : Provers.prover_data) =
         false
 
 
+let map_formal access formal_map =
+  match AccessExpressionMap.find_opt access formal_map with
+  | Some shadow_formal ->
+      shadow_formal
+  | None ->
+      access
+
+
 let rec array_index_of_exp ~include_array_indexes ~f_resolve_id ~add_deref exp typ =
   (* TODO: Should probably create my own AccessExpression as well in the future.
      Use HilExp in array indices for now *)
@@ -2140,7 +2280,8 @@ let rec array_index_of_exp ~include_array_indexes ~f_resolve_id ~add_deref exp t
 
 
 (* Adapted from AccessPath.of_exp. *)
-and access_exprs_of_exp ~include_array_indexes ~f_resolve_id ~test_resolver ~add_deref exp0 typ0 =
+and access_exprs_of_exp ~include_array_indexes ~f_resolve_id ~test_resolver ~formal_map ~add_deref
+    exp0 typ0 =
   let rec of_exp_ exp typ (add_accesses : HilExp.AccessExpression.t -> HilExp.AccessExpression.t)
       acc : ValuePair.t list =
     match (exp : Exp.t) with
@@ -2153,7 +2294,7 @@ and access_exprs_of_exp ~include_array_indexes ~f_resolve_id ~test_resolver ~add
                as it was originally *)
             map_accesses value ~init:None ~f:(fun ae None ->
                 let ae = if add_deref then HilExp.AccessExpression.dereference ae else ae in
-                (Access (add_accesses ae), None) )
+                (Access (map_formal ae formal_map |> add_accesses), None) )
             |> fst
           in
           match value_pair with
@@ -2164,7 +2305,7 @@ and access_exprs_of_exp ~include_array_indexes ~f_resolve_id ~test_resolver ~add
       | None, missing_id ->
           let ae = HilExp.AccessExpression.address_of_base (base_of_id id typ) in
           let ae = if add_deref then HilExp.AccessExpression.dereference ae else ae in
-          ValuePair.V (Access (add_accesses ae)) :: acc
+          ValuePair.V (Access (map_formal ae formal_map |> add_accesses)) :: acc
           (* match f_resolve_id (Var.of_id id) with
              | Some access_expr ->
                  let access_expr' =
@@ -2192,7 +2333,7 @@ and access_exprs_of_exp ~include_array_indexes ~f_resolve_id ~test_resolver ~add
                     match ae with HilExp.Dereference ae -> ae | _ -> assert false
                   else ae
                 in
-                (Access (add_accesses ae), None) )
+                (Access (map_formal ae formal_map |> add_accesses), None) )
             |> fst
           in
           match value_pair with
@@ -2205,26 +2346,11 @@ and access_exprs_of_exp ~include_array_indexes ~f_resolve_id ~test_resolver ~add
           let access_expr =
             if add_deref then HilExp.AccessExpression.dereference access_expr else access_expr
           in
-          ValuePair.V (Access (add_accesses access_expr)) :: acc
-          (* match f_resolve_id (Var.of_pvar pvar) with
-             | Some access_expr ->
-                 (* do not need to add deref here as it was added implicitly in the binding *)
-                 (* but need to remove it if add_deref is false *)
-                 let access_expr' =
-                   if not add_deref then match access_expr with HilExp.Dereference ae -> ae | _ -> assert false
-                   else access_expr
-                 in
-                 add_accesses access_expr' :: acc
-             | None ->
-                 let access_expr = of_pvar pvar typ in
-                 let access_expr' =
-                   if add_deref then HilExp.AccessExpression.dereference access_expr else access_expr
-                 in
-                 add_accesses access_expr' :: acc *) )
+          ValuePair.V (Access (map_formal access_expr formal_map |> add_accesses)) :: acc )
     | Lvar pvar ->
         let ae = of_pvar pvar typ in
         let ae = if add_deref then HilExp.AccessExpression.dereference ae else ae in
-        ValuePair.V (Access (add_accesses ae)) :: acc
+        ValuePair.V (Access (map_formal ae formal_map |> add_accesses)) :: acc
     | Lfield (root_exp, fld, root_exp_typ) ->
         let add_field_access_expr access_expr =
           add_accesses (HilExp.AccessExpression.field_offset access_expr fld)
@@ -2254,8 +2380,8 @@ and access_exprs_of_exp ~include_array_indexes ~f_resolve_id ~test_resolver ~add
   of_exp_ exp0 typ0 Fn.id []
 
 
-and access_expr_of_lhs_exp ~include_array_indexes ~f_resolve_id ~test_resolver ~add_deref lhs_exp
-    typ =
+and access_expr_of_lhs_exp ~include_array_indexes ~f_resolve_id ~test_resolver ~formal_map
+    ~add_deref lhs_exp typ =
   let process_lfield_lindex_access_list accesses =
     (* TODO: Sketchy again. Working with more complex expressions instead
        of pure access expressions. How should we integrate this properly? *)
@@ -2281,8 +2407,8 @@ and access_expr_of_lhs_exp ~include_array_indexes ~f_resolve_id ~test_resolver ~
   match (lhs_exp : Exp.t) with
   | Lfield _ when not add_deref ->
       let accesses =
-        access_exprs_of_exp ~include_array_indexes ~f_resolve_id ~test_resolver ~add_deref:true
-          lhs_exp typ
+        access_exprs_of_exp ~include_array_indexes ~f_resolve_id ~test_resolver ~formal_map
+          ~add_deref:true lhs_exp typ
       in
       process_lfield_lindex_access_list accesses
   | Lindex _ when not add_deref ->
@@ -2295,14 +2421,14 @@ and access_expr_of_lhs_exp ~include_array_indexes ~f_resolve_id ~test_resolver ~
               (* T29630813 investigate cases where this is not a pointer *)
               typ
         in
-        access_exprs_of_exp ~include_array_indexes ~f_resolve_id ~test_resolver ~add_deref:true
-          lhs_exp typ'
+        access_exprs_of_exp ~include_array_indexes ~f_resolve_id ~test_resolver ~formal_map
+          ~add_deref:true lhs_exp typ'
       in
       process_lfield_lindex_access_list accesses
   | _ -> (
       let accesses =
-        access_exprs_of_exp ~include_array_indexes ~f_resolve_id ~test_resolver ~add_deref lhs_exp
-          typ
+        access_exprs_of_exp ~include_array_indexes ~f_resolve_id ~test_resolver ~formal_map
+          ~add_deref lhs_exp typ
       in
       match accesses with [lhs_ae] -> Some lhs_ae | _ -> None )
 
@@ -2312,7 +2438,7 @@ and access_expr_of_lhs_exp ~include_array_indexes ~f_resolve_id ~test_resolver ~
    access path it represents. evaluating the HIL expression should produce
    the same result as evaluating the SIL expression and replacing the temporary
    variables using [f_resolve_id] *)
-and of_sil_exp ~include_array_indexes ~f_resolve_id ~test_resolver ~add_deref exp typ =
+and of_sil_exp ~include_array_indexes ~f_resolve_id ~test_resolver ~formal_map ~add_deref exp typ =
   (* let access_of_access_expr ae =
        let base_var = HilExp.AccessExpression.get_base ae |> fst in
        match Var.get_ident base_var with
@@ -2332,7 +2458,8 @@ and of_sil_exp ~include_array_indexes ~f_resolve_id ~test_resolver ~add_deref ex
           let process_value value =
             map_accesses value ~init:None ~f:(fun ae None ->
                 let ae = if add_deref then HilExp.AccessExpression.dereference ae else ae in
-                (Access ae, None) )
+                let mapped_ae = map_formal ae formal_map in
+                (Access mapped_ae, None) )
             |> fst
           in
           match value_pair with
@@ -2367,6 +2494,7 @@ and of_sil_exp ~include_array_indexes ~f_resolve_id ~test_resolver ~add_deref ex
     | Exp.BinOp (op, e0, e1) ->
         ValuePair.create_binop op (of_sil_ e0 typ) (of_sil_ e1 typ)
     | Exp.Const c ->
+        debug_log "[of_sil] Exp.Const: %a@," Const.(pp Pp.text) c ;
         ValuePair.V (Const c)
     | Exp.Cast (cast_type, Exp.Const (Const.Cint c)) ->
         (* TODO: do something based on signedness of the int type and value of const *)
@@ -2386,8 +2514,8 @@ and of_sil_exp ~include_array_indexes ~f_resolve_id ~test_resolver ~add_deref ex
           L.die InternalError "TODO: HilExp.Sizeof missing size information" )
     | Exp.Lfield (root_exp, fld, root_exp_typ) -> (
       match
-        access_expr_of_lhs_exp ~include_array_indexes ~f_resolve_id ~test_resolver ~add_deref exp
-          typ
+        access_expr_of_lhs_exp ~include_array_indexes ~f_resolve_id ~test_resolver ~add_deref
+          ~formal_map exp typ
       with
       | Some access_expr ->
           (* access_of_access_expr access_expr *)
@@ -2405,8 +2533,8 @@ and of_sil_exp ~include_array_indexes ~f_resolve_id ~test_resolver ~add_deref ex
         of_sil_ (Exp.Lindex (Exp.Var dummy_id, index_exp)) typ
     | Exp.Lindex (root_exp, index_exp) -> (
       match
-        access_expr_of_lhs_exp ~include_array_indexes ~f_resolve_id ~test_resolver ~add_deref exp
-          typ
+        access_expr_of_lhs_exp ~include_array_indexes ~f_resolve_id ~test_resolver ~formal_map
+          ~add_deref exp typ
       with
       | Some access_expr ->
           (* access_of_access_expr access_expr *)
@@ -2415,21 +2543,20 @@ and of_sil_exp ~include_array_indexes ~f_resolve_id ~test_resolver ~add_deref ex
           (* unsupported index expression: represent with a dummy variable *)
           let dummy_id = Ident.create_normal (Ident.string_to_name (Exp.to_string root_exp)) 0 in
           of_sil_ (Exp.Lindex (Var dummy_id, index_exp)) typ )
-    | Exp.Lvar _ -> (
-      match
-        access_expr_of_lhs_exp ~include_array_indexes ~f_resolve_id ~test_resolver ~add_deref exp
-          typ
-      with
-      | Some access_expr ->
-          (* access_of_access_expr access_expr *)
-          access_expr
-      | None ->
-          L.(die InternalError) "Couldn't convert var expression %a to access path" Exp.pp exp )
+    | Exp.Lvar pvar -> (
+        debug_log "[of_sil] Exp.Lvar: %a@," Pvar.(pp Pp.text) pvar ;
+        match
+          access_expr_of_lhs_exp ~include_array_indexes ~f_resolve_id ~test_resolver ~formal_map
+            ~add_deref exp typ
+        with
+        | Some access_expr ->
+            (* access_of_access_expr access_expr *)
+            access_expr
+        | None ->
+            L.(die InternalError) "Couldn't convert var expression %a to access path" Exp.pp exp )
     | Exp.Exn _ ->
         L.(die InternalError) "[EdgeExp.of_sil_exp] Unsupported Exn expression %a!" Exp.pp exp
     | Exp.Closure _ ->
-        L.(die InternalError) "[EdgeExp.of_sil_exp] Unsupported Closure expression %a!" Exp.pp exp
-    | _ ->
         L.(die InternalError) "[EdgeExp.of_sil_exp] Unsupported Closure expression %a!" Exp.pp exp
   in
   of_sil_ exp typ
@@ -2510,7 +2637,7 @@ let rec get_degrees exp =
 
 
 let big_o exp =
-  if contains_inf exp then "O(Top)"
+  if contains_inf exp then "Top"
   else
     match evaluate_const_exp exp with
     | Some _ ->
@@ -2533,3 +2660,8 @@ let big_o exp =
             F.asprintf "O(%s)" (String.concat terms_str ~sep:" * ")
         | None ->
             "None" )
+
+
+module AssignmentSet = Caml.Set.Make (struct
+  type nonrec t = HilExp.access_expression * T.t [@@deriving compare]
+end)

@@ -20,7 +20,7 @@ module DCP_SCC = Graph.Components.Make (DCP)
 module VFG_SCC = Graph.Components.Make (VFG)
 
 module UnprocessedNormSet = Caml.Set.Make (struct
-  type nonrec t = EdgeExp.T.t * AccessExpressionSet.t [@@deriving compare]
+  type nonrec t = EdgeExp.T.t * EdgeExp.AssignmentSet.t [@@deriving compare]
 end)
 
 (* TODO: This is not very efficient solution. Figure out a better way *)
@@ -186,11 +186,12 @@ let analyze_procedure ({InterproceduralAnalysis.proc_desc; exe_env} as analysis_
              compute_norm_set unprocessed processed
          in *)
       let print_used_assignments assignments =
-        debug_log "Used assignments: " ;
-        AccessExpressionSet.iter
-          (fun access -> debug_log "%a " HilExp.AccessExpression.pp access)
+        debug_log "@[<v2>[Used assignments]@," ;
+        EdgeExp.AssignmentSet.iter
+          (fun (access, rhs) ->
+            debug_log "%a = %a@," HilExp.AccessExpression.pp access EdgeExp.pp rhs )
           assignments ;
-        debug_log "@,"
+        debug_log "@]@,"
       in
       let derive_constraints_for_norm (norm, used_assignments) processed =
         List.fold edge_pairs
@@ -202,7 +203,7 @@ let analyze_procedure ({InterproceduralAnalysis.proc_desc; exe_env} as analysis_
                 proc_name
             in
             let used_assignments =
-              AccessExpressionSet.union used_assignments substituted_accesses
+              EdgeExp.AssignmentSet.union used_assignments substituted_accesses
             in
             ( match dc_rhs_opt with
             | Some dc_rhs ->
@@ -252,7 +253,7 @@ let analyze_procedure ({InterproceduralAnalysis.proc_desc; exe_env} as analysis_
       debug_log "@,==========[Deriving constraints]==================@," ;
       let unprocessed_norms =
         EdgeExp.Set.fold
-          (fun norm acc -> UnprocessedNormSet.add (norm, AccessExpressionSet.empty) acc)
+          (fun norm acc -> UnprocessedNormSet.add (norm, EdgeExp.AssignmentSet.empty) acc)
           graph_data.norms UnprocessedNormSet.empty
       in
       let final_norm_set = compute_norm_set unprocessed_norms EdgeExp.Set.empty in
@@ -272,12 +273,16 @@ let analyze_procedure ({InterproceduralAnalysis.proc_desc; exe_env} as analysis_
           (fun norm norms_acc ->
             if EdgeExp.is_const norm then norms_acc
             else
-              let why3_exp =
-                EdgeExp.to_why3_expr norm tenv ~selected_theory:active_prover.real_data
-                  active_prover
-                |> fst
-              in
-              (norm, why3_exp) :: norms_acc )
+              try
+                let why3_exp =
+                  EdgeExp.to_why3_expr norm tenv ~selected_theory:active_prover.real_data
+                    active_prover
+                  |> fst
+                in
+                (norm, why3_exp) :: norms_acc
+              with _ ->
+                debug_log "Failed to transform norm '%a' to Why3 expr@," EdgeExp.pp norm ;
+                norms_acc )
           final_norm_set []
       in
       let dcp = DCP.create () in
@@ -315,26 +320,66 @@ let analyze_procedure ({InterproceduralAnalysis.proc_desc; exe_env} as analysis_
       debug_log "@,==========[Propagating guards]====================@," ;
       let rec propagate_guards : LTS.NodeSet.t -> unit =
        fun nodes ->
-        if not (LTS.NodeSet.is_empty nodes) then
+        if not (LTS.NodeSet.is_empty nodes) then (
           let get_shared_guards incoming_edges =
             if List.is_empty incoming_edges then EdgeExp.Set.empty
             else
-              let _, head_edge_data, _ = List.hd_exn incoming_edges in
-              let acc = DCP.EdgeData.active_guards head_edge_data in
-              List.fold (List.tl_exn incoming_edges) ~init:acc
-                ~f:(fun shared_guards (_, edge_data, _) ->
-                  (* Get edge guards that are not decreased on this edge *)
-                  let guards = DCP.EdgeData.active_guards edge_data in
-                  EdgeExp.Set.inter guards shared_guards )
+              (* let dowhile_guards, edge_guards =
+                   List.fold incoming_edges ~init:(EdgeExp.Set.empty, [])
+                     ~f:(fun (dowhile_guards, edge_guards) (src, (edge_data : DCP.EdgeData.t), _) ->
+                       debug_log "Processing incoming edge from: %a, backedge: %B@," LTS.Node.pp src
+                         edge_data.backedge ;
+                       let dowhile_guards =
+                         match src with
+                         | LTS.Node.Prune (Sil.Ik_dowhile, _, _) when edge_data.backedge ->
+                             (* dowhile back-edge, exempt any guards. This is a hack for now before we
+                                figure out a proper "sound" solution *)
+                             EdgeExp.Set.union dowhile_guards edge_data.guards
+                         | _ ->
+                             dowhile_guards
+                       in
+                       let edge_guards = DCP.EdgeData.active_guards edge_data :: edge_guards in
+                       (dowhile_guards, edge_guards) )
+                 in *)
+              let shared_guards =
+                List.map incoming_edges ~f:(fun (_, edge_data, _) ->
+                    DCP.EdgeData.active_guards edge_data )
+                |> List.reduce_exn ~f:(fun g1 g2 -> EdgeExp.Set.inter g1 g2)
+              in
+              shared_guards
+            (* let _, head_edge_data, _ = List.hd_exn incoming_edges in
+               let acc = DCP.EdgeData.active_guards head_edge_data in
+               List.fold (List.tl_exn incoming_edges) ~init:acc
+                 ~f:(fun shared_guards (_, edge_data, _) ->
+                   (* Get edge guards that are not decreased on this edge *)
+                   let guards = DCP.EdgeData.active_guards edge_data in
+                   EdgeExp.Set.inter guards shared_guards ) *)
           in
           (* Pop one node from set of unprocessed nodes *)
           let node = LTS.NodeSet.min_elt nodes in
           let nodes = LTS.NodeSet.remove node nodes in
-          let _, in_edges =
+          debug_log "Processing: %a@," LTS.Node.pp node ;
+          let backedge_in_edges, in_edges =
             List.partition_tf (DCP.pred_e dcp node) ~f:(fun (_, edge_data, _) ->
                 DCP.EdgeData.is_backedge edge_data )
           in
-          let guards = get_shared_guards in_edges in
+          (* Exempt any guards from dowhile and goto simulated loop back-edges.
+             This is a hack for now before we figure out a proper "sound" solution *)
+          let exempt_guards =
+            List.fold backedge_in_edges ~init:EdgeExp.Set.empty
+              ~f:(fun guards_acc (src, (edge_data : DCP.EdgeData.t), dst) ->
+                match (src, dst) with
+                | LTS.Node.Prune _, LTS.Node.Join _ ->
+                    let guards =
+                      List.reduce edge_data.condition_norms ~f:(fun g1 g2 ->
+                          EdgeExp.Set.union g1 g2 )
+                      |> Option.value ~default:EdgeExp.Set.empty
+                    in
+                    EdgeExp.Set.union guards_acc guards
+                | _ ->
+                    guards_acc )
+          in
+          let guards = EdgeExp.Set.union exempt_guards (get_shared_guards in_edges) in
           let out_edges = DCP.succ_e dcp node in
           let nodes =
             List.fold out_edges ~init:nodes
@@ -347,7 +392,7 @@ let analyze_procedure ({InterproceduralAnalysis.proc_desc; exe_env} as analysis_
                   LTS.NodeSet.add dst nodes_acc )
                 else nodes_acc )
           in
-          propagate_guards nodes
+          propagate_guards nodes )
       in
       propagate_guards guarded_nodes ;
       (* Output Guarded DCP over integers *)
@@ -478,9 +523,9 @@ let analyze_procedure ({InterproceduralAnalysis.proc_desc; exe_env} as analysis_
                 (* The subsequent code using these variables is a bit messy and there is
                    no consistent/standard way of determining which norms will be wrapped
                    or won't be wrapped so add both forms as variables *)
-                if EdgeExp.is_variable norm formals tenv then
-                  let acc = EdgeExp.Set.add norm acc in
-                  EdgeExp.Set.add (EdgeExp.T.Max (EdgeExp.Set.singleton norm)) acc
+                if EdgeExp.is_variable norm formals tenv then EdgeExp.Set.add (wrap_norm norm) acc
+                  (* let acc = EdgeExp.Set.add norm acc in
+                     EdgeExp.Set.add (EdgeExp.T.Max (EdgeExp.Set.singleton norm)) acc *)
                 else acc )
               final_norm_set EdgeExp.Set.empty
           in
@@ -509,8 +554,11 @@ let analyze_procedure ({InterproceduralAnalysis.proc_desc; exe_env} as analysis_
                         vfg_add_node dst_node ;
                         vfg_add_node src_node ;
                         VFG.add_edge_e vfg (VFG.E.create src_node VFG.Edge.default dst_node) ;
-                        EdgeExp.Set.add rhs_norm (EdgeExp.Set.add lhs_norm used_variables_acc) )
+                        EdgeExp.Set.add lhs_norm used_variables_acc )
                       else used_variables_acc
+                      (* EdgeExp.Set.add rhs_norm (EdgeExp.Set.add lhs_norm used_variables_acc) *)
+                      (* if EdgeExp.equal lhs_norm rhs_norm then used_variables_acc
+                         else EdgeExp.Set.add lhs_norm used_variables_acc *)
                     in
                     match dc_rhs with
                     | DC.Value dc_rhs_value ->
@@ -535,17 +583,17 @@ let analyze_procedure ({InterproceduralAnalysis.proc_desc; exe_env} as analysis_
                   let reset_opt =
                     DCP.fold_edges_e
                       (fun (_, edge_data, _) reset_opt ->
-                        match DCP.EdgeData.get_reset edge_data ssa_var with
-                        | Some new_reset -> (
-                          match reset_opt with
-                          | Some existing_reset ->
+                        match (reset_opt, DCP.EdgeData.get_reset edge_data ssa_var) with
+                        | Some existing_reset, Some new_reset ->
+                            if EdgeExp.ValuePair.equal existing_reset new_reset then reset_opt
+                            else
                               L.die InternalError
                                 "Multiple resets of supposed SSA variable: %a = %a | %a" EdgeExp.pp
                                 ssa_var EdgeExp.ValuePair.pp existing_reset EdgeExp.ValuePair.pp
                                 new_reset
-                          | None ->
-                              Some new_reset (* EdgeExp.Map.add norm rhs acc *) )
-                        | None ->
+                        | None, Some new_reset ->
+                            Some new_reset
+                        | _ ->
                             reset_opt )
                       dcp None
                   in
@@ -637,7 +685,18 @@ let analyze_procedure ({InterproceduralAnalysis.proc_desc; exe_env} as analysis_
                           let vfg_node = (wrapped_norm, dcp_src) in
                           debug_log "FINDING VFG NODE: (%a, %a)@," EdgeExp.pp wrapped_norm
                             LTS.Node.pp dcp_src ;
-                          VFG.Map.find vfg_node vfg_map )
+                          match VFG.Map.find_opt vfg_node vfg_map with
+                          | Some vfg_norm ->
+                              vfg_norm
+                          | None -> (
+                            (* This case should occur only for SSA variables which are constant after initialization *)
+                            match EdgeExp.Map.find_opt wrapped_norm ssa_var_initialization_map with
+                            | Some (EdgeExp.ValuePair.V value) ->
+                                value
+                            | Some (EdgeExp.ValuePair.P _) ->
+                                L.die InternalError "Not implemented: %d@," __LINE__
+                            | _ ->
+                                wrapped_norm ) )
                       norm_set )
               in
               let constraints =
@@ -1257,22 +1316,25 @@ let analyze_procedure ({InterproceduralAnalysis.proc_desc; exe_env} as analysis_
                           (EdgeExp.Set.add min_max_arg args, cache) )
                         norm_updates.resets (EdgeExp.Set.empty, cache)
                     in
+                    EdgeExp.Set.iter
+                      (fun arg -> debug_log "Min-max reset arg: %a@," EdgeExp.pp arg)
+                      min_max_reset_args ;
                     (* Unpack nested max expressions
                      * TODO: unpacking should be done only if certain conditions are met,
                      * should think about it later *)
-                    let rec flatten_nested_min_max args acc_set =
-                      EdgeExp.Set.fold
-                        (fun arg acc ->
-                          match arg with
-                          | EdgeExp.T.Max nested_args | EdgeExp.T.Min nested_args ->
-                              flatten_nested_min_max nested_args acc
-                          | _ ->
-                              EdgeExp.Set.add arg acc )
-                        args acc_set
-                    in
-                    let min_max_reset_args =
-                      flatten_nested_min_max min_max_reset_args EdgeExp.Set.empty
-                    in
+                    (* let rec flatten_nested_min_max args acc_set =
+                         EdgeExp.Set.fold
+                           (fun arg acc ->
+                             match arg with
+                             | EdgeExp.T.Max nested_args | EdgeExp.T.Min nested_args ->
+                                 flatten_nested_min_max nested_args acc
+                             | _ ->
+                                 EdgeExp.Set.add arg acc )
+                           args acc_set
+                       in
+                       let min_max_reset_args =
+                         flatten_nested_min_max min_max_reset_args EdgeExp.Set.empty
+                       in *)
                     let min_max_reset_subexp =
                       match EdgeExp.Set.cardinal min_max_reset_args with
                       | 0 ->
@@ -1281,6 +1343,7 @@ let analyze_procedure ({InterproceduralAnalysis.proc_desc; exe_env} as analysis_
                       | _ ->
                           min_max_constructor min_max_reset_args
                     in
+                    debug_log "BEFORE Min-max reset exp: %a@," EdgeExp.pp min_max_reset_subexp ;
                     let min_max_reset_subexp =
                       Option.value_map (EdgeExp.evaluate_const_exp min_max_reset_subexp)
                         ~default:min_max_reset_subexp ~f:(fun const ->
@@ -1442,7 +1505,12 @@ let analyze_procedure ({InterproceduralAnalysis.proc_desc; exe_env} as analysis_
                   else EdgeExp.determine_monotonicity bound tenv active_prover
                 in
                 let transition : LooperSummary.transition =
-                  {src_node; dst_node; bound; monotony_map; calls= instantiated_calls}
+                  { src_node
+                  ; dst_node
+                  ; bound
+                  ; monotony_map
+                  ; calls= instantiated_calls
+                  ; backedge= edge_data.backedge }
                 in
                 (transition :: bounds, cache) )
               edge_set ([], cache)
@@ -1533,7 +1601,8 @@ let analyze_procedure ({InterproceduralAnalysis.proc_desc; exe_env} as analysis_
         ; dst_node= LTS.Node.Exit
         ; bound= EdgeExp.T.Inf
         ; monotony_map= AccessExpressionMap.empty
-        ; calls= [] }
+        ; calls= []
+        ; backedge= true }
       in
       let payload : LooperSummary.t =
         { formal_map= FormalMap.make (Procdesc.get_attributes proc_desc)

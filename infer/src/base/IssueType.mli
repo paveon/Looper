@@ -238,6 +238,8 @@ val infinite_cost_call : kind:CostKind.t -> t
 
 val looper_infinite_cost : t
 
+val looper_condition_always_false : t
+
 val inherently_dangerous_function : t
 
 val insecure_intent_handling : t

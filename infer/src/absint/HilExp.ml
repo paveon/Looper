@@ -54,7 +54,7 @@ module T : sig
     | Constant of Const.t
     | Cast of Typ.t * t
     | Sizeof of sizeof_data
-    (* | Sizeof of Typ.t * t option *)
+  (* | Sizeof of Typ.t * t option *)
 
   and access_expression = private
     | Base of AccessPath.base
@@ -81,7 +81,6 @@ module T : sig
       remove_deref_after_base:bool -> AccessPath.base -> access_expression -> access_expression
   end
 end = struct
-
   type sizeof_data = {typ: Typ.t; nbytes: int option; dynamic_length: t option; subtype: Subtype.t}
 
   and t =
@@ -93,7 +92,7 @@ end = struct
     | Constant of Const.t
     | Cast of Typ.t * t
     | Sizeof of sizeof_data
-    (* | Sizeof of Typ.t * t option *)
+  (* | Sizeof of Typ.t * t option *)
 
   and access_expression =
     | Base of AccessPath.base
@@ -548,15 +547,14 @@ and of_sil ~include_array_indexes ~f_resolve_id ~add_deref exp typ =
         Constant c
     | Cast (cast_typ, e) ->
         Cast (cast_typ, of_sil_ e typ)
-    | Sizeof data -> (
-        let hil_data : sizeof_data = {
-          typ = data.typ;
-          nbytes = data.nbytes;
-          dynamic_length = Option.map ~f:(fun e -> of_sil_ e typ) data.dynamic_length;
-          subtype = data.subtype
-        } in
+    | Sizeof data ->
+        let hil_data : sizeof_data =
+          { typ= data.typ
+          ; nbytes= data.nbytes
+          ; dynamic_length= Option.map ~f:(fun e -> of_sil_ e typ) data.dynamic_length
+          ; subtype= data.subtype }
+        in
         Sizeof hil_data
-    )
     | Closure closure ->
         let environment =
           List.map
