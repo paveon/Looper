@@ -23,8 +23,34 @@ public class Lambdas {
     return function.apply(42);
   }
 
-  String FN_createAndInvokeFunctionBad() {
+  String createAndInvokeFunctionBad() {
     Function<Integer, String> function = createFunctionWithTaintedParam();
     return invokeFunction(function);
+  }
+
+  String createAndInvokeFunctionBad2() {
+    Function<Integer, String> function = createFunctionWithTaintedParam();
+    return function.apply(42);
+  }
+
+  Function<Integer, String> createFunctionFromAnonymousClassWithTaintedParam() {
+    Object object = InferTaint.inferSecretSource();
+    return new Function<Integer, String>() {
+      @Override
+      public String apply(Integer n) {
+        InferTaint.inferSensitiveSink(object);
+        return String.valueOf(n);
+      }
+    };
+  }
+
+  String createAndInvokeFunctionFromAnonymousClassBad() {
+    Function<Integer, String> function = createFunctionFromAnonymousClassWithTaintedParam();
+    return invokeFunction(function);
+  }
+
+  String createAndInvokeFunctionFromAnonymousClassBad2() {
+    Function<Integer, String> function = createFunctionFromAnonymousClassWithTaintedParam();
+    return function.apply(42);
   }
 }

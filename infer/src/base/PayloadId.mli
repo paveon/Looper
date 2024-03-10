@@ -25,8 +25,8 @@ type t =
   | RacerD
   | ScopeLeakage
   | SIOF
-  | SimpleLineage
-  | SimpleShape
+  | Lineage
+  | LineageShape
   | Starvation
   | Nullsafe
   | Uninit

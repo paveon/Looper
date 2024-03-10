@@ -13,31 +13,6 @@ module Hashtbl = Caml.Hashtbl
 module L = Logging
 module F = Format
 
-module IntegerWidths = struct
-  type t = {char_width: int; short_width: int; int_width: int; long_width: int; longlong_width: int}
-  [@@deriving compare, equal]
-
-  let java = {char_width= 16; short_width= 16; int_width= 32; long_width= 64; longlong_width= 64}
-
-  module SQLite = SqliteUtils.MarshalledNullableDataNOTForComparison (struct
-    type nonrec t = t
-  end)
-
-  let load_statement =
-    Database.register_statement CaptureDatabase
-      "SELECT integer_type_widths FROM source_files WHERE source_file = :k"
-
-
-  let load source =
-    Database.with_registered_statement load_statement ~f:(fun db load_stmt ->
-        SourceFile.SQLite.serialize source
-        |> Sqlite3.bind load_stmt 1
-        |> SqliteUtils.check_result_code db ~log:"load bind source file" ;
-        SqliteUtils.result_single_column_option ~finalize:false ~log:"Typ.IntegerWidths.load" db
-          load_stmt
-        |> Option.bind ~f:SQLite.deserialize )
-end
-
 (** Kinds of integers *)
 type ikind =
   | IChar  (** [char] *)
@@ -54,7 +29,7 @@ type ikind =
   | IULongLong  (** [unsigned long long] (or [unsigned int64_] on Microsoft Visual C) *)
   | I128  (** [__int128_t] *)
   | IU128  (** [__uint128_t] *)
-[@@deriving compare, equal, yojson_of, sexp, hash]
+[@@deriving compare, equal, yojson_of, sexp, hash, normalize]
 
 let ikind_to_string = function
   | IChar ->
@@ -87,24 +62,6 @@ let ikind_to_string = function
       "__uint128_t"
 
 
-let width_of_ikind {IntegerWidths.char_width; short_width; int_width; long_width; longlong_width} =
-  function
-  | IBool ->
-      8
-  | ISChar | IChar | IUChar ->
-      char_width
-  | IShort | IUShort ->
-      short_width
-  | IInt | IUInt ->
-      int_width
-  | ILong | IULong ->
-      long_width
-  | ILongLong | IULongLong ->
-      longlong_width
-  | I128 | IU128 ->
-      128
-
-
 let ikind_is_unsigned = function
   | IBool | IUChar | IUShort | IUInt | IULong | IULongLong | IU128 ->
       true
@@ -112,23 +69,11 @@ let ikind_is_unsigned = function
       false
 
 
-let range_of_ikind =
-  let range bits ~unsigned =
-    if unsigned then Z.(~$0, shift_left ~$1 bits - ~$1)
-    else
-      let bound = Z.(shift_left ~$1) (bits - 1) in
-      Z.(~-bound, bound - ~$1)
-  in
-  fun integer_widths x ->
-    let bits_for_range = match x with IBool -> 1 | _ -> width_of_ikind integer_widths x in
-    range bits_for_range ~unsigned:(ikind_is_unsigned x)
-
-
 let ikind_is_char = function IChar | ISChar | IUChar -> true | _ -> false
 
 (** Kinds of floating-point numbers *)
 type fkind = FFloat  (** [float] *) | FDouble  (** [double] *) | FLongDouble  (** [long double] *)
-[@@deriving compare, equal, yojson_of, sexp, hash]
+[@@deriving compare, equal, yojson_of, sexp, hash, normalize]
 
 let fkind_to_string = function
   | FFloat ->
@@ -147,7 +92,7 @@ type ptr_kind =
   | Pk_objc_weak  (** Obj-C __weak pointer *)
   | Pk_objc_unsafe_unretained  (** Obj-C __unsafe_unretained pointer *)
   | Pk_objc_autoreleasing  (** Obj-C __autoreleasing pointer *)
-[@@deriving compare, equal, yojson_of, sexp, hash]
+[@@deriving compare, equal, yojson_of, sexp, hash, normalize]
 
 let ptr_kind_string = function
   | Pk_lvalue_reference ->
@@ -168,8 +113,12 @@ module T = struct
   (* Note that [is_trivially_copyable] is ignored when compare/equal-ing, since it can be
      inconsistent for the same type depending on compilation units. *)
   type type_quals =
-    {is_const: bool; is_restrict: bool; is_trivially_copyable: bool [@ignore]; is_volatile: bool}
-  [@@deriving compare, equal, yojson_of, sexp, hash]
+    { is_const: bool
+    ; is_reference: bool
+          (** on the source level - ignoring the additional references Infer's frontend adds *)
+    ; is_restrict: bool
+    ; is_volatile: bool }
+  [@@deriving compare, equal, yojson_of, sexp, hash, normalize]
 
   (** types for sil (structured) expressions *)
   type t = {desc: desc; quals: type_quals}
@@ -185,6 +134,13 @@ module T = struct
     | Tarray of {elt: t; length: IntLit.t option; stride: IntLit.t option}
         (** array type with statically fixed length and stride *)
 
+  and objc_block_sig = {class_name: name option; name: string; mangled: string}
+  [@@deriving compare, equal, yojson_of, sexp, hash, normalize]
+
+  and c_function_sig =
+    {c_name: QualifiedCppName.t; c_mangled: string option; c_template_args: template_spec_info}
+  [@@deriving compare, equal, yojson_of, sexp, hash, normalize]
+
   and name =
     | CStruct of QualifiedCppName.t
     | CUnion of QualifiedCppName.t
@@ -196,6 +152,9 @@ module T = struct
     | JavaClass of JavaClassName.t
     | ObjcClass of QualifiedCppName.t
     | ObjcProtocol of QualifiedCppName.t
+    | PythonClass of PythonClassName.t
+    | ObjcBlock of objc_block_sig
+    | CFunction of c_function_sig
   [@@deriving hash, sexp]
 
   and template_arg = TType of t | TInt of int64 | TNull | TNullPtr | TOpaque
@@ -203,7 +162,7 @@ module T = struct
   and template_spec_info =
     | NoTemplate
     | Template of {mangled: string option; args: template_arg list}
-  [@@deriving compare, equal, yojson_of]
+  [@@deriving compare, equal, yojson_of, hash, normalize]
 
   let yojson_of_name = [%yojson_of: _]
 
@@ -285,27 +244,27 @@ end
 
 include T
 
-let mk_type_quals ?default ?is_const ?is_restrict ?is_trivially_copyable ?is_volatile () =
-  let default_ =
-    {is_const= false; is_restrict= false; is_trivially_copyable= false; is_volatile= false}
-  in
+let mk_type_quals ?default ?is_const ?is_reference ?is_restrict ?is_volatile () =
+  let default_ = {is_const= false; is_reference= false; is_restrict= false; is_volatile= false} in
   let mk_aux ?(default = default_) ?(is_const = default.is_const)
-      ?(is_restrict = default.is_restrict) ?(is_trivially_copyable = default.is_trivially_copyable)
+      ?(is_reference = default.is_reference) ?(is_restrict = default.is_restrict)
       ?(is_volatile = default.is_volatile) () =
-    {is_const; is_restrict; is_trivially_copyable; is_volatile}
+    {is_const; is_reference; is_restrict; is_volatile}
   in
-  mk_aux ?default ?is_const ?is_restrict ?is_trivially_copyable ?is_volatile ()
+  mk_aux ?default ?is_const ?is_reference ?is_restrict ?is_volatile ()
 
 
 let is_const {is_const} = is_const
 
-let is_restrict {is_restrict} = is_restrict
+let is_reference_on_source {is_reference} = is_reference
 
-let is_trivially_copyable {is_trivially_copyable} = is_trivially_copyable
+let is_restrict {is_restrict} = is_restrict
 
 let is_volatile {is_volatile} = is_volatile
 
-let is_weak_pointer t = match t.desc with Tptr (_, Pk_objc_weak) -> true | _ -> false
+let is_weak_pointer t =
+  match t.desc with Tptr (_, (Pk_objc_weak | Pk_objc_unsafe_unretained)) -> true | _ -> false
+
 
 let is_strong_pointer t = match t.desc with Tptr (_, Pk_pointer) -> true | _ -> false
 
@@ -388,6 +347,12 @@ and pp_name_c_syntax pe f = function
       JavaClassName.pp f name
   | CSharpClass name ->
       CSharpClassName.pp f name
+  | PythonClass name ->
+      PythonClassName.pp f name
+  | ObjcBlock bsig ->
+      F.fprintf f "%s" bsig.name
+  | CFunction csig ->
+      F.fprintf f "%a" QualifiedCppName.pp csig.c_name
 
 
 and pp_template_spec_info pe f = function
@@ -430,7 +395,7 @@ let is_template_spec_info_empty = function
 
 
 module Name = struct
-  type t = name [@@deriving compare, equal, yojson_of, sexp, hash]
+  type t = name [@@deriving compare, equal, yojson_of, sexp, hash, normalize]
 
   let compare_name x y =
     match (x, y) with
@@ -473,9 +438,25 @@ module Name = struct
         -1
     | _, HackClass _ ->
         1
+    | PythonClass name1, PythonClass name2 ->
+        PythonClassName.compare name1 name2
+    | PythonClass _, _ ->
+        -1
+    | _, PythonClass _ ->
+        1
+    | ObjcBlock bsig1, ObjcBlock bsig2 ->
+        compare_objc_block_sig bsig1 bsig2
+    | ObjcBlock _, _ ->
+        -1
+    | _, ObjcBlock _ ->
+        1
+    | CFunction csig1, CFunction csig2 ->
+        compare_c_function_sig csig1 csig2
+    | CFunction _, _ ->
+        -1
+    | _, CFunction _ ->
+        1
 
-
-  let hash = Hashtbl.hash
 
   let qual_name = function
     | CStruct name | CUnion name | ObjcProtocol name | ObjcClass name ->
@@ -483,7 +464,13 @@ module Name = struct
     | CppClass {name; template_spec_info} ->
         let template_suffix = F.asprintf "%a" (pp_template_spec_info Pp.text) template_spec_info in
         QualifiedCppName.append_template_args_to_last name ~args:template_suffix
-    | JavaClass _ | CSharpClass _ | ErlangType _ | HackClass _ ->
+    | JavaClass _
+    | CSharpClass _
+    | ErlangType _
+    | HackClass _
+    | PythonClass _
+    | ObjcBlock _
+    | CFunction _ ->
         QualifiedCppName.empty
 
 
@@ -492,7 +479,13 @@ module Name = struct
         name
     | CppClass {name} ->
         name
-    | JavaClass _ | CSharpClass _ | ErlangType _ | HackClass _ ->
+    | JavaClass _
+    | CSharpClass _
+    | ErlangType _
+    | HackClass _
+    | PythonClass _
+    | ObjcBlock _
+    | CFunction _ ->
         QualifiedCppName.empty
 
 
@@ -517,6 +510,12 @@ module Name = struct
         ErlangTypeName.to_string name
     | HackClass name ->
         HackClassName.to_string name
+    | PythonClass name ->
+        PythonClassName.to_string name
+    | ObjcBlock bsig ->
+        bsig.name
+    | CFunction csig ->
+        QualifiedCppName.to_qual_string csig.c_name
 
 
   let pp fmt tname =
@@ -531,8 +530,14 @@ module Name = struct
           "erlang"
       | HackClass _ ->
           "hack"
+      | PythonClass _ ->
+          "python"
       | ObjcProtocol _ ->
           "protocol"
+      | ObjcBlock _ ->
+          ""
+      | CFunction _ ->
+          "function"
     in
     F.fprintf fmt "%s %a" (prefix tname) (pp_name_c_syntax Pp.text) tname
 
@@ -540,15 +545,23 @@ module Name = struct
   let to_string = F.asprintf "%a" pp
 
   let is_class = function
-    | CppClass _ | JavaClass _ | HackClass _ | ObjcClass _ | CSharpClass _ ->
+    | CppClass _ | JavaClass _ | HackClass _ | ObjcClass _ | CSharpClass _ | PythonClass _ ->
         true
-    | CStruct _ | CUnion _ | ErlangType _ | ObjcProtocol _ ->
+    | CStruct _ | CUnion _ | ErlangType _ | ObjcProtocol _ | ObjcBlock _ | CFunction _ ->
         false
 
 
   let is_union = function CUnion _ -> true | _ -> false
 
   let is_objc_protocol name = match name with ObjcProtocol _ -> true | _ -> false
+
+  let is_objc_class name = match name with ObjcClass _ -> true | _ -> false
+
+  let is_objc_block name = match name with ObjcBlock _ -> true | _ -> false
+
+  let is_hack_class name = match name with HackClass _ -> true | _ -> false
+
+  let is_python_class name = match name with PythonClass _ -> true | _ -> false
 
   let is_same_type t1 t2 =
     match (t1, t2) with
@@ -579,6 +592,47 @@ module Name = struct
     let is_class = function CSharpClass _ -> true | _ -> false
   end
 
+  module Hack = struct
+    let static_companion typename =
+      match typename with
+      | HackClass class_name ->
+          HackClass (HackClassName.static_companion class_name)
+      | _ ->
+          L.die InternalError "static_companion is only implemented for Hack class names"
+
+
+    let static_companion_origin typename =
+      match typename with
+      | HackClass class_name ->
+          HackClass (HackClassName.static_companion_origin class_name)
+      | _ ->
+          L.die InternalError "static_companion_origin is only implemented for Hack class names"
+
+
+    let is_static_companion typename =
+      match typename with
+      | HackClass class_name ->
+          HackClassName.is_static_companion class_name
+      | _ ->
+          L.die InternalError "is_static is only implemented for Hack class names"
+
+
+    let is_generated_curry typename =
+      match typename with
+      | HackClass class_name ->
+          HackClassName.is_generated_curry class_name
+      | _ ->
+          false
+
+
+    let extract_curry_info typename =
+      match typename with
+      | HackClass class_name ->
+          HackClassName.extract_curry_info class_name
+      | _ ->
+          None
+  end
+
   module Java = struct
     let from_string name_str = JavaClass (JavaClassName.from_string name_str)
 
@@ -594,11 +648,6 @@ module Name = struct
           java_class_name
       | None ->
           L.die InternalError "Tried to split a non-java class name into a java split type@."
-
-
-    let is_anonymous_inner_class_name_exn class_name =
-      let java_class_name = get_java_class_name_exn class_name in
-      JavaClassName.is_anonymous_inner_class_name java_class_name
 
 
     let is_anonymous_inner_class_name_opt class_name =
@@ -627,27 +676,6 @@ module Name = struct
     let protocol_from_qual_name qual_name = ObjcProtocol qual_name
 
     let is_class = function ObjcClass _ -> true | _ -> false
-
-    let is_non_tagged_class =
-      (* The list of tagged classes are from:
-         https://opensource.apple.com/source/objc4/objc4-781/runtime/objc-internal.h *)
-      let tagged_classes =
-        [ "CGColor"
-        ; "NSAtom"
-        ; "NSColor"
-        ; "NSDate"
-        ; "NSIndexPath"
-        ; "NSIndexSet"
-        ; "NSManagedObjectID"
-        ; "NSNumber"
-        ; "NSString"
-        ; "Photos"
-        ; "UIColor" ]
-        |> List.map ~f:QualifiedCppName.of_qual_string
-        |> QualifiedCppName.Set.of_list
-      in
-      function ObjcClass name -> not (QualifiedCppName.Set.mem name tagged_classes) | _ -> false
-
 
     let remodel_class = Option.map Config.remodel_class ~f:from_string
   end
@@ -697,6 +725,8 @@ let is_ptr_to_ignore_quals t ~ptr =
   match ptr.desc with Tptr (t', _) -> equal_ignore_quals t t' | _ -> false
 
 
+let is_ptr_to_const typ = match typ.desc with Tptr (t, _) -> is_const t.quals | _ -> false
+
 (** If an array type, return the type of the element. If not, return the default type if given,
     otherwise raise an exception *)
 let array_elem default_opt typ =
@@ -708,8 +738,6 @@ let is_class_of_kind check_fun typ =
 
 
 let is_objc_class = is_class_of_kind Name.Objc.is_class
-
-let is_objc_non_tagged_class = is_class_of_kind Name.Objc.is_non_tagged_class
 
 let is_cpp_class = is_class_of_kind Name.Cpp.is_class
 
@@ -723,17 +751,16 @@ let is_rvalue_reference typ =
   match typ.desc with Tptr (_, Pk_rvalue_reference) -> true | _ -> false
 
 
-let is_const_reference typ =
-  match typ.desc with Tptr ({quals}, Pk_lvalue_reference) -> is_const quals | _ -> false
+let is_const_reference_on_source typ =
+  is_reference_on_source typ.quals
+  && match typ.desc with Tptr ({quals}, Pk_lvalue_reference) -> is_const quals | _ -> false
 
 
 let is_struct typ = match typ.desc with Tstruct _ -> true | _ -> false
 
 let is_pointer_to_cpp_class typ = match typ.desc with Tptr (t, _) -> is_cpp_class t | _ -> false
 
-let is_pointer_to_objc_non_tagged_class typ =
-  match typ.desc with Tptr (t, _) -> is_objc_non_tagged_class t | _ -> false
-
+let is_pointer_to_const typ = match typ.desc with Tptr ({quals}, _) -> is_const quals | _ -> false
 
 let is_pointer_to_void typ = match typ.desc with Tptr ({desc= Tvoid}, _) -> true | _ -> false
 
@@ -769,6 +796,18 @@ let is_shared_pointer typ =
   match typ.desc with
   | Tstruct (CppClass {name}) ->
       QualifiedCppName.Match.match_qualifiers shared_pointer_matcher name
+  | _ ->
+      false
+
+
+let is_folly_coro =
+  let matcher =
+    QualifiedCppName.Match.of_fuzzy_qual_names ~prefix:true
+      ["folly::coro::AsyncGenerator"; "folly::coro::Generator"; "folly::coro::Task"]
+  in
+  function
+  | {desc= Tstruct (CppClass {name})} | {desc= Tptr ({desc= Tstruct (CppClass {name})}, _)} ->
+      QualifiedCppName.Match.match_qualifiers matcher name
   | _ ->
       false
 
@@ -917,115 +956,3 @@ let rec is_java_type t =
       is_java_type elt
   | _ ->
       false
-
-
-module TypeQualsNormalizer = HashNormalizer.Make (struct
-  type t = type_quals [@@deriving equal]
-
-  let hash = Hashtbl.hash
-
-  let normalize = Fn.id
-end)
-
-module rec DescNormalizer : (HashNormalizer.S with type t = desc) = HashNormalizer.Make (struct
-  type t = desc [@@deriving equal]
-
-  let hash = Hashtbl.hash
-
-  let normalize t =
-    match t with
-    | Tint _ | Tfloat _ | Tvoid | Tfun ->
-        t
-    | Tstruct name ->
-        let name' = NameNormalizer.normalize name in
-        if phys_equal name name' then t else Tstruct name'
-    | TVar str_var ->
-        let str_var' = HashNormalizer.StringNormalizer.normalize str_var in
-        if phys_equal str_var str_var' then t else TVar str_var'
-    | Tptr (pointed, ptr_kind) ->
-        let pointed' = Normalizer.normalize pointed in
-        if phys_equal pointed pointed' then t else Tptr (pointed', ptr_kind)
-    | Tarray {elt; length; stride} ->
-        let elt' = Normalizer.normalize elt in
-        if phys_equal elt elt' then t else Tarray {elt= elt'; length; stride}
-end)
-
-and Normalizer : (HashNormalizer.S with type t = t) = HashNormalizer.Make (struct
-  include T
-
-  let hash = Hashtbl.hash
-
-  let normalize t =
-    let quals = TypeQualsNormalizer.normalize t.quals in
-    let desc = DescNormalizer.normalize t.desc in
-    if phys_equal desc t.desc && phys_equal quals t.quals then t else {desc; quals}
-end)
-
-and TemplateArgNormalizer : (HashNormalizer.S with type t = template_arg) =
-HashNormalizer.Make (struct
-  type t = template_arg [@@deriving equal]
-
-  let hash = Hashtbl.hash
-
-  let normalize t =
-    match t with
-    | TNull | TNullPtr | TOpaque | TInt _ ->
-        t
-    | TType typ ->
-        let typ' = Normalizer.normalize typ in
-        if phys_equal typ typ' then t else TType typ'
-end)
-
-and TemplateSpecInfoNormalizer : (HashNormalizer.S with type t = template_spec_info) =
-HashNormalizer.Make (struct
-  type t = template_spec_info [@@deriving equal]
-
-  let hash = Hashtbl.hash
-
-  let normalize t =
-    match t with
-    | NoTemplate ->
-        t
-    | Template {mangled; args} ->
-        let mangled' =
-          IOption.map_changed mangled ~equal:phys_equal ~f:HashNormalizer.StringNormalizer.normalize
-        in
-        let args' = IList.map_changed args ~equal:phys_equal ~f:TemplateArgNormalizer.normalize in
-        if phys_equal mangled mangled' && phys_equal args args' then t
-        else Template {mangled= mangled'; args= args'}
-end)
-
-and NameNormalizer : (HashNormalizer.S with type t = name) = HashNormalizer.Make (struct
-  type nonrec t = name [@@deriving equal]
-
-  let hash = Hashtbl.hash
-
-  let normalize t =
-    match t with
-    | ErlangType _ | HackClass _ ->
-        (* TODO *)
-        t
-    | CStruct qualified_name ->
-        let qualified_name' = QualifiedCppName.Normalizer.normalize qualified_name in
-        if phys_equal qualified_name qualified_name' then t else CStruct qualified_name'
-    | CUnion qualified_name ->
-        let qualified_name' = QualifiedCppName.Normalizer.normalize qualified_name in
-        if phys_equal qualified_name qualified_name' then t else CUnion qualified_name'
-    | ObjcClass qualified_name ->
-        let qualified_name' = QualifiedCppName.Normalizer.normalize qualified_name in
-        if phys_equal qualified_name qualified_name' then t else ObjcClass qualified_name'
-    | ObjcProtocol qualified_name ->
-        let qualified_name' = QualifiedCppName.Normalizer.normalize qualified_name in
-        if phys_equal qualified_name qualified_name' then t else ObjcProtocol qualified_name'
-    | CppClass {name; template_spec_info; is_union} ->
-        let name' = QualifiedCppName.Normalizer.normalize name in
-        let template_spec_info' = TemplateSpecInfoNormalizer.normalize template_spec_info in
-        if phys_equal name name' && phys_equal template_spec_info template_spec_info' then t
-        else CppClass {name= name'; template_spec_info= template_spec_info'; is_union}
-    | JavaClass java_class_name ->
-        let java_class_name' = JavaClassName.Normalizer.normalize java_class_name in
-        if phys_equal java_class_name java_class_name' then t else JavaClass java_class_name'
-    | CSharpClass cs_class_name ->
-        let cs_class_name' = CSharpClassName.Normalizer.normalize cs_class_name in
-        if phys_equal cs_class_name cs_class_name' then t else CSharpClass cs_class_name'
-end)

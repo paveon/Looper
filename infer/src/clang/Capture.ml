@@ -65,7 +65,7 @@ let run_clang_frontend ast_source =
         in
         let integer_type_widths =
           let widths = info.Clang_ast_t.tudi_integer_type_widths in
-          { Typ.IntegerWidths.char_width= widths.itw_char_type
+          { IntegerWidths.char_width= widths.itw_char_type
           ; short_width= widths.itw_short_type
           ; int_width= widths.itw_int_type
           ; long_width= widths.itw_long_type
@@ -159,8 +159,11 @@ let cc1_capture clang_cmd =
   let source_path =
     let root = Unix.getcwd () in
     let orig_argv = ClangCommand.get_orig_argv clang_cmd in
-    (* the source file is always the last argument of the original -cc1 clang command *)
-    Utils.filename_to_absolute ~root (List.last_exn orig_argv)
+    (* the source file is always the last argument of the original -cc1 clang command, except when it isnt *)
+    let argv_without_flags =
+      List.filter orig_argv ~f:(fun arg -> not (String.is_prefix ~prefix:"-" arg))
+    in
+    Utils.filename_to_absolute ~root (List.last_exn argv_without_flags)
   in
   L.(debug Capture Quiet) "@\n*** Beginning capture of file %s ***@\n" source_path ;
   if

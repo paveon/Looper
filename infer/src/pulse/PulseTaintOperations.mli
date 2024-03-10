@@ -16,10 +16,29 @@ val call :
   -> Ident.t * Typ.t
   -> call_was_unknown:bool
   -> (Exp.t, Procname.t) Either.t
-  -> (AbstractValue.t * ValueHistory.t) ProcnameDispatcher.Call.FuncArg.t list
+  -> ValueOrigin.t ProcnameDispatcher.Call.FuncArg.t list
   -> AbductiveDomain.t
   -> AbductiveDomain.t AccessResult.t
 (** add sources and sinks coming from a particular call site *)
+
+val store :
+     Tenv.t
+  -> PathContext.t
+  -> Location.t
+  -> lhs:Exp.t
+  -> rhs:Exp.t * ValueOrigin.t * Typ.t
+  -> AbductiveDomain.t
+  -> AbductiveDomain.t AccessResult.t
+
+val load :
+     Procname.t
+  -> Tenv.t
+  -> PathContext.t
+  -> Location.t
+  -> lhs:Ident.t * Typ.t
+  -> rhs:Exp.t
+  -> AbductiveDomain.t
+  -> AbductiveDomain.t AccessResult.t
 
 val taint_allocation :
      Tenv.t
@@ -28,18 +47,22 @@ val taint_allocation :
   -> typ_desc:Typ.desc
   -> alloc_desc:string
   -> allocator:Attribute.allocator option
-  -> AbstractValue.t
+  -> AbstractValue.t * ValueHistory.t
   -> AbductiveDomain.t
-  -> AbductiveDomain.t
+  -> AbductiveDomain.t * (AbstractValue.t * ValueHistory.t)
 
 val check_flows_wrt_sink :
-     ?policy_violations_reported:IntSet.t
-  -> PathContext.t
+     PathContext.t
   -> Location.t
-  -> Taint.t * Trace.t
-  -> AbstractValue.t
+  -> sink:TaintItem.t * Trace.t
+  -> source:AbstractValue.t * ValueHistory.t
   -> AbductiveDomain.t
-  -> (IntSet.t * AbductiveDomain.t) AccessResult.t
+  -> AbductiveDomain.t AccessResult.t
 
-val taint_initial :
-  Tenv.t -> Procname.t -> ProcAttributes.t -> AbductiveDomain.t -> AbductiveDomain.t
+val taint_initial : Tenv.t -> ProcAttributes.t -> AbductiveDomain.t -> AbductiveDomain.t
+
+val dedup_reports :
+     ('a ExecutionDomain.base_t, AccessResult.error) pulse_result list
+  -> ('a ExecutionDomain.base_t, AccessResult.error) pulse_result list
+
+val procedure_matches_source : Tenv.t -> Procname.t -> bool

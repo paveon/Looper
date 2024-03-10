@@ -5,6 +5,8 @@ description: "The Quandary taint analysis detects flows of values between source
 
 The Quandary taint analysis detects flows of values between sources and sinks, except if the value went through a "sanitizer". In addition to some defaults, users can specify their own sources, sinks, and sanitizers functions.
 
+**\*\*\*DEPRECATED\*\*\*** Taint analysis is now supported by the Pulse checker and Quandary will be removed in the next release.
+
 Activate with `--quandary`.
 
 Supported languages:
@@ -13,6 +15,7 @@ Supported languages:
 - Erlang: No
 - Hack: No
 - Java: Yes
+- Python: No
 
 Quandary is a static taint analyzer that identifies a variety of unsafe
 information flows. It has a small list of built-in

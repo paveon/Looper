@@ -8,6 +8,7 @@
 
 open! IStd
 module F = Format
+module L = Logging
 module BStats = Stats
 
 module Stats = struct
@@ -67,9 +68,10 @@ let pp_signature fmt {proc_name} =
 
 let pp_no_stats_specs fmt summary = F.fprintf fmt "%a@\n" pp_signature summary
 
-let pp_text fmt ({err_log; payloads; stats} as summary) =
+let pp_text fmt ({err_log; payloads; stats; dependencies} as summary) =
   pp_no_stats_specs fmt summary ;
-  F.fprintf fmt "%a@\n%a%a" pp_errlog err_log Stats.pp stats (Payloads.pp Pp.text) payloads
+  F.fprintf fmt "%a@\n%a%a%a" pp_errlog err_log Stats.pp stats (Payloads.pp Pp.text) payloads
+    Dependencies.pp dependencies
 
 
 let pp_html source fmt ({err_log; payloads; stats} as summary) =
@@ -96,6 +98,10 @@ module ReportSummary = struct
     ; cost_opt= Lazy.force payloads.Payloads.cost
     ; config_impact_opt= Lazy.force payloads.Payloads.config_impact_analysis
     ; err_log }
+
+
+  let empty () =
+    {loc= Location.dummy; cost_opt= None; config_impact_opt= None; err_log= Errlog.empty ()}
 
 
   module SQLite = SqliteUtils.MarshalledDataNOTForComparison (struct
@@ -127,6 +133,13 @@ module SummaryMetadata = struct
     ; stats= f.stats
     ; proc_name= f.proc_name
     ; dependencies= Dependencies.complete_exn f.dependencies }
+
+
+  let empty proc_name =
+    { sessions= 0
+    ; stats= Stats.empty
+    ; proc_name
+    ; dependencies= Dependencies.reset proc_name |> Dependencies.freeze proc_name }
 
 
   module SQLite = SqliteUtils.MarshalledDataNOTForComparison (struct
@@ -163,7 +176,7 @@ module OnDisk = struct
   let spec_of_procname, spec_of_model =
     let mk_lazy_load_stmt table =
       Database.register_statement AnalysisDatabase
-        "SELECT rowid, report_summary, summary_metadata FROM %s WHERE proc_uid = :k"
+        "SELECT report_summary, summary_metadata FROM %s WHERE proc_uid = :k"
         (Database.string_of_analysis_table table)
     in
     let mk_eager_load_stmt table =
@@ -174,24 +187,16 @@ module OnDisk = struct
     in
     let load_spec ~lazy_payloads ~load_statement table proc_name =
       Database.with_registered_statement load_statement ~f:(fun db load_stmt ->
-          Sqlite3.bind load_stmt 1 (Sqlite3.Data.TEXT (Procname.to_unique_id proc_name))
+          let proc_uid = Procname.to_unique_id proc_name in
+          Sqlite3.bind load_stmt 1 (Sqlite3.Data.TEXT proc_uid)
           |> SqliteUtils.check_result_code db ~log:"load proc specs bind proc_name" ;
           SqliteUtils.result_option ~finalize:false db ~log:"load proc specs run" load_stmt
             ~read_row:(fun stmt ->
-              let offset = if lazy_payloads then (* column 0 holds [rowid] *) 1 else 0 in
-              let report_summary =
-                Sqlite3.column stmt (offset + 0) |> ReportSummary.SQLite.deserialize
-              in
-              let summary_metadata =
-                Sqlite3.column stmt (offset + 1) |> SummaryMetadata.SQLite.deserialize
-              in
+              let report_summary = Sqlite3.column stmt 0 |> ReportSummary.SQLite.deserialize in
+              let summary_metadata = Sqlite3.column stmt 1 |> SummaryMetadata.SQLite.deserialize in
               let payloads =
-                if lazy_payloads then
-                  let rowid = Sqlite3.column_int64 stmt 0 in
-                  Payloads.SQLite.lazy_load table ~rowid
-                else
-                  (* NOTE: [offset] = 0 at this point *)
-                  Payloads.SQLite.eager_load ~first_column:(offset + 2) stmt
+                if lazy_payloads then Payloads.SQLite.lazy_load table ~proc_uid
+                else Payloads.SQLite.eager_load ~first_column:2 stmt
               in
               mk_full_summary payloads report_summary summary_metadata ) )
     in
@@ -237,19 +242,31 @@ module OnDisk = struct
 
 
   (** Save summary for the procedure into the spec database *)
-  let store ({proc_name; dependencies; payloads} as summary : t) =
+  let rec store ({proc_name; dependencies; payloads} as summary : t) =
     (* Make sure the summary in memory is identical to the saved one *)
     add proc_name summary ;
     summary.dependencies <- Dependencies.(Complete (freeze proc_name dependencies)) ;
     let report_summary = ReportSummary.of_full_summary summary in
     let looper_summary = LooperSummary.of_full_summary summary in
     let summary_metadata = SummaryMetadata.of_full_summary summary in
-    DBWriter.store_spec ~proc_uid:(Procname.to_unique_id proc_name)
-      ~proc_name:(Procname.SQLite.serialize proc_name)
-      ~payloads:(Payloads.SQLite.serialize payloads)
-      ~report_summary:(ReportSummary.SQLite.serialize report_summary)
-      ~looper_summary:(LooperSummary.SQLite.serialize looper_summary)
-      ~summary_metadata:(SummaryMetadata.SQLite.serialize summary_metadata)
+    try
+      DBWriter.store_spec ~proc_uid:(Procname.to_unique_id proc_name)
+        ~proc_name:(Procname.SQLite.serialize proc_name)
+        ~payloads:(Payloads.SQLite.serialize payloads)
+        ~report_summary:(ReportSummary.SQLite.serialize report_summary)
+        ~looper_summary:(LooperSummary.SQLite.serialize looper_summary)
+        ~summary_metadata:(SummaryMetadata.SQLite.serialize summary_metadata) ;
+      summary
+    with SqliteUtils.DataTooBig ->
+      (* Serialization exceeded size limits, write and return an empty summary  *)
+      L.internal_error
+        "Summary for %a caused exceeds blob size limit, writing empty summary instead.@\n"
+        Procname.pp proc_name ;
+      let payloads = Payloads.empty in
+      let report_summary = ReportSummary.empty () in
+      let summary_metadata = SummaryMetadata.empty proc_name in
+      let new_summary = mk_full_summary payloads report_summary summary_metadata in
+      store new_summary
 
 
   let reset proc_name =
@@ -265,12 +282,10 @@ module OnDisk = struct
     summary
 
 
-  let delete pname =
-    remove_from_cache pname ;
-    DBWriter.delete_spec ~proc_uid:(Procname.to_unique_id pname)
+  let delete_all ~procedures =
+    List.iter ~f:remove_from_cache procedures ;
+    DBWriter.delete_specs ~proc_uids:(List.map procedures ~f:Procname.to_unique_id)
 
-
-  let delete_all ~procedures = List.iter ~f:delete procedures
 
   let iter_filtered_specs ~filter ~f =
     let db = Database.get_database AnalysisDatabase in
@@ -278,7 +293,7 @@ module OnDisk = struct
     (* NB the order is deterministic, but it is over a serialised value, so it is arbitrary *)
     Sqlite3.prepare db
       {|
-      SELECT rowid, proc_name, report_summary, summary_metadata
+      SELECT proc_uid, proc_name, report_summary, summary_metadata
       FROM specs
       ORDER BY proc_uid ASC
       |}
@@ -286,10 +301,10 @@ module OnDisk = struct
          ~f:(fun stmt ->
            let proc_name = Sqlite3.column stmt 1 |> Procname.SQLite.deserialize in
            if filter dummy_source_file proc_name then
-             let rowid = Sqlite3.column_int64 stmt 0 in
+             let proc_uid = Sqlite3.column_text stmt 0 in
              let report_summary = Sqlite3.column stmt 2 |> ReportSummary.SQLite.deserialize in
              let summary_metadata = Sqlite3.column stmt 3 |> SummaryMetadata.SQLite.deserialize in
-             let payloads = Payloads.SQLite.lazy_load Specs ~rowid in
+             let payloads = Payloads.SQLite.lazy_load Specs ~proc_uid in
              let spec = mk_full_summary payloads report_summary summary_metadata in
              f spec )
 

@@ -11,19 +11,33 @@ open PulseBasicInterface
 
 (** Stacks: map addresses of variables to values and histoy. *)
 
-let current_proc_name = ref Procname.Linters_dummy_method
-
-let () = AnalysisGlobalState.register_ref_with_proc_name current_proc_name ~init:Fn.id
-
 module VarAddress = struct
   include Var
+
+  (* HACK: Ignore the global variable kinds in the comparison. *)
+  let compare x y =
+    match (x, y) with
+    | ProgramVar x, ProgramVar y when Pvar.is_global x && Pvar.is_global y ->
+        [%compare: Mangled.t * Typ.template_spec_info]
+          (Pvar.get_name x, Pvar.get_template_args x)
+          (Pvar.get_name y, Pvar.get_template_args y)
+    | ProgramVar x, _ when Pvar.is_global x ->
+        -1
+    | _, ProgramVar x when Pvar.is_global x ->
+        1
+    | _, _ ->
+        compare x y
+
 
   let pp f var =
     let pp_ampersand f = function ProgramVar _ -> F.pp_print_string f "&" | LogicalVar _ -> () in
     let pp_proc_name f var =
       let open IOption.Let_syntax in
       match Var.get_pvar var >>= Pvar.get_declaring_function with
-      | Some pvar_proc_name when not (Procname.equal !current_proc_name pvar_proc_name) ->
+      | Some pvar_proc_name
+        when not
+               (Option.exists (PulseCurrentProcedure.proc_desc ()) ~f:(fun proc_desc ->
+                    Procname.equal (Procdesc.get_proc_name proc_desc) pvar_proc_name ) ) ->
           F.fprintf f "|%a" Procname.pp pvar_proc_name
       | _ ->
           ()
@@ -84,3 +98,13 @@ let pp fmt m =
     F.fprintf fmt "%a=%a" VarAddress.pp var_address AddrHistPair.pp v
   in
   PrettyPrintable.pp_collection ~pp_item fmt (M.bindings m)
+
+
+(* copy/pasted from the .mli because ocaml *)
+module type S = sig
+  include PrettyPrintable.PPMonoMap with type key = Var.t
+
+  val compare : t -> t -> int
+
+  val equal : t -> t -> bool
+end

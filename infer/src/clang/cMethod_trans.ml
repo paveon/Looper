@@ -240,6 +240,7 @@ let create_attributes_helper ?loc_instantiated ?(set_objc_accessor_attr = false)
   ; is_ret_type_pod= ms.CMethodSignature.is_ret_type_pod
   ; is_ret_constexpr= ms.CMethodSignature.is_ret_constexpr
   ; access
+  ; is_cpp_const_member_fun= ms.CMethodSignature.is_cpp_const_member_fun
   ; is_cpp_copy_ctor= ms.CMethodSignature.is_cpp_copy_ctor
   ; is_cpp_move_ctor= ms.CMethodSignature.is_cpp_move_ctor
   ; is_cpp_copy_assignment= ms.CMethodSignature.is_cpp_copy_assignment
@@ -250,7 +251,7 @@ let create_attributes_helper ?loc_instantiated ?(set_objc_accessor_attr = false)
   ; block_as_arg_attributes= ms.CMethodSignature.block_as_arg_attributes
   ; is_no_return= ms.CMethodSignature.is_no_return
   ; is_objc_arc_on= trans_unit_ctx.CFrontend_config.is_objc_arc_on
-  ; is_variadic= ms.CMethodSignature.is_variadic
+  ; is_clang_variadic= ms.CMethodSignature.is_variadic
   ; sentinel_attr= find_sentinel_attribute ms.CMethodSignature.attributes
   ; loc= loc_start
   ; loc_instantiated
@@ -346,7 +347,14 @@ let create_external_procdesc trans_unit_ctx cfg proc_name clang_method_kind type
           ( ret_type
           , List.map ~f:(fun typ -> (Mangled.from_string "x", typ, Annot.Item.empty)) arg_types )
       | None ->
-          (StdTyp.void, [])
+          if
+            Option.exists (Procname.get_class_name proc_name) ~f:(String.equal "NSArray")
+            && String.equal (Procname.get_method proc_name) "objectEnumerator"
+          then
+            let nsenumerator_typ = Typ.mk_struct (Typ.Name.Objc.from_string "NSEnumerator") in
+            let nsarray_typ = Typ.mk_struct (Typ.Name.Objc.from_string "NSArray") in
+            (nsenumerator_typ, [(Mangled.from_string "self", nsarray_typ, Annot.Item.empty)])
+          else (StdTyp.void, [])
     in
     let proc_attributes =
       { (ProcAttributes.default trans_unit_ctx.CFrontend_config.source_file proc_name) with

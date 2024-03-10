@@ -117,31 +117,40 @@ of individual infer commands for details about their
 supported options. The following is a list of all the
 supported options (see also <b>--help-full</b> for options
 reserved for internal use). <b><br>
+--analysis-schedule-file</b> <i>path</i></p>
+
+<p style="margin-left:17%;">The file where an analysis
+schedule is stored. The default is
+infer-out/analysis_dependency_graph</p>
+
+<p style="margin-left:11%;">See also
+<b>infer-analyze</b>(1). <b><br>
 --annotation-reachability</b></p>
 
-<p style="margin-left:17%;">Activates: checker
-annotation-reachability: Given a pair of source and sink
-annotation, e.g. &rsquo;@PerformanceCritical&rsquo; and
-&rsquo;@Expensive&rsquo;, this checker will warn whenever
+<p style="margin-left:17%;">Activates:
+<i>annotation-reachability</i> checker: Given a pair of
+source and sink annotation, e.g.
+&lsquo;@PerformanceCritical&lsquo; and
+&lsquo;@Expensive&lsquo;, this checker will warn whenever
 some method annotated with
-&rsquo;@PerformanceCritical&rsquo; calls, directly or
+&lsquo;@PerformanceCritical&lsquo; calls, directly or
 indirectly, another method annotated with
-&rsquo;@Expensive&rsquo; (Conversely:
+&lsquo;@Expensive&lsquo; (Conversely:
 <b>--no-annotation-reachability</b>)</p>
 
 <p style="margin-left:11%;">See also
 <b>infer-analyze</b>(1). <b><br>
 --annotation-reachability-custom-pairs</b> <i>json</i></p>
 
-<p style="margin-left:17%;">Specify custom sources/sink for
-the annotation reachability checker</p>
+<p style="margin-left:17%;">Specify custom sources/sinks
+for the annotation reachability checker</p>
 
 <p style="margin-left:11%;">Example format: for custom
 annotations <br>
 com.my.annotation.{Source1,Source2,Sink1} <br>
 { &quot;sources&quot; : [&quot;Source1&quot;,
-&quot;Source2&quot;], &quot;sink&quot; : &quot;Sink1&quot; }
-<br>
+&quot;Source2&quot;], &quot;sinks&quot; :
+[&quot;Sink1&quot;] } <br>
 See also <b>infer-analyze</b>(1). <b><br>
 --annotation-reachability-cxx</b> <i>json</i></p>
 
@@ -185,11 +194,31 @@ spec</p>
 
 <p style="margin-left:11%;">See also
 <b>infer-analyze</b>(1). <b><br>
+--annotation-reachability-expensive</b></p>
+
+<p style="margin-left:17%;">Activates: check if expensive
+methods (annotated @Expensive or modeled) can call
+@PerformanceCritical (with annotation reachability checker)
+(Conversely:
+<b>--no-annotation-reachability-expensive</b>)</p>
+
+<p style="margin-left:11%;">See also
+<b>infer-analyze</b>(1). <b><br>
+--annotation-reachability-no-allocation</b></p>
+
+<p style="margin-left:17%;">Activates: check if methods
+annotated with @NoAllocation can allocate (with annotation
+reachability checker) (Conversely:
+<b>--no-annotation-reachability-no-allocation</b>)</p>
+
+<p style="margin-left:11%;">See also
+<b>infer-analyze</b>(1). <b><br>
 --annotation-reachability-only</b></p>
 
 <p style="margin-left:17%;">Activates: Enable
-annotation-reachability and disable all other checkers
-(Conversely: <b>--no-annotation-reachability-only</b>)</p>
+<i>annotation-reachability</i> and disable all other
+checkers (Conversely:
+<b>--no-annotation-reachability-only</b>)</p>
 
 <p style="margin-left:11%;">See also
 <b>infer-analyze</b>(1). <b><br>
@@ -201,20 +230,22 @@ append to targets discovered by the
 
 <p style="margin-left:11%;">See also
 <b>infer-capture</b>(1). <b><br>
---no-biabduction</b></p>
+--biabduction</b></p>
 
-<p style="margin-left:17%;">Deactivates: checker
-biabduction: This analysis deals with a range of issues,
-many linked to memory safety. (Conversely:
-<b>--biabduction</b>)</p>
+<p style="margin-left:17%;">Activates: <i>biabduction</i>
+checker: This analysis deals with a range of issues, many
+linked to memory safety.</p>
 
-<p style="margin-left:11%;">See also
-<b>infer-analyze</b>(1). <b><br>
+<p style="margin-left:11%;"><b>DEPRECATED</b>: This has
+been replaced by Pulse and will be removed <br>
+in the next release. <br>
+(Conversely: <b>--no-biabduction</b>) <br>
+See also <b>infer-analyze</b>(1). <b><br>
 --biabduction-only</b></p>
 
-<p style="margin-left:17%;">Activates: Enable biabduction
-and disable all other checkers (Conversely:
-<b>--no-biabduction-only</b>)</p>
+<p style="margin-left:17%;">Activates: Enable
+<i>biabduction</i> and disable all other checkers
+(Conversely: <b>--no-biabduction-only</b>)</p>
 
 <p style="margin-left:11%;">See also
 <b>infer-analyze</b>(1). <b><br>
@@ -264,6 +295,15 @@ results in different allocsites imported to the caller.
 
 <p style="margin-left:17%;">Debug level for buffer-overrun
 checker (0-4)</p>
+
+<p style="margin-left:11%;">See also
+<b>infer-analyze</b>(1). <b><br>
+--bo-exit-frontend-gener-vars</b></p>
+
+<p style="margin-left:17%;">Activates: Put frontend
+generated variables out of scope when they are listed in
+exit scope instruction. (Conversely:
+<b>--no-bo-exit-frontend-gener-vars</b>)</p>
 
 <p style="margin-left:11%;">See also
 <b>infer-analyze</b>(1). <b><br>
@@ -360,21 +400,10 @@ Erlang. (Conversely: <b>--no-buck-erlang</b>)</p>
 
 <p style="margin-left:11%;">See also
 <b>infer-capture</b>(1). <b><br>
---buck-java-flavor</b></p>
+--buck-java</b></p>
 
 <p style="margin-left:17%;">Activates: Buck integration for
-Java which uses the buck flavor #infer-java-capture instead
-of genrules like buck-java. (Conversely:
-<b>--no-buck-java-flavor</b>)</p>
-
-<p style="margin-left:11%;">See also
-<b>infer-capture</b>(1). <b><br>
---buck-java-flavor-suppress-config</b></p>
-
-<p style="margin-left:17%;">Activates: Suppress setting
-buck config values for the infer binary and its version in
-the buck-java-flavor integration. (Conversely:
-<b>--no-buck-java-flavor-suppress-config</b>)</p>
+Java. (Conversely: <b>--no-buck-java</b>)</p>
 
 <p style="margin-left:11%;">See also
 <b>infer-capture</b>(1). <b><br>
@@ -382,6 +411,15 @@ the buck-java-flavor integration. (Conversely:
 
 <p style="margin-left:17%;">Explicitly set the size of the
 Java heap of Buck processes, in gigabytes.</p>
+
+<p style="margin-left:11%;">See also
+<b>infer-capture</b>(1). <b><br>
+--buck-java-suppress-config</b></p>
+
+<p style="margin-left:17%;">Activates: Suppress setting
+buck config values for the infer binary and its version in
+the buck-java integration. (Conversely:
+<b>--no-buck-java-suppress-config</b>)</p>
 
 <p style="margin-left:11%;">See also
 <b>infer-capture</b>(1). <b><br>
@@ -410,6 +448,29 @@ integration.</p>
 
 <p style="margin-left:11%;">See also
 <b>infer-capture</b>(1). <b><br>
+--buck2-inferconfig-target</b> <i>string</i></p>
+
+<p style="margin-left:17%;">Buck2 target representing the
+inferconfig file; used in BXL capture.</p>
+
+<p style="margin-left:11%;">See also
+<b>infer-capture</b>(1). <b><br>
+--buck2-isolation-dir</b> <i>string</i></p>
+
+<p style="margin-left:17%;">Run buck bxl capture with the
+given isolation directory as parameter.</p>
+
+<p style="margin-left:11%;">See also
+<b>infer-capture</b>(1). <b><br>
+--no-buck2-query-deps</b></p>
+
+<p style="margin-left:17%;">Deactivates: Query deps of
+given targets and run capture on the result (alternatively
+run capture on given targets) (Conversely:
+<b>--buck2-query-deps</b>)</p>
+
+<p style="margin-left:11%;">See also
+<b>infer-capture</b>(1). <b><br>
 --buck2-root</b> <i>dir</i></p>
 
 <p style="margin-left:17%;">Specify the parent directory of
@@ -427,17 +488,17 @@ capturing with buck2. (Conversely:
 <b>infer-capture</b>(1). <b><br>
 --bufferoverrun</b></p>
 
-<p style="margin-left:17%;">Activates: checker
-bufferoverrun: InferBO is a detector for out-of-bounds array
+<p style="margin-left:17%;">Activates: <i>bufferoverrun</i>
+checker: InferBO is a detector for out-of-bounds array
 accesses. (Conversely: <b>--no-bufferoverrun</b>)</p>
 
 <p style="margin-left:11%;">See also
 <b>infer-analyze</b>(1). <b><br>
 --bufferoverrun-only</b></p>
 
-<p style="margin-left:17%;">Activates: Enable bufferoverrun
-and disable all other checkers (Conversely:
-<b>--no-bufferoverrun-only</b>)</p>
+<p style="margin-left:17%;">Activates: Enable
+<i>bufferoverrun</i> and disable all other checkers
+(Conversely: <b>--no-bufferoverrun-only</b>)</p>
 
 <p style="margin-left:11%;">See also
 <b>infer-analyze</b>(1). <b><br>
@@ -455,7 +516,7 @@ specified by <b>--buck2_bxl_target</b>. (Conversely:
 
 <p style="margin-left:17%;">Matcher or list of matchers for
 names of files that should not be captured, hence not
-analyzed either. Clang and Java only.</p>
+analyzed either. Clang, Java, and Hack only.</p>
 
 <p style="margin-left:11%;">See also
 <b>infer-capture</b>(1) and <b>infer-run</b>(1). <b><br>
@@ -478,18 +539,18 @@ are specified, they are applied in the order in which they
 are specified. Each filter is applied to each issue
 detected, and only issues which are accepted by all filters
 are reported. Each filter is of the form:
-&rsquo;&lt;issue_type_regex&gt;:&lt;filename_regex&gt;:&lt;reason_string&gt;&rsquo;.
+&lsquo;&lt;issue_type_regex&gt;:&lt;filename_regex&gt;:&lt;reason_string&gt;&lsquo;.
 The first two components are OCaml Str regular expressions,
-with an optional &rsquo;!&rsquo; character prefix. If a
-regex has a &rsquo;!&rsquo; prefix, the polarity is
+with an optional &lsquo;!&lsquo; character prefix. If a
+regex has a &lsquo;!&lsquo; prefix, the polarity is
 inverted, and the filter becomes a &quot;block list&quot;
 instead of a &quot;allow list&quot;. Each filter is
 interpreted as an implication: an issue matches if it does
-not match the &rsquo;issue_type_regex&rsquo; or if it does
-match the &rsquo;filename_regex&rsquo;. The filenames that
+not match the &lsquo;issue_type_regex&lsquo; or if it does
+match the &lsquo;filename_regex&lsquo;. The filenames that
 are tested by the regex are relative to the
-&rsquo;--project-root&rsquo; directory. The
-&rsquo;&lt;reason_string&gt;&rsquo; is a non-empty string
+&lsquo;--project-root&lsquo; directory. The
+&lsquo;&lt;reason_string&gt;&lsquo; is a non-empty string
 used to explain why the issue was filtered.</p>
 
 <p style="margin-left:11%;">See also <b>infer-report</b>(1)
@@ -562,19 +623,31 @@ coming from Xcode (can be specified multiple times)</p>
 
 <p style="margin-left:11%;">See also
 <b>infer-capture</b>(1). <b><br>
+--complete-capture-from</b> <i>path</i></p>
+
+<p style="margin-left:17%;">Provide the path to an infer
+results directory containing a capture database. The capture
+database specified with <b>--results-dir</b>) (which must
+exist) will be completed from the input database and
+according to the <b>missing-*</b> files in the results
+directory. The exit code will be equal to the number of rows
+added to the capture database.</p>
+
+<p style="margin-left:11%;">See also <b>infer-debug</b>(1).
+<b><br>
 --config-impact-analysis</b></p>
 
-<p style="margin-left:17%;">Activates: checker
-config-impact-analysis: [EXPERIMENTAL] Collects function
-that are called without config checks. (Conversely:
-<b>--no-config-impact-analysis</b>)</p>
+<p style="margin-left:17%;">Activates:
+<i>config-impact-analysis</i> checker: [EXPERIMENTAL]
+Collects function that are called without config checks.
+(Conversely: <b>--no-config-impact-analysis</b>)</p>
 
 <p style="margin-left:11%;">See also
 <b>infer-analyze</b>(1). <b><br>
 --config-impact-analysis-only</b></p>
 
 <p style="margin-left:17%;">Activates: Enable
-config-impact-analysis and disable all other checkers
+<i>config-impact-analysis</i> and disable all other checkers
 (Conversely: <b>--no-config-impact-analysis-only</b>)</p>
 
 <p style="margin-left:11%;">See also
@@ -638,11 +711,11 @@ given the same before. Not compatible with
 <b>infer-analyze</b>(1). <b><br>
 --cost</b></p>
 
-<p style="margin-left:17%;">Activates: checker cost:
+<p style="margin-left:17%;">Activates: <i>cost</i> checker:
 Computes the asymptotic complexity of functions with respect
 to execution cost or other user defined resources. Can be
-used to detect changes in the complexity with &rsquo;infer
-reportdiff&rsquo;. (Conversely: <b>--no-cost</b>)</p>
+used to detect changes in the complexity with &lsquo;infer
+reportdiff&lsquo;. (Conversely: <b>--no-cost</b>)</p>
 
 <p style="margin-left:11%;">See also
 <b>infer-analyze</b>(1). <b><br>
@@ -655,8 +728,8 @@ a format suitable for cost tests to <i>file</i></p>
 <b>infer-report</b>(1). <b><br>
 --cost-only</b></p>
 
-<p style="margin-left:17%;">Activates: Enable cost and
-disable all other checkers (Conversely:
+<p style="margin-left:17%;">Activates: Enable <i>cost</i>
+and disable all other checkers (Conversely:
 <b>--no-cost-only</b>)</p>
 
 <p style="margin-left:11%;">See also
@@ -669,15 +742,6 @@ function pointers in cost reports (Conversely:
 
 <p style="margin-left:11%;">See also
 <b>infer-analyze</b>(1). <b><br>
---cost-tests-only-autoreleasepool</b></p>
-
-<p style="margin-left:17%;">Activates: [EXPERIMENTAL]
-Report only autoreleasepool size results in cost tests
-(Conversely:
-<b>--no-cost-tests-only-autoreleasepool</b>)</p>
-
-<p style="margin-left:11%;">See also <b>infer-report</b>(1)
-and <b>infer-reportdiff</b>(1). <b><br>
 --costs-current</b> <i>path</i></p>
 
 <p style="margin-left:17%;">Costs report of the latest
@@ -709,16 +773,16 @@ as dead stores.</p>
 <b>infer-analyze</b>(1). <b><br>
 --datalog</b></p>
 
-<p style="margin-left:17%;">Activates: checker datalog:
-Experimental datalog-based points-to analysis. (Conversely:
-<b>--no-datalog</b>)</p>
+<p style="margin-left:17%;">Activates: <i>datalog</i>
+checker: Experimental datalog-based points-to analysis.
+(Conversely: <b>--no-datalog</b>)</p>
 
 <p style="margin-left:11%;">See also
 <b>infer-analyze</b>(1). <b><br>
 --datalog-only</b></p>
 
-<p style="margin-left:17%;">Activates: Enable datalog and
-disable all other checkers (Conversely:
+<p style="margin-left:17%;">Activates: Enable
+<i>datalog</i> and disable all other checkers (Conversely:
 <b>--no-datalog-only</b>)</p>
 
 <p style="margin-left:11%;">See also
@@ -785,11 +849,12 @@ infer-reportdiff</b>(1). <b><br>
 --no-default-checkers</b></p>
 
 <p style="margin-left:17%;">Deactivates: Default checkers:
-<b>--biabduction</b>, <b>--fragment-retains-view</b>,
+<b>--fragment-retains-view</b>,
 <b>--inefficient-keyset-iterator</b>, <b>--liveness</b>,
-<b>--parameter-not-null-checked</b>, <b>--racerd</b>,
-<b>--siof</b>, <b>--self-in-block</b>, <b>--starvation</b>
-(Conversely: <b>--default-checkers</b>)</p>
+<b>--parameter-not-null-checked</b>, <b>--pulse</b>,
+<b>--racerd</b>, <b>--siof</b>, <b>--self-in-block</b>,
+<b>--starvation</b> (Conversely:
+<b>--default-checkers</b>)</p>
 
 <p style="margin-left:11%;">See also
 <b>infer-analyze</b>(1). <b><br>
@@ -827,13 +892,6 @@ ARBITRARY_CODE_EXECUTION_UNDER_LOCK (enabled by default),
 ARRAY_OUT_OF_BOUNDS_L1 (disabled by default), <br>
 ARRAY_OUT_OF_BOUNDS_L2 (disabled by default), <br>
 ARRAY_OUT_OF_BOUNDS_L3 (disabled by default), <br>
-AUTORELEASEPOOL_SIZE_COMPLEXITY_INCREASE (enabled by
-default), <br>
-AUTORELEASEPOOL_SIZE_COMPLEXITY_INCREASE_UI_THREAD (enabled
-by <br>
-default), <br>
-AUTORELEASEPOOL_SIZE_UNREACHABLE_AT_EXIT (disabled by
-default), <br>
 Abduction_case_not_implemented (enabled by default), <br>
 Array_of_pointsto (enabled by default), <br>
 Assert_failure (enabled by default), <br>
@@ -867,20 +925,19 @@ CHECKERS_CALLS_EXPENSIVE_METHOD (enabled by default), <br>
 CHECKERS_EXPENSIVE_OVERRIDES_UNANNOTATED (enabled by
 default), <br>
 CHECKERS_FRAGMENT_RETAINS_VIEW (enabled by default), <br>
-CHECKERS_IMMUTABLE_CAST (enabled by default), <br>
 CHECKERS_PRINTF_ARGS (enabled by default), <br>
 CLASS_CAST_EXCEPTION (disabled by default), <br>
 CONDITION_ALWAYS_FALSE (disabled by default), <br>
 CONDITION_ALWAYS_TRUE (disabled by default), <br>
 CONFIG_IMPACT (disabled by default), <br>
 CONFIG_IMPACT_STRICT (disabled by default), <br>
-CONFIG_IMPACT_STRICT_BETA (disabled by default), <br>
 CONFIG_USAGE (disabled by default), <br>
 CONSTANT_ADDRESS_DEREFERENCE (disabled by default), <br>
 CONSTANT_ADDRESS_DEREFERENCE_LATENT (disabled by default),
 <br>
 CREATE_INTENT_FROM_URI (enabled by default), <br>
 CROSS_SITE_SCRIPTING (enabled by default), <br>
+CXX_REF_CAPTURED_IN_BLOCK (enabled by default), <br>
 Cannot_star (enabled by default), <br>
 DANGLING_POINTER_DEREFERENCE (disabled by default), <br>
 DANGLING_POINTER_DEREFERENCE_MAYBE (disabled by default),
@@ -892,34 +949,6 @@ DEAD_STORE (enabled by default), <br>
 DIVIDE_BY_ZERO (disabled by default), <br>
 DO_NOT_REPORT (enabled by default), <br>
 EMPTY_VECTOR_ACCESS (enabled by default), <br>
-ERADICATE_ANNOTATION_GRAPH (enabled by default), <br>
-ERADICATE_BAD_NESTED_CLASS_ANNOTATION (enabled by default),
-<br>
-ERADICATE_CONDITION_REDUNDANT (enabled by default), <br>
-ERADICATE_FIELD_NOT_INITIALIZED (enabled by default), <br>
-ERADICATE_FIELD_NOT_NULLABLE (enabled by default), <br>
-ERADICATE_FIELD_OVER_ANNOTATED (enabled by default), <br>
-ERADICATE_INCONSISTENT_SUBCLASS_PARAMETER_ANNOTATION
-(enabled <br>
-by default), <br>
-ERADICATE_INCONSISTENT_SUBCLASS_RETURN_ANNOTATION (enabled
-by <br>
-default), <br>
-ERADICATE_META_CLASS_CAN_BE_NULLSAFE (disabled by default),
-<br>
-ERADICATE_META_CLASS_IS_NULLSAFE (disabled by default), <br>
-ERADICATE_META_CLASS_NEEDS_IMPROVEMENT (disabled by
-default), <br>
-ERADICATE_NULLABLE_DEREFERENCE (enabled by default), <br>
-ERADICATE_PARAMETER_NOT_NULLABLE (enabled by default), <br>
-ERADICATE_REDUNDANT_NESTED_CLASS_ANNOTATION (enabled by <br>
-default), <br>
-ERADICATE_RETURN_NOT_NULLABLE (enabled by default), <br>
-ERADICATE_RETURN_OVER_ANNOTATED (enabled by default), <br>
-ERADICATE_UNCHECKED_USAGE_IN_NULLSAFE (enabled by default),
-<br>
-ERADICATE_UNVETTED_THIRD_PARTY_IN_NULLSAFE (enabled by <br>
-default), <br>
 EXECUTION_TIME_COMPLEXITY_INCREASE (enabled by default),
 <br>
 EXECUTION_TIME_COMPLEXITY_INCREASE_UI_THREAD (enabled by
@@ -927,7 +956,6 @@ EXECUTION_TIME_COMPLEXITY_INCREASE_UI_THREAD (enabled by
 default), <br>
 EXECUTION_TIME_UNREACHABLE_AT_EXIT (disabled by default),
 <br>
-EXPENSIVE_AUTORELEASEPOOL_SIZE (disabled by default), <br>
 EXPENSIVE_EXECUTION_TIME (disabled by default), <br>
 EXPENSIVE_LOOP_INVARIANT_CALL (enabled by default), <br>
 EXPOSED_INSECURE_INTENT_HANDLING (enabled by default), <br>
@@ -940,7 +968,6 @@ INFERBO_ALLOC_IS_NEGATIVE (enabled by default), <br>
 INFERBO_ALLOC_IS_ZERO (enabled by default), <br>
 INFERBO_ALLOC_MAY_BE_BIG (enabled by default), <br>
 INFERBO_ALLOC_MAY_BE_NEGATIVE (enabled by default), <br>
-INFINITE_AUTORELEASEPOOL_SIZE (disabled by default), <br>
 INFINITE_EXECUTION_TIME (disabled by default), <br>
 INHERENTLY_DANGEROUS_FUNCTION (enabled by default), <br>
 INSECURE_INTENT_HANDLING (enabled by default), <br>
@@ -949,6 +976,7 @@ INTEGER_OVERFLOW_L2 (enabled by default), <br>
 INTEGER_OVERFLOW_L5 (disabled by default), <br>
 INTEGER_OVERFLOW_U5 (disabled by default), <br>
 INTERFACE_NOT_THREAD_SAFE (enabled by default), <br>
+INVALID_SIL (enabled by default), <br>
 INVARIANT_CALL (disabled by default), <br>
 IPC_ON_UI_THREAD (enabled by default), <br>
 Internal_error (enabled by default), <br>
@@ -986,6 +1014,11 @@ NO_MATCH_OF_RHS_LATENT (disabled by default), <br>
 NO_TRUE_BRANCH_IN_IF (enabled by default), <br>
 NO_TRUE_BRANCH_IN_IF_LATENT (disabled by default), <br>
 NULLPTR_DEREFERENCE (enabled by default), <br>
+NULLPTR_DEREFERENCE_IN_NULLSAFE_CLASS (enabled by default),
+<br>
+NULLPTR_DEREFERENCE_IN_NULLSAFE_CLASS_LATENT (disabled by
+<br>
+default), <br>
 NULLPTR_DEREFERENCE_LATENT (disabled by default), <br>
 NULL_ARGUMENT (enabled by default), <br>
 NULL_ARGUMENT_LATENT (disabled by default), <br>
@@ -996,9 +1029,14 @@ PRECONDITION_NOT_FOUND (enabled by default), <br>
 PRECONDITION_NOT_MET (enabled by default), <br>
 PREMATURE_NIL_TERMINATION_ARGUMENT (enabled by default),
 <br>
-PULSE_CONST_REFABLE (disabled by default), <br>
+PULSE_CONST_REFABLE (enabled by default), <br>
+PULSE_DICT_MISSING_KEY (disabled by default), <br>
 PULSE_READONLY_SHARED_PTR_PARAM (enabled by default), <br>
+PULSE_REFERENCE_STABILITY (disabled by default), <br>
 PULSE_RESOURCE_LEAK (enabled by default), <br>
+PULSE_TRANSITIVE_ACCESS (enabled by default), <br>
+PULSE_UNAWAITED_AWAITABLE (enabled by default), <br>
+PULSE_UNINITIALIZED_CONST (disabled by default), <br>
 PULSE_UNINITIALIZED_VALUE (enabled by default), <br>
 PULSE_UNINITIALIZED_VALUE_LATENT (disabled by default), <br>
 PULSE_UNNECESSARY_COPY (enabled by default), <br>
@@ -1007,12 +1045,12 @@ PULSE_UNNECESSARY_COPY_ASSIGNMENT_CONST (disabled by
 default), <br>
 PULSE_UNNECESSARY_COPY_ASSIGNMENT_MOVABLE (enabled by
 default), <br>
-PULSE_UNNECESSARY_COPY_INTERMEDIATE (disabled by default),
+PULSE_UNNECESSARY_COPY_INTERMEDIATE (enabled by default),
 <br>
 PULSE_UNNECESSARY_COPY_INTERMEDIATE_CONST (disabled by <br>
 default), <br>
 PULSE_UNNECESSARY_COPY_MOVABLE (enabled by default), <br>
-PULSE_UNNECESSARY_COPY_OPTIONAL (disabled by default), <br>
+PULSE_UNNECESSARY_COPY_OPTIONAL (enabled by default), <br>
 PULSE_UNNECESSARY_COPY_OPTIONAL_CONST (disabled by default),
 <br>
 PULSE_UNNECESSARY_COPY_RETURN (disabled by default), <br>
@@ -1020,7 +1058,7 @@ PURE_FUNCTION (enabled by default), <br>
 QUANDARY_TAINT_ERROR (enabled by default), <br>
 REGEX_OP_ON_UI_THREAD (enabled by default), <br>
 RESOURCE_LEAK (enabled by default), <br>
-RETAIN_CYCLE (disabled by default), <br>
+RETAIN_CYCLE (enabled by default), <br>
 SCOPE_LEAKAGE (enabled by default), <br>
 SENSITIVE_DATA_FLOW (disabled by default), <br>
 SHELL_INJECTION (enabled by default), <br>
@@ -1038,6 +1076,7 @@ Symexec_memory_error (enabled by default), <br>
 TAINT_ERROR (enabled by default), <br>
 THREAD_SAFETY_VIOLATION (enabled by default), <br>
 TOPL_ERROR (enabled by default), <br>
+TOPL_ERROR_LATENT (disabled by default), <br>
 UNINITIALIZED_VALUE (enabled by default), <br>
 UNREACHABLE_CODE (enabled by default), <br>
 UNTRUSTED_BUFFER_ACCESS (disabled by default), <br>
@@ -1088,22 +1127,6 @@ or off.</p>
 
 <p style="margin-left:11%;">See also
 <b>infer-report</b>(1). <b><br>
---eradicate</b></p>
-
-<p style="margin-left:17%;">Activates: checker eradicate:
-The eradicate &rsquo;@Nullable&rsquo; checker for Java
-annotations. (Conversely: <b>--no-eradicate</b>)</p>
-
-<p style="margin-left:11%;">See also
-<b>infer-analyze</b>(1). <b><br>
---eradicate-only</b></p>
-
-<p style="margin-left:17%;">Activates: Enable eradicate and
-disable all other checkers (Conversely:
-<b>--no-eradicate-only</b>)</p>
-
-<p style="margin-left:11%;">See also
-<b>infer-analyze</b>(1). <b><br>
 --erlang-ast-dir</b> <i>dir</i></p>
 
 <p style="margin-left:17%;">Also load AST from all .json
@@ -1129,6 +1152,16 @@ capture time. (Conversely:
 
 <p style="margin-left:11%;">See also
 <b>infer-analyze</b>(1). <b><br>
+--no-erlang-reliability</b></p>
+
+<p style="margin-left:17%;">Deactivates: Analyze crashing
+executions. This flag affects both capture and analysis. At
+capture time, it encodes Erlang specs; at (Pulse) analysis
+time, it models Erlang exceptions (builtin or OTP ones).
+(Conversely: <b>--erlang-reliability</b>)</p>
+
+<p style="margin-left:11%;">See also
+<b>infer-analyze</b>(1) and <b>infer-capture</b>(1). <b><br>
 --erlang-skip-compile</b></p>
 
 <p style="margin-left:17%;">Activates: Skip running
@@ -1157,6 +1190,17 @@ packages.</p>
 
 <p style="margin-left:11%;">See also
 <b>infer-analyze</b>(1). <b><br>
+--extract-capture-from</b> <i>path</i></p>
+
+<p style="margin-left:17%;">Provide the path to an infer
+results directory containing a capture database. Together
+with a list of files provided through the obligatory use of
+<b>--changed-files-index</b>, create a new capture database
+containing only the artefacts related to these files (in the
+location specified with <b>--results-dir</b>).</p>
+
+<p style="margin-left:11%;">See also <b>infer-debug</b>(1).
+<b><br>
 --fail-on-issue</b></p>
 
 <p style="margin-left:17%;">Activates: Exit with error code
@@ -1204,29 +1248,31 @@ infer results directory. (Conversely:
 
 <p style="margin-left:17%;">Proceed as if the first
 argument after <b>--</b> was <i>command</i>. Possible
-values: <i>ant</i>, <i>buck</i>, <i>buck1</i>, <i>buck2</i>,
+values: <i>ant</i>, <i>buck1</i>, <i>buck</i>, <i>buck2</i>,
 <i>gradle</i>, <i>gradlew</i>, <i>java</i>, <i>javac</i>,
-<i>cc</i>, <i>clang</i>, <i>gcc</i>, <i>clang++</i>,
-<i>c++</i>, <i>g++</i>, <i>hackc</i>, <i>make</i>,
-<i>configure</i>, <i>cmake</i>, <i>waf</i>, <i>mvn</i>,
-<i>mvnw</i>, <i>ndk-build</i>, <i>rebar3</i>, <i>erlc</i>,
-<i>xcodebuild</i>.</p>
+<i>kotlinc</i>, <i>cc</i>, <i>clang</i>, <i>gcc</i>,
+<i>clang++</i>, <i>c++</i>, <i>g++</i>, <i>hackc</i>,
+<i>make</i>, <i>configure</i>, <i>cmake</i>, <i>waf</i>,
+<i>mvn</i>, <i>mvnw</i>, <i>ndk-build</i>, <i>python3</i>,
+<i>rebar3</i>, <i>erlc</i>, <i>xcodebuild</i>.</p>
 
 <p style="margin-left:11%;">See also
 <b>infer-capture</b>(1) and <b>infer-run</b>(1). <b><br>
 --no-fragment-retains-view</b></p>
 
-<p style="margin-left:17%;">Deactivates: checker
-fragment-retains-view: Detects when Android fragments are
-not explicitly nullified before becoming unreachable.
-(Conversely: <b>--fragment-retains-view</b>)</p>
+<p style="margin-left:17%;">Deactivates:
+<i>fragment-retains-view</i> checker: Detects when Android
+fragments are not explicitly nullified before becoming
+unreachable.</p>
 
-<p style="margin-left:11%;">See also
-<b>infer-analyze</b>(1). <b><br>
+<p style="margin-left:11%;"><b>DEPRECATED</b>: Unmaintained
+due to poor precision. <br>
+(Conversely: <b>--fragment-retains-view</b>) <br>
+See also <b>infer-analyze</b>(1). <b><br>
 --fragment-retains-view-only</b></p>
 
 <p style="margin-left:17%;">Activates: Enable
-fragment-retains-view and disable all other checkers
+<i>fragment-retains-view</i> and disable all other checkers
 (Conversely: <b>--no-fragment-retains-view-only</b>)</p>
 
 <p style="margin-left:11%;">See also
@@ -1351,39 +1397,19 @@ report of issues found. (Conversely: <b>--no-html</b>)</p>
 
 <p style="margin-left:11%;">See also
 <b>infer-explore</b>(1). <b><br>
---immutable-cast</b></p>
-
-<p style="margin-left:17%;">Activates: checker
-immutable-cast: Detection of object cast from immutable
-types to mutable types. For instance, it will detect casts
-from &rsquo;ImmutableList&rsquo; to &rsquo;List&rsquo;,
-&rsquo;ImmutableMap&rsquo; to &rsquo;Map&rsquo;, and
-&rsquo;ImmutableSet&rsquo; to &rsquo;Set&rsquo;.
-(Conversely: <b>--no-immutable-cast</b>)</p>
-
-<p style="margin-left:11%;">See also
-<b>infer-analyze</b>(1). <b><br>
---immutable-cast-only</b></p>
-
-<p style="margin-left:17%;">Activates: Enable
-immutable-cast and disable all other checkers (Conversely:
-<b>--no-immutable-cast-only</b>)</p>
-
-<p style="margin-left:11%;">See also
-<b>infer-analyze</b>(1). <b><br>
 --impurity</b></p>
 
-<p style="margin-left:17%;">Activates: checker impurity:
-Detects functions with potential side-effects. Same as
-&quot;purity&quot;, but implemented on top of Pulse.
-(Conversely: <b>--no-impurity</b>)</p>
+<p style="margin-left:17%;">Activates: <i>impurity</i>
+checker: Detects functions with potential side-effects. Same
+as &quot;purity&quot;, but implemented on top of Pulse.</p>
 
-<p style="margin-left:11%;">See also
-<b>infer-analyze</b>(1). <b><br>
+<p style="margin-left:11%;"><i>ACTIVATES</i>: <i>pulse</i>
+(Conversely: <b>--no-impurity</b>) <br>
+See also <b>infer-analyze</b>(1). <b><br>
 --impurity-only</b></p>
 
-<p style="margin-left:17%;">Activates: Enable impurity and
-disable all other checkers (Conversely:
+<p style="margin-left:17%;">Activates: Enable
+<i>impurity</i> and disable all other checkers (Conversely:
 <b>--no-impurity-only</b>)</p>
 
 <p style="margin-left:11%;">See also
@@ -1396,22 +1422,51 @@ to immutable fields in the Impurity checker (Conversely:
 
 <p style="margin-left:11%;">See also
 <b>infer-analyze</b>(1). <b><br>
+--incremental-analysis</b></p>
+
+<p style="margin-left:17%;">Activates: Use incremental
+analysis for changed files. Not compatible with
+<b>--reanalyze</b> and <b>--continue-analysis</b>. Also sets
+<b>--mark-unchanged-procs</b>. (Conversely:
+<b>--no-incremental-analysis</b>)</p>
+
+<p style="margin-left:11%;">See also
+<b>infer-analyze</b>(1). <b><br>
 --no-inefficient-keyset-iterator</b></p>
 
-<p style="margin-left:17%;">Deactivates: checker
-inefficient-keyset-iterator: Check for inefficient uses of
-iterators that iterate on keys then lookup their values,
-instead of iterating on key-value pairs directly.
-(Conversely: <b>--inefficient-keyset-iterator</b>)</p>
+<p style="margin-left:17%;">Deactivates:
+<i>inefficient-keyset-iterator</i> checker: Check for
+inefficient uses of iterators that iterate on keys then
+lookup their values, instead of iterating on key-value pairs
+directly. (Conversely:
+<b>--inefficient-keyset-iterator</b>)</p>
 
 <p style="margin-left:11%;">See also
 <b>infer-analyze</b>(1). <b><br>
 --inefficient-keyset-iterator-only</b></p>
 
 <p style="margin-left:17%;">Activates: Enable
-inefficient-keyset-iterator and disable all other checkers
-(Conversely:
+<i>inefficient-keyset-iterator</i> and disable all other
+checkers (Conversely:
 <b>--no-inefficient-keyset-iterator-only</b>)</p>
+
+<p style="margin-left:11%;">See also
+<b>infer-analyze</b>(1). <b><br>
+--inline-func-pointer-for-testing</b> <i>string</i></p>
+
+<p style="margin-left:17%;">Enables substituting global
+function pointers used for testing with the real function
+calls in the clang frontend. Pass the prefix used to build
+the global function pointers used for testing.</p>
+
+<p style="margin-left:11%;">See also
+<b>infer-analyze</b>(1). <b><br>
+--invalidate-only</b></p>
+
+<p style="margin-left:17%;">Activates: Remove any summaries
+from the results database that transitively depend on a
+changed procedure, then exit without doing any actual
+analysis. (Conversely: <b>--no-invalidate-only</b>)</p>
 
 <p style="margin-left:11%;">See also
 <b>infer-analyze</b>(1). <b><br>
@@ -1424,11 +1479,13 @@ format suitable for tests to <i>file</i></p>
 <b>infer-report</b>(1). <b><br>
 --issues-tests-fields</b> <i>,-separated sequence of {
 bug_type | bucket | <br>
-qualifier | severity | line | column | procedure |
-procedure_start_line <br>
-| file | bug_trace | key | hash | line_offset | <br>
+qualifier | suggestion | severity | line | column |
+procedure | <br>
+procedure_start_line | file | bug_trace | key | hash |
+line_offset | <br>
 qualifier_contains_potential_exception_note | nullsafe_extra
-}</i></p>
+| <br>
+taint_extra | transitive_callees_extra }</i></p>
 
 <p style="margin-left:17%;">Fields to emit with
 <b>--issues-tests</b></p>
@@ -1452,7 +1509,8 @@ Set it to your Java version if mvn is failing.</p>
 --jobs</b>,<b>-j</b> <i>int</i></p>
 
 <p style="margin-left:17%;">Run the specified number of
-analysis jobs simultaneously</p>
+analysis jobs simultaneously. Defaults to the minimum value
+of the max_jobs argument and the number of CPUs.</p>
 
 <p style="margin-left:11%;">See also
 <b>infer-analyze</b>(1). <b><br>
@@ -1472,6 +1530,124 @@ capture (experimental, do not use). (Conversely:
 
 <p style="margin-left:11%;">See also
 <b>infer-capture</b>(1). <b><br>
+--lineage</b></p>
+
+<p style="margin-left:17%;">Activates: <i>lineage</i>
+checker: Computes a dataflow graph (Conversely:
+<b>--no-lineage</b>)</p>
+
+<p style="margin-left:11%;">See also
+<b>infer-analyze</b>(1). <b><br>
+--no-lineage-dedup</b></p>
+
+<p style="margin-left:17%;">Deactivates: In JSON output,
+attempt to print each entity at most once. This is the
+default. The only reason you may want to turn this off is to
+make hash collisions more visible; that is, cases in which
+distinct entities get assigned the same ID. (Conversely:
+<b>--lineage-dedup</b>)</p>
+
+<p style="margin-left:11%;">See also
+<b>infer-analyze</b>(1). <b><br>
+--lineage-field-depth</b> <i>int</i></p>
+
+<p style="margin-left:17%;">[EXPERIMENTAL] Maximal field
+depth sensitivity for lineage analysis. 0 will make the
+analysis field insensitive.</p>
+
+<p style="margin-left:11%;">See also
+<b>infer-analyze</b>(1). <b><br>
+--lineage-field-max-cfg-size</b> <i>int</i></p>
+
+<p style="margin-left:17%;">If set, field sensitivity is
+disabled on larger CFGs.</p>
+
+<p style="margin-left:11%;">See also
+<b>infer-analyze</b>(1). <b><br>
+--lineage-field-width</b> <i>int</i></p>
+
+<p style="margin-left:17%;">[EXPERIMENTAL] Maximal width of
+structures for field sensitive lineage analysis. Structure
+that have a higher number of fields will be smashed into a
+single element. 0 will make the analysis field insensitive.
+If not set, field width will be unlimited.</p>
+
+<p style="margin-left:11%;">See also
+<b>infer-analyze</b>(1). <b><br>
+--lineage-include-builtins</b></p>
+
+<p style="margin-left:17%;">Activates: Include call/return
+edges to/from procedures that model primitive Erlang
+operations, such as constructing a list. (Conversely:
+<b>--no-lineage-include-builtins</b>)</p>
+
+<p style="margin-left:11%;">See also
+<b>infer-analyze</b>(1). <b><br>
+--lineage-json-report</b></p>
+
+<p style="margin-left:17%;">Activates: Enable lineage
+report in JSON format. (Conversely:
+<b>--no-lineage-json-report</b>)</p>
+
+<p style="margin-left:11%;">See also
+<b>infer-analyze</b>(1). <b><br>
+--lineage-keep-temporaries</b></p>
+
+<p style="margin-left:17%;">Activates: Normally, lineage
+summaries do not mention temporary variables introduced
+while compiling the high-level code to Infer's IR
+(intermediate representation). If this option is enabled,
+then the lineage graph produced corresponds to Infer's IR.
+(Conversely: <b>--no-lineage-keep-temporaries</b>)</p>
+
+<p style="margin-left:11%;">See also
+<b>infer-analyze</b>(1). <b><br>
+--lineage-max-cfg-size</b> <i>int</i></p>
+
+<p style="margin-left:17%;">If set, larger CFGs are
+skipped.</p>
+
+<p style="margin-left:11%;">See also
+<b>infer-analyze</b>(1). <b><br>
+--lineage-only</b></p>
+
+<p style="margin-left:17%;">Activates: Enable
+<i>lineage</i> and disable all other checkers (Conversely:
+<b>--no-lineage-only</b>)</p>
+
+<p style="margin-left:11%;">See also
+<b>infer-analyze</b>(1). <b><br>
+--lineage-prevent-cycles</b></p>
+
+<p style="margin-left:17%;">Activates: [EXPERIMENTAL] If
+set, Lineage will stop distinguishing the fields of a
+variable when it notices recursive types (that is, a
+sub-field having the same type as one of its
+&quot;ancestors&quot;). (Conversely:
+<b>--no-lineage-prevent-cycles</b>)</p>
+
+<p style="margin-left:11%;">See also
+<b>infer-analyze</b>(1). <b><br>
+--lineage-seed</b> <i>int</i></p>
+
+<p style="margin-left:17%;">Set the random seed used for
+hashing. (Various entities that get reported need unique
+identifiers. To generate these unique identifiers, in a
+distributed way without communication, we use hashing. If
+you are unlucky and get collisions, you can try a different
+seed.</p>
+
+<p style="margin-left:11%;">See also
+<b>infer-analyze</b>(1). <b><br>
+--lineage-variant-width</b> <i>int</i></p>
+
+<p style="margin-left:17%;">Maximal width of variant types
+for lineage analysis. A variant type is the type of a
+variable whose value is within a statically known atom set.
+The width of the type is the cardinal of that atom set.</p>
+
+<p style="margin-left:11%;">See also
+<b>infer-analyze</b>(1). <b><br>
 --list-checkers</b></p>
 
 <p style="margin-left:17%;">Activates: Show the list of all
@@ -1490,10 +1666,10 @@ issue types that infer might report. (Conversely:
 <b><br>
 --litho-required-props</b></p>
 
-<p style="margin-left:17%;">Activates: checker
-litho-required-props: Checks that all non-optional
-&rsquo;@Prop&rsquo;s have been specified when constructing
-Litho components. (Conversely:
+<p style="margin-left:17%;">Activates:
+<i>litho-required-props</i> checker: Checks that all
+non-optional &lsquo;@Prop&lsquo;s have been specified when
+constructing Litho components. (Conversely:
 <b>--no-litho-required-props</b>)</p>
 
 <p style="margin-left:11%;">See also
@@ -1501,16 +1677,24 @@ Litho components. (Conversely:
 --litho-required-props-only</b></p>
 
 <p style="margin-left:17%;">Activates: Enable
-litho-required-props and disable all other checkers
+<i>litho-required-props</i> and disable all other checkers
 (Conversely: <b>--no-litho-required-props-only</b>)</p>
 
 <p style="margin-left:11%;">See also
 <b>infer-analyze</b>(1). <b><br>
 --no-liveness</b></p>
 
-<p style="margin-left:17%;">Deactivates: checker liveness:
-Detection of dead stores and unused variables. (Conversely:
-<b>--liveness</b>)</p>
+<p style="margin-left:17%;">Deactivates: <i>liveness</i>
+checker: Detection of dead stores and unused variables.
+(Conversely: <b>--liveness</b>)</p>
+
+<p style="margin-left:11%;">See also
+<b>infer-analyze</b>(1). <b><br>
+--liveness-block-list-var-regex</b> <i>string</i></p>
+
+<p style="margin-left:17%;">Specify a regular expression
+for variable names that are ignored when reporting dead
+stores.</p>
 
 <p style="margin-left:11%;">See also
 <b>infer-analyze</b>(1). <b><br>
@@ -1535,8 +1719,8 @@ ignored by liveness analysis</p>
 <b>infer-analyze</b>(1). <b><br>
 --liveness-only</b></p>
 
-<p style="margin-left:17%;">Activates: Enable liveness and
-disable all other checkers (Conversely:
+<p style="margin-left:17%;">Activates: Enable
+<i>liveness</i> and disable all other checkers (Conversely:
 <b>--no-liveness-only</b>)</p>
 
 <p style="margin-left:11%;">See also
@@ -1549,23 +1733,54 @@ make only)</p>
 
 <p style="margin-left:11%;">See also
 <b>infer-capture</b>(1). <b><br>
+--lock-model</b> <i>json</i></p>
+
+<p style="margin-left:17%;">Specify custom lock models for
+starvation analysis.</p>
+
+<p style="margin-left:11%;">Example for pthreads (already
+included in infer): <br>
+
+[{&quot;lock&quot;:[&quot;pthread_mutex_lock&quot;],&quot;unlock&quot;:[&quot;pthread_mutex_unlock&quot;]}]
+<br>
+See also <b>infer-analyze</b>(1). <b><br>
+--log-missing-deps</b></p>
+
+<p style="margin-left:17%;">Activates: Log analysis
+dependencies that cannot be found. (Conversely:
+<b>--no-log-missing-deps</b>)</p>
+
+<p style="margin-left:11%;">See also
+<b>infer-analyze</b>(1). <b><br>
 --loop-hoisting</b></p>
 
-<p style="margin-left:17%;">Activates: checker
-loop-hoisting: Detect opportunities to hoist function calls
-that are invariant outside of loop bodies for efficiency.
+<p style="margin-left:17%;">Activates: <i>loop-hoisting</i>
+checker: Detect opportunities to hoist function calls that
+are invariant outside of loop bodies for efficiency.
 (Conversely: <b>--no-loop-hoisting</b>)</p>
 
 <p style="margin-left:11%;">See also
 <b>infer-analyze</b>(1). <b><br>
 --loop-hoisting-only</b></p>
 
-<p style="margin-left:17%;">Activates: Enable loop-hoisting
-and disable all other checkers (Conversely:
-<b>--no-loop-hoisting-only</b>)</p>
+<p style="margin-left:17%;">Activates: Enable
+<i>loop-hoisting</i> and disable all other checkers
+(Conversely: <b>--no-loop-hoisting-only</b>)</p>
 
 <p style="margin-left:11%;">See also
 <b>infer-analyze</b>(1). <b><br>
+--mark-unchanged-procs</b></p>
+
+<p style="margin-left:17%;">Activates: Check structural
+identity of newly-captured procedures with
+previously-captured versions, marking the new procedure as
+unchanged if the two are equivalent. Also prevents removing
+results db during capture, so that unchanged results can be
+reused during future incremental analyses (Conversely:
+<b>--no-mark-unchanged-procs</b>)</p>
+
+<p style="margin-left:11%;">See also
+<b>infer-capture</b>(1). <b><br>
 --no-mask-sawja-exceptions</b></p>
 
 <p style="margin-left:17%;">Deactivates: Mask exceptions
@@ -1577,7 +1792,8 @@ thrown by Sawja/Javalib during Java capture (Conversely:
 --max-jobs</b> <i>int</i></p>
 
 <p style="margin-left:17%;">Maximum number of analysis jobs
-running simultaneously</p>
+running simultaneously. Experiments show current best value
+is 40 jobs.</p>
 
 <p style="margin-left:11%;">See also
 <b>infer-analyze</b>(1). <b><br>
@@ -1593,7 +1809,7 @@ skipped. If omitted, all levels are shown.</p>
 
 <p style="margin-left:17%;">Activates: Generate OCaml
 analysis allocation traces in
-&rsquo;infer-out/memtrace&rsquo;. (Conversely:
+&lsquo;infer-out/memtrace&lsquo;. (Conversely:
 <b>--no-memtrace-analysis-profiling</b>)</p>
 
 <p style="margin-left:11%;">See also
@@ -1624,10 +1840,10 @@ before being stored in the main results directory.</p>
 
 <p style="margin-left:11%;">See also
 <b>infer-report</b>(1). <b><br>
---merge-report-summaries</b> <i>+string</i></p>
+--merge-summaries</b> <i>+string</i></p>
 
 <p style="margin-left:17%;">Specifies an Infer results
-directory. The report summaries in all specified results
+directory. The summaries in all specified results
 directories will be merged together and deduplicated before
 reporting is done.</p>
 
@@ -1652,19 +1868,19 @@ Matcher or list of matchers for functions that never return
 <b>infer-run</b>(1). <b><br>
 --no-parameter-not-null-checked</b></p>
 
-<p style="margin-left:17%;">Deactivates: checker
-parameter-not-null-checked: An Objective-C-specific analysis
-to detect when a block parameter is used before being
-checked for null first. (Conversely:
-<b>--parameter-not-null-checked</b>)</p>
+<p style="margin-left:17%;">Deactivates:
+<i>parameter-not-null-checked</i> checker: An
+Objective-C-specific analysis to detect when a block
+parameter is used before being checked for null first.
+(Conversely: <b>--parameter-not-null-checked</b>)</p>
 
 <p style="margin-left:11%;">See also
 <b>infer-analyze</b>(1). <b><br>
 --parameter-not-null-checked-only</b></p>
 
 <p style="margin-left:17%;">Activates: Enable
-parameter-not-null-checked and disable all other checkers
-(Conversely:
+<i>parameter-not-null-checked</i> and disable all other
+checkers (Conversely:
 <b>--no-parameter-not-null-checked-only</b>)</p>
 
 <p style="margin-left:11%;">See also
@@ -1676,6 +1892,16 @@ parameter-not-null-checked and disable all other checkers
 <b>--no-pmd-xml</b>)</p>
 
 <p style="margin-left:11%;">See also <b>infer-run</b>(1).
+<b><br>
+--preanalysis-html</b></p>
+
+<p style="margin-left:17%;">Activates: Whether the HTML
+node printing for preanalysis is enabled or not. Set to
+false by default since this helps focus on debugging just
+the enabled analyses. (Conversely:
+<b>--no-preanalysis-html</b>)</p>
+
+<p style="margin-left:11%;">See also <b>infer-debug</b>(1).
 <b><br>
 --print-active-checkers</b></p>
 
@@ -1696,21 +1922,22 @@ stdout and stderr (Conversely: <b>--no-print-logs</b>)</p>
 infer-run</b>(1). <b><br>
 --printf-args</b></p>
 
-<p style="margin-left:17%;">Activates: checker printf-args:
-Detect mismatches between the Java &rsquo;printf&rsquo;
-format strings and the argument types For example, this
-checker will warn about the type error in
-&rsquo;printf(&quot;Hello %d&quot;,
-&quot;world&quot;)&rsquo; (Conversely:
-<b>--no-printf-args</b>)</p>
+<p style="margin-left:17%;">Activates: <i>printf-args</i>
+checker: Detect mismatches between the Java
+&lsquo;printf&lsquo; format strings and the argument types
+For example, this checker will warn about the type error in
+&lsquo;printf(&quot;Hello %d&quot;,
+&quot;world&quot;)&lsquo;</p>
 
-<p style="margin-left:11%;">See also
-<b>infer-analyze</b>(1). <b><br>
+<p style="margin-left:11%;"><b>DEPRECATED</b>:
+Unmaintained. <br>
+(Conversely: <b>--no-printf-args</b>) <br>
+See also <b>infer-analyze</b>(1). <b><br>
 --printf-args-only</b></p>
 
-<p style="margin-left:17%;">Activates: Enable printf-args
-and disable all other checkers (Conversely:
-<b>--no-printf-args-only</b>)</p>
+<p style="margin-left:17%;">Activates: Enable
+<i>printf-args</i> and disable all other checkers
+(Conversely: <b>--no-printf-args-only</b>)</p>
 
 <p style="margin-left:11%;">See also
 <b>infer-analyze</b>(1). <b><br>
@@ -1738,6 +1965,15 @@ the syntactic call graph reachable from either all captured
 procedures or those determined by the option
 <b>--changed-files-index</b>. (Conversely:
 <b>--no-procedures-call-graph</b>)</p>
+
+<p style="margin-left:11%;">See also <b>infer-debug</b>(1).
+<b><br>
+--procedures-callees</b></p>
+
+<p style="margin-left:17%;">Activates: Print the static
+callees of each procedure in the output of
+<b>--procedures</b> (Conversely:
+<b>--no-procedures-callees</b>)</p>
 
 <p style="margin-left:11%;">See also <b>infer-debug</b>(1).
 <b><br>
@@ -1794,8 +2030,9 @@ found in the output of <b>--procedures</b> (Conversely:
 --procedures-summary</b></p>
 
 <p style="margin-left:17%;">Activates: Print the summaries
-of each procedure in the output of <b>--procedures</b>
-(Conversely: <b>--no-procedures-summary</b>)</p>
+of each procedure in the output of <b>--procedures</b>. See
+also <b>--procedures-summary-nonempty</b>. (Conversely:
+<b>--no-procedures-summary</b>)</p>
 
 <p style="margin-left:11%;">See also <b>infer-debug</b>(1).
 <b><br>
@@ -1804,6 +2041,18 @@ of each procedure in the output of <b>--procedures</b>
 <p style="margin-left:17%;">Activates: Emit the summaries
 of each procedure in the output of <b>--procedures</b> as
 JSON (Conversely: <b>--no-procedures-summary-json</b>)</p>
+
+<p style="margin-left:11%;">See also <b>infer-debug</b>(1).
+<b><br>
+--procedures-summary-skip-empty</b></p>
+
+<p style="margin-left:17%;">Activates: Completely skip
+procedures that do not have summaries. Useful when analyzing
+a small part of a big project. (To use in conjunction with
+<b>--procedures-summary</b> or
+<b>--procedures-summary-json</b>. See also
+<b>--changed-files-index</b>.) (Conversely:
+<b>--no-procedures-summary-skip-empty</b>)</p>
 
 <p style="margin-left:11%;">See also <b>infer-debug</b>(1).
 <b><br>
@@ -1832,11 +2081,11 @@ the project</p>
 <b>infer-analyze</b>(1), <b>infer-capture</b>(1),
 <b>infer-report</b>(1), and <b><br>
 infer-run</b>(1). <b><br>
---pulse</b></p>
+--no-pulse</b></p>
 
-<p style="margin-left:17%;">Activates: checker pulse:
-Memory and lifetime analysis. (Conversely:
-<b>--no-pulse</b>)</p>
+<p style="margin-left:17%;">Deactivates: <i>pulse</i>
+checker: General-purpose memory and value analysis engine.
+(Conversely: <b>--pulse</b>)</p>
 
 <p style="margin-left:11%;">See also
 <b>infer-analyze</b>(1). <b><br>
@@ -1862,7 +2111,11 @@ pointer in Pulse. (Conversely:
 --pulse-log-summary-count</b></p>
 
 <p style="margin-left:17%;">Activates: Log the number of
-summaries for each analyzed procedure in Pulse (Conversely:
+summaries (grouped by summary kind) for each analyzed
+procedure in Pulse. Results are put in JSON files under a
+'pulse' subdirectory, one corresponding to each analysis
+job. Note that when joining the files, deduplication might
+be needed. (Conversely:
 <b>--no-pulse-log-summary-count</b>)</p>
 
 <p style="margin-left:11%;">See also
@@ -1968,8 +2221,8 @@ modelled as returning non-null in Pulse</p>
 --pulse-model-return-this</b> <i>string</i></p>
 
 <p style="margin-left:17%;">Regex of methods that should be
-modelled as returning the &rsquo;this&rsquo; or
-&rsquo;self&rsquo; argument of an instance method in Pulse.
+modelled as returning the &lsquo;this&lsquo; or
+&lsquo;self&lsquo; argument of an instance method in Pulse.
 Languages supported: Java, Objective-C</p>
 
 <p style="margin-left:11%;">See also
@@ -1999,12 +2252,14 @@ are method or namespace::method</p>
 --pulse-models-for-erlang</b> <i>+path</i></p>
 
 <p style="margin-left:17%;">Provide custom models for
-Erlang in JSON files. If a path to a directory is given then
-the JSON files must have the &rsquo;.json&rsquo; extension.
-Any other file will be ignored. The subdirectories will be
-explored and must follow the same convention.</p>
+Erlang in JSON files or SQLite3. Files must end with
+&lsquo;.json&lsquo; or &lsquo;.db&lsquo; respectively. If a
+path to a directory is given then the subdirectories will be
+explored and names must follow the same convention. SQLite3
+format is preferable when providing a large number of models
+because they will be internally indexed by mfa.</p>
 
-<p style="margin-left:11%;">The format is
+<p style="margin-left:11%;">The format for JSON is
 [SelectorBehavior, ...] where <br>
 SelectorBehavior := {&quot;selector&quot;: Selector,
 &quot;behavior&quot;: Behavior} <br>
@@ -2034,6 +2289,15 @@ ErlangValue := [&quot;Atom&quot;,
 | null <br>
 ErlangValue = null is to represent nondeterministic value
 <br>
+The format for SQLite3 is a DB with schema: <br>
+CREATE TABLE models( <br>
+&quot;mfa&quot; TEXT, <br>
+&quot;behavior&quot; TEXT <br>
+); <br>
+- &lsquo;mfa&lsquo; is module:function/arity, e.g.
+&quot;mymod:f/0&quot; <br>
+- &lsquo;behavior&lsquo; is a JSON &lsquo;Behavior&lsquo;
+(see above) <br>
 See also <b>infer-analyze</b>(1). <b><br>
 --no-pulse-nullsafe-report-npe</b></p>
 
@@ -2043,10 +2307,20 @@ dereference issues on files marked @Nullsafe. (Conversely:
 
 <p style="margin-left:11%;">See also
 <b>infer-analyze</b>(1). <b><br>
+--pulse-nullsafe-report-npe-as-separate-issue</b></p>
+
+<p style="margin-left:17%;">Activates: Report null
+dereference issues on files marked @Nullsafe as a separate
+NULLPTR_DEREFERENCE_IN_NULLSAFE_CLASS issue type.
+(Conversely:
+<b>--no-pulse-nullsafe-report-npe-as-separate-issue</b>)</p>
+
+<p style="margin-left:11%;">See also
+<b>infer-analyze</b>(1). <b><br>
 --pulse-only</b></p>
 
-<p style="margin-left:17%;">Activates: Enable pulse and
-disable all other checkers (Conversely:
+<p style="margin-left:17%;">Activates: Enable <i>pulse</i>
+and disable all other checkers (Conversely:
 <b>--no-pulse-only</b>)</p>
 
 <p style="margin-left:11%;">See also
@@ -2074,23 +2348,35 @@ through taint sink <b>procname</b></p>
 
 <p style="margin-left:11%;">See also
 <b>infer-report</b>(1). <b><br>
---pulse-report-ignore-unknown-java-methods-patterns</b>
-<i>+string</i></p>
-
-<p style="margin-left:17%;">On Java, do not report issues
-that are found on program paths that contain calls to
-unknown methods (those without implementation) <b>unless</b>
-a) this option isn't passed at all (the default, or with
-<b>--pulse-report-ignore-unknown-java-methods-patterns-reset</b>),
-or b) all the unknown method names match one of the provided
-patterns.</p>
-
-<p style="margin-left:11%;">See also
-<b>infer-analyze</b>(1). <b><br>
 --pulse-skip-procedures</b> <i>regex</i></p>
 
 <p style="margin-left:17%;">Regex of procedures that should
 not be analyzed by Pulse.</p>
+
+<p style="margin-left:11%;">See also
+<b>infer-analyze</b>(1). <b><br>
+--pulse-specialization-iteration-limit</b> <i>int</i></p>
+
+<p style="margin-left:17%;">Maximum number of iterative
+summary specialization at each call site.</p>
+
+<p style="margin-left:11%;">See also
+<b>infer-analyze</b>(1). <b><br>
+--pulse-specialization-limit</b> <i>int</i></p>
+
+<p style="margin-left:17%;">Maximum number of summary
+specialization by procedure.</p>
+
+<p style="margin-left:11%;">See also
+<b>infer-analyze</b>(1). <b><br>
+--no-pulse-taint-check-history</b></p>
+
+<p style="margin-left:17%;">Deactivates: Check values
+histories for taint events before reporting a taint issue.
+This is a temporary flag while the taint analysis
+transitions from being mainly attribute-based to being
+history-based. (Conversely:
+<b>--pulse-taint-check-history</b>)</p>
 
 <p style="margin-left:11%;">See also
 <b>infer-analyze</b>(1). <b><br>
@@ -2106,7 +2392,7 @@ and <b>--pulse-taint-data-flow-kinds</b>.</p>
 
 <p style="margin-left:11%;">If a path to a directory is
 given then the configuration files <br>
-must have the &rsquo;.json&rsquo; extension. Any other file
+must have the &lsquo;.json&lsquo; extension. Any other file
 will be ignored. <br>
 The subdirectories will be explored and must follow the same
 <br>
@@ -2133,13 +2419,16 @@ of the issue&gt;&quot;, <br>
 &quot;taint_flows&quot;: [{ &quot;source_kinds&quot;:
 [&lt;kinds&gt;], <br>
 &quot;sink_kinds&quot;: [&lt;kinds&gt;], <br>
-&quot;sanitizer_kinds&quot;: [&lt;kinds&gt;] }] <br>
+&quot;sanitizer_kinds&quot;: [&lt;kinds&gt;] }], <br>
+&quot;exclude_in&quot;: [&lt;paths&gt;], <br>
+&quot;exclude_matching&quot;: [&lt;regexps&gt;] <br>
 } <br>
 where &lt;kinds&gt; are specified in taint
 source/sanitizer/sink <br>
-matchers (see <b>--pulse-taint-sources</b>). The field
-&quot;sanitizer_kinds&quot; <br>
-is optional (assumed to be empty), and a single policy can
+matchers (see <b>--pulse-taint-sources</b>). The fields <br>
+&quot;sanitizer_kinds&quot;, &quot;exclude_in&quot; and
+&quot;exclude_matching&quot; are <br>
+optional (assumed to be empty), and a single policy can
 specify <br>
 several taint flows using a list. The following policy is
 always <br>
@@ -2169,11 +2458,30 @@ documentation.</p>
 
 <p style="margin-left:11%;">See also
 <b>infer-analyze</b>(1). <b><br>
+--pulse-taint-short-traces</b></p>
+
+<p style="margin-left:17%;">Activates: Cut off taint traces
+as soon as a tainted value flows into a sink. This matters
+when the sink itself calls other sinks of the same kind and
+as long as the value flows from call to call, without this
+flag the trace would include the whole chain of calls.
+(Conversely: <b>--no-pulse-taint-short-traces</b>)</p>
+
+<p style="margin-left:11%;">See also
+<b>infer-analyze</b>(1). <b><br>
 --pulse-taint-sinks</b> <i>json</i></p>
 
 <p style="margin-left:17%;">Quick way to specify simple
 sinks as a JSON objects. See <b>--pulse-taint-sources</b>
 for the fields format documentation.</p>
+
+<p style="margin-left:11%;">See also
+<b>infer-analyze</b>(1). <b><br>
+--pulse-taint-skip-sources</b></p>
+
+<p style="margin-left:17%;">Activates: Skip the analysis of
+methods declared as sources in the taint. (Conversely:
+<b>--no-pulse-taint-skip-sources</b>)</p>
 
 <p style="margin-left:11%;">See also
 <b>infer-analyze</b>(1). <b><br>
@@ -2188,25 +2496,78 @@ and sanitizers. It consists of a list of objects, each with
 one of the following combinations of fields to identify
 relevant procedures:</p>
 
-<p style="margin-left:11%;">- &quot;procedure&quot;: match
-a substring of the procedure name <br>
+<p style="margin-left:11%;">- &quot;field_regex&quot;:
+match a field name using an OCaml regex <br>
+- &quot;procedure&quot;: match a substring of the procedure
+name <br>
 - &quot;procedure_regex&quot;: as above, but match using an
 OCaml regex <br>
+- &quot;class_name_regex&quot;: match all methods of classes
+whose names <br>
+match the OCaml regex <br>
 - &quot;class_names&quot; and &quot;method_names&quot;: <br>
 match exact uses of methods of particular classes <br>
+- &quot;class_names&quot; and &quot;procedure_regex&quot;:
+<br>
+match exact uses of methods of particular classes matching
+<br>
+specified OCaml regex <br>
+- &quot;class_names&quot; and &quot;field_names&quot;: <br>
+match exact uses of fields of particular classes <br>
+- &quot;class_names&quot; and
+&quot;method_return_type_names&quot;: <br>
+match exact uses of methods with particular return types of
+<br>
+particular classes <br>
+- &quot;class_name_regex&quot; and
+&quot;procedure_regex&quot;: <br>
+match methods based on separate OCaml regexes for both <br>
+classes and procedure names <br>
+- &quot;class_with_annotation&quot;: <br>
+match all procedures defined in a class annotated with <br>
+specified annotation <br>
 - &quot;overrides_of_class_with_annotation&quot;: <br>
 match all procedures defined in classes which inherit <br>
 from a superclass with the specified annotation <br>
+- &quot;method_with_annotation&quot;: <br>
+match all procedures marked by specified annotation <br>
+- &quot;method_with_annotation&quot; and
+&quot;annotation_values&quot;: <br>
+match all procedures marked by specified annotation with
+<br>
+specified values <br>
+- &quot;class_with_annotation&quot;,
+&quot;class_name_regex&quot; and <br>
+&quot;procedure_regex&quot;: <br>
+match procedures based on specified class annotation and
+<br>
+separate OCaml regexes for both classes and procedure names
+<br>
+- &quot;field_with_annotation&quot;: <br>
+match all fields marked by specified annotation <br>
+- &quot;field_with_annotation&quot; and
+&quot;annotation_values&quot;: <br>
+match all fields marked by specified annotation with <br>
+specified values <br>
 - &quot;allocation&quot;: <i>(for taint sources only)</i>
 <br>
 match allocations of the exact class name supplied <br>
+- &quot;block_passed_to&quot;: <i>(for taint sources
+only)</i> <br>
+match a substring of the procedure name that the block is
+<br>
+passed to <br>
+- &quot;block_passed_to_regex&quot;: <i>(for taint sources
+only)</i> <br>
+as above, but match using an OCaml regex <br>
 Each object can also optionally specify: <br>
 - &quot;kinds&quot;: the kinds of taint, used in
 <b>--pulse-taint-policies</b> <br>
 to specify flows between sources/sanitizers/sinks <br>
 (&quot;Simple&quot; by default). <br>
 - &quot;taint_target&quot;: <br>
-where the taint should be applied in the procedure. <br>
+where the taint should be applied in the procedure or <br>
+field. <br>
 - &quot;ReturnValue&quot;: (default for taint sources and
 <br>
 propagators) <br>
@@ -2220,17 +2581,36 @@ all arguments except given indices (zero-indexed) <br>
 - [&quot;ArgumentsMatchingTypes&quot;, [&lt;type list&gt;]]:
 <br>
 arguments with types containing supplied strings <br>
-- [&quot;Fields&quot;, [&lt;(string * taint_target)
+- &quot;InstanceReference&quot;: this/self references of
+instance <br>
+methods <br>
+- [&quot;FieldsOfValue&quot;, [&lt;(string * taint_target)
 list&gt;]]: <br>
 fields given by name in return value, arguments or <br>
-other fields <i><br>
+other fields <br>
+- &quot;GetField&quot; : a given field is read <br>
+- &quot;SetField&quot; : a given field is set <i><br>
 N.B.</i> for methods, index 0 is <i>this</i>/<i>self</i>.
 <br>
-- &quot;match_objc_blocks&quot;: boolean, &quot;false&quot;
-by default <br>
-&quot;true&quot; if only Objective-C blocks should be
-matched. <br>
+For all the regex-based matchers, we can also specify: <br>
+- &quot;exclude_from_regex_in&quot; - to specify a list of
+header files, <br>
+such that we exclude any classes, field or methods from
+those <br>
+files from the regexes. <br>
+For field matchers, we can also specify: <br>
+- &quot;sanitized_in&quot; - to specify a list of files
+where using the <br>
+source shouldn't be flagged. <br>
 See also <b>infer-analyze</b>(1). <b><br>
+--pulse-unsafe-malloc</b></p>
+
+<p style="margin-left:17%;">Activates: Assume that
+malloc(3) never returns null. (Conversely:
+<b>--no-pulse-unsafe-malloc</b>)</p>
+
+<p style="margin-left:11%;">See also
+<b>infer-analyze</b>(1). <b><br>
 --pulse-widen-threshold</b> <i>int</i></p>
 
 <p style="margin-left:17%;">Stop exploring new paths after
@@ -2240,32 +2620,35 @@ See also <b>infer-analyze</b>(1). <b><br>
 <b>infer-analyze</b>(1). <b><br>
 --purity</b></p>
 
-<p style="margin-left:17%;">Activates: checker purity:
-Detects pure (side-effect-free) functions. A different
-implementation of &quot;impurity&quot;. (Conversely:
-<b>--no-purity</b>)</p>
+<p style="margin-left:17%;">Activates: <i>purity</i>
+checker: Detects pure (side-effect-free) functions. A
+different implementation of &quot;impurity&quot;.
+(Conversely: <b>--no-purity</b>)</p>
 
 <p style="margin-left:11%;">See also
 <b>infer-analyze</b>(1). <b><br>
 --purity-only</b></p>
 
-<p style="margin-left:17%;">Activates: Enable purity and
-disable all other checkers (Conversely:
+<p style="margin-left:17%;">Activates: Enable <i>purity</i>
+and disable all other checkers (Conversely:
 <b>--no-purity-only</b>)</p>
 
 <p style="margin-left:11%;">See also
 <b>infer-analyze</b>(1). <b><br>
 --quandary</b></p>
 
-<p style="margin-left:17%;">Activates: checker quandary:
-The Quandary taint analysis detects flows of values between
-sources and sinks, except if the value went through a
-&quot;sanitizer&quot;. In addition to some defaults, users
+<p style="margin-left:17%;">Activates: <i>quandary</i>
+checker: The Quandary taint analysis detects flows of values
+between sources and sinks, except if the value went through
+a &quot;sanitizer&quot;. In addition to some defaults, users
 can specify their own sources, sinks, and sanitizers
-functions. (Conversely: <b>--no-quandary</b>)</p>
+functions.</p>
 
-<p style="margin-left:11%;">See also
-<b>infer-analyze</b>(1). <b><br>
+<p style="margin-left:11%;"><b>DEPRECATED</b>: Taint
+analysis is now supported by the Pulse checker <br>
+and Quandary will be removed in the next release. <br>
+(Conversely: <b>--no-quandary</b>) <br>
+See also <b>infer-analyze</b>(1). <b><br>
 --quandary-endpoints</b> <i>json</i></p>
 
 <p style="margin-left:17%;">Specify endpoint classes for
@@ -2275,8 +2658,8 @@ Quandary</p>
 <b>infer-analyze</b>(1). <b><br>
 --quandary-only</b></p>
 
-<p style="margin-left:17%;">Activates: Enable quandary and
-disable all other checkers (Conversely:
+<p style="margin-left:17%;">Activates: Enable
+<i>quandary</i> and disable all other checkers (Conversely:
 <b>--no-quandary-only</b>)</p>
 
 <p style="margin-left:11%;">See also
@@ -2312,8 +2695,9 @@ anything on standard output. (Conversely: <b>--no-quiet</b>
 <b>infer-analyze</b>(1) and <b>infer-report</b>(1). <b><br>
 --no-racerd</b></p>
 
-<p style="margin-left:17%;">Deactivates: checker racerd:
-Thread safety analysis. (Conversely: <b>--racerd</b>)</p>
+<p style="margin-left:17%;">Deactivates: <i>racerd</i>
+checker: Thread safety analysis. (Conversely:
+<b>--racerd</b>)</p>
 
 <p style="margin-left:11%;">See also
 <b>infer-analyze</b>(1). <b><br>
@@ -2342,8 +2726,8 @@ here will be ignored by RacerD.</p>
 <b>infer-analyze</b>(1). <b><br>
 --racerd-only</b></p>
 
-<p style="margin-left:17%;">Activates: Enable racerd and
-disable all other checkers (Conversely:
+<p style="margin-left:17%;">Activates: Enable <i>racerd</i>
+and disable all other checkers (Conversely:
 <b>--no-racerd-only</b>)</p>
 
 <p style="margin-left:11%;">See also
@@ -2354,6 +2738,31 @@ disable all other checkers (Conversely:
 analysis starts from the files captured since the
 <i>infer</i> command started (Conversely:
 <b>--no-reactive</b> | <b>-R</b>)</p>
+
+<p style="margin-left:11%;">See also
+<b>infer-analyze</b>(1). <b><br>
+--replay-analysis-schedule</b></p>
+
+<p style="margin-left:17%;">Activates: Replay the analysis
+schedule stored in <b>--replay-analysis-schedule-file</b>,
+which should analyze the procedures in the same order as the
+previous analysis. This should drastically limit
+non-determinism in the results, as well as prevent repeated
+work, leading to a faster second analysis. Only works if a
+previous analysis has just run on the same code.
+(Conversely: <b>--no-replay-analysis-schedule</b>)</p>
+
+<p style="margin-left:11%;">See also
+<b>infer-analyze</b>(1). <b><br>
+--replay-ondemand-should-error</b></p>
+
+<p style="margin-left:17%;">Activates: [debug] Whether
+triggering the analysis of a procedure via ondemand should
+log an error when replaying an analysis schedule with
+<b>--replay-analysis-schedule</b>. Enable when replaying the
+same analysis on the same capture data to debug cases where
+dependencies that were recorded are insufficient.
+(Conversely: <b>--no-replay-ondemand-should-error</b>)</p>
 
 <p style="margin-left:11%;">See also
 <b>infer-analyze</b>(1). <b><br>
@@ -2456,36 +2865,35 @@ infer-out/report.sarif (Conversely: <b>--no-sarif</b>)</p>
 <p style="margin-left:17%;">Specify the scheduler used for
 the analysis phase:</p>
 
-<p style="margin-left:11%;">- file: schedule one job per
+<p style="margin-left:11%;">- file: schedules one job per
 file <br>
-- callgraph: schedule one job per procedure, following the
+- callgraph: schedules one job per procedure, following the
 <br>
 syntactic call graph. Usually faster than &quot;file&quot;.
 <br>
-- restart: same as callgraph but uses locking to try and
-avoid <br>
-duplicate work between different analysis processes and thus
-<br>
-performs better in some circumstances <br>
+- restart: schedules one job per procedure, using locking to
+try <br>
+and avoid duplicate work between different analysis
+processes and <br>
+thus performs generally better on high parallelism <br>
 See also <b>infer-analyze</b>(1). <b><br>
 --scope-leakage</b></p>
 
-<p style="margin-left:17%;">Activates: checker
-scope-leakage: The Java/Kotlin checker takes into account a
-set of &quot;scope&quot; annotations and a must-not-hold
-relation over the scopes. The checker raises an alarm if
-there exists a field access path from object A to object B,
-with respective scopes SA and SB, such that
-must-not-hold(SA, SB). (Conversely:
-<b>--no-scope-leakage</b>)</p>
+<p style="margin-left:17%;">Activates: <i>scope-leakage</i>
+checker: The Java/Kotlin checker takes into account a set of
+&quot;scope&quot; annotations and a must-not-hold relation
+over the scopes. The checker raises an alarm if there exists
+a field access path from object A to object B, with
+respective scopes SA and SB, such that must-not-hold(SA,
+SB). (Conversely: <b>--no-scope-leakage</b>)</p>
 
 <p style="margin-left:11%;">See also
 <b>infer-analyze</b>(1). <b><br>
 --scope-leakage-only</b></p>
 
-<p style="margin-left:17%;">Activates: Enable scope-leakage
-and disable all other checkers (Conversely:
-<b>--no-scope-leakage-only</b>)</p>
+<p style="margin-left:17%;">Activates: Enable
+<i>scope-leakage</i> and disable all other checkers
+(Conversely: <b>--no-scope-leakage-only</b>)</p>
 
 <p style="margin-left:11%;">See also
 <b>infer-analyze</b>(1). <b><br>
@@ -2498,18 +2906,18 @@ or <i>all</i> of them. If omitted, prompt for input.</p>
 and <b>infer-explore</b>(1). <b><br>
 --no-self-in-block</b></p>
 
-<p style="margin-left:17%;">Deactivates: checker
-self-in-block: An Objective-C-specific analysis to detect
-when a block captures &rsquo;self&rsquo;. (Conversely:
-<b>--self-in-block</b>)</p>
+<p style="margin-left:17%;">Deactivates:
+<i>self-in-block</i> checker: An Objective-C-specific
+analysis to detect when a block captures &lsquo;self&lsquo;.
+(Conversely: <b>--self-in-block</b>)</p>
 
 <p style="margin-left:11%;">See also
 <b>infer-analyze</b>(1). <b><br>
 --self-in-block-only</b></p>
 
-<p style="margin-left:17%;">Activates: Enable self-in-block
-and disable all other checkers (Conversely:
-<b>--no-self-in-block-only</b>)</p>
+<p style="margin-left:17%;">Activates: Enable
+<i>self-in-block</i> and disable all other checkers
+(Conversely: <b>--no-self-in-block-only</b>)</p>
 
 <p style="margin-left:11%;">See also
 <b>infer-analyze</b>(1). <b><br>
@@ -2522,114 +2930,29 @@ vacuum analysis database. (Conversely:
 
 <p style="margin-left:11%;">See also
 <b>infer-analyze</b>(1). <b><br>
---simple-lineage</b></p>
+--sil-validation</b></p>
 
-<p style="margin-left:17%;">Activates: checker
-simple-lineage: Computes a dataflow graph (Conversely:
-<b>--no-simple-lineage</b>)</p>
-
-<p style="margin-left:11%;">See also
-<b>infer-analyze</b>(1). <b><br>
---no-simple-lineage-dedup</b></p>
-
-<p style="margin-left:17%;">Deactivates: In JSON output,
-attempt to print each entity at most once. This is the
-default. The only reason you may want to turn this off is to
-make hash collisions more visible; that is, cases in which
-distinct entities get assigned the same ID. (Conversely:
-<b>--simple-lineage-dedup</b>)</p>
+<p style="margin-left:17%;">Activates:
+<i>sil-validation</i> checker: This checker validates that
+all SIL instructions in all procedure bodies conform to a
+(front-end specific) subset of SIL. (Conversely:
+<b>--no-sil-validation</b>)</p>
 
 <p style="margin-left:11%;">See also
 <b>infer-analyze</b>(1). <b><br>
---simple-lineage-field-depth</b> <i>int</i></p>
-
-<p style="margin-left:17%;">[EXPERIMENTAL] Maximal field
-depth sensitivity for lineage analysis. 0 will make the
-analysis field insensitive.</p>
-
-<p style="margin-left:11%;">See also
-<b>infer-analyze</b>(1). <b><br>
---simple-lineage-field-width</b> <i>int</i></p>
-
-<p style="margin-left:17%;">[EXPERIMENTAL] Maximal width of
-structures for field sensitive lineage analysis. Structure
-that have a higher number of fields will be smashed into a
-single element. 0 will make the analysis field insensitive.
-If not set, field width will be unlimited.</p>
-
-<p style="margin-left:11%;">See also
-<b>infer-analyze</b>(1). <b><br>
---simple-lineage-include-builtins</b></p>
-
-<p style="margin-left:17%;">Activates: Include call/return
-edges to/from procedures that model primitive Erlang
-operations, such as constructing a list. (Conversely:
-<b>--no-simple-lineage-include-builtins</b>)</p>
-
-<p style="margin-left:11%;">See also
-<b>infer-analyze</b>(1). <b><br>
---simple-lineage-json-report</b></p>
-
-<p style="margin-left:17%;">Activates: Enable simple
-lineage report in JSON format. (Conversely:
-<b>--no-simple-lineage-json-report</b>)</p>
-
-<p style="margin-left:11%;">See also
-<b>infer-analyze</b>(1). <b><br>
---simple-lineage-keep-temporaries</b></p>
-
-<p style="margin-left:17%;">Activates: Normally, lineage
-summaries do not mention temporary variables introduced
-while compiling the high-level code to Infer's IR
-(intermediate representation). If this option is enabled,
-then the lineage graph produced corresponds to Infer's IR.
-(Conversely:
-<b>--no-simple-lineage-keep-temporaries</b>)</p>
-
-<p style="margin-left:11%;">See also
-<b>infer-analyze</b>(1). <b><br>
---simple-lineage-max-cfg-size</b> <i>int</i></p>
-
-<p style="margin-left:17%;">If set, larger CFGs are
-skipped.</p>
-
-<p style="margin-left:11%;">See also
-<b>infer-analyze</b>(1). <b><br>
---simple-lineage-only</b></p>
+--sil-validation-only</b></p>
 
 <p style="margin-left:17%;">Activates: Enable
-simple-lineage and disable all other checkers (Conversely:
-<b>--no-simple-lineage-only</b>)</p>
-
-<p style="margin-left:11%;">See also
-<b>infer-analyze</b>(1). <b><br>
---simple-lineage-prevent-cycles</b></p>
-
-<p style="margin-left:17%;">Activates: [EXPERIMENTAL] If
-set, SimpleLineage will stop distinguishing the fields of a
-variable when it notices recursive types (that is, a
-sub-field having the same type as one of its
-&quot;ancestors&quot;). (Conversely:
-<b>--no-simple-lineage-prevent-cycles</b>)</p>
-
-<p style="margin-left:11%;">See also
-<b>infer-analyze</b>(1). <b><br>
---simple-lineage-seed</b> <i>int</i></p>
-
-<p style="margin-left:17%;">Set the random seed used for
-hashing. (Various entities that get reported need unique
-identifiers. To generate these unique identifiers, in a
-distributed way without communication, we use hashing. If
-you are unlucky and get collisions, you can try a different
-seed.</p>
+<i>sil-validation</i> and disable all other checkers
+(Conversely: <b>--no-sil-validation-only</b>)</p>
 
 <p style="margin-left:11%;">See also
 <b>infer-analyze</b>(1). <b><br>
 --no-siof</b></p>
 
-<p style="margin-left:17%;">Deactivates: checker siof:
-Catches Static Initialization Order Fiascos in C++, that can
-lead to subtle, compiler-version-dependent errors.
+<p style="margin-left:17%;">Deactivates: <i>siof</i>
+checker: Catches Static Initialization Order Fiascos in C++,
+that can lead to subtle, compiler-version-dependent errors.
 (Conversely: <b>--siof</b>)</p>
 
 <p style="margin-left:11%;">See also
@@ -2647,8 +2970,8 @@ recent libstdc++ then it is safe to turn this option on.
 <b>infer-analyze</b>(1). <b><br>
 --siof-only</b></p>
 
-<p style="margin-left:17%;">Activates: Enable siof and
-disable all other checkers (Conversely:
+<p style="margin-left:17%;">Activates: Enable <i>siof</i>
+and disable all other checkers (Conversely:
 <b>--no-siof-only</b>)</p>
 
 <p style="margin-left:11%;">See also
@@ -2804,6 +3127,22 @@ database operations, in milliseconds.</p>
 <p style="margin-left:11%;">See also
 <b>infer-analyze</b>(1), <b>infer-capture</b>(1), and
 <b>infer-run</b>(1). <b><br>
+--sqlite-max-blob-size</b> <i>int</i></p>
+
+<p style="margin-left:17%;">Maximum blob/string size for
+data written in SQLite.</p>
+
+<p style="margin-left:11%;">See also
+<b>infer-analyze</b>(1), <b>infer-capture</b>(1), and
+<b>infer-run</b>(1). <b><br>
+--sqlite-mmap-size</b> <i>int</i></p>
+
+<p style="margin-left:17%;">Size of memory map for mmaped
+SQLite databases, zero value disables memory mapping.</p>
+
+<p style="margin-left:11%;">See also
+<b>infer-analyze</b>(1), <b>infer-capture</b>(1), and
+<b>infer-run</b>(1). <b><br>
 --sqlite-page-size</b> <i>int</i></p>
 
 <p style="margin-left:17%;">SQLite page size in bytes, must
@@ -2814,18 +3153,33 @@ be a power of two between 512 and 65536.</p>
 <b>infer-run</b>(1). <b><br>
 --no-starvation</b></p>
 
-<p style="margin-left:17%;">Deactivates: checker
-starvation: Detect various kinds of situations when no
-progress is being made because of concurrency errors.
-(Conversely: <b>--starvation</b>)</p>
+<p style="margin-left:17%;">Deactivates: <i>starvation</i>
+checker: Detect various kinds of situations when no progress
+is being made because of concurrency errors. (Conversely:
+<b>--starvation</b>)</p>
 
 <p style="margin-left:11%;">See also
 <b>infer-analyze</b>(1). <b><br>
 --starvation-only</b></p>
 
-<p style="margin-left:17%;">Activates: Enable starvation
-and disable all other checkers (Conversely:
-<b>--no-starvation-only</b>)</p>
+<p style="margin-left:17%;">Activates: Enable
+<i>starvation</i> and disable all other checkers
+(Conversely: <b>--no-starvation-only</b>)</p>
+
+<p style="margin-left:11%;">See also
+<b>infer-analyze</b>(1). <b><br>
+--store-analysis-schedule</b></p>
+
+<p style="margin-left:17%;">Activates: Store the analysis
+schedule for later replay, honoring
+<b>--replay-analysis-schedule-file</b> if present. This can
+be useful to store a schedule done with one version of infer
+to load with another version of infer. There is no guarantee
+infer will be able to load the previous schedule but using
+this mechanism gives a higher chance of success compared
+with having to read the previous results database
+successfully as fewer datatypes are involved. (Conversely:
+<b>--no-store-analysis-schedule</b>)</p>
 
 <p style="margin-left:11%;">See also
 <b>infer-analyze</b>(1). <b><br>
@@ -2859,33 +3213,35 @@ we track longest analysis duration info.</p>
 <b>infer-analyze</b>(1). <b><br>
 --topl</b></p>
 
-<p style="margin-left:17%;">Activates: checker topl: Detect
-errors based on user-provided state machines describing
-temporal properties over multiple objects. (Conversely:
-<b>--no-topl</b>)</p>
+<p style="margin-left:17%;">Activates: <i>topl</i> checker:
+Detect errors based on user-provided state machines
+describing temporal properties over multiple objects.</p>
 
-<p style="margin-left:11%;">See also
-<b>infer-analyze</b>(1). <b><br>
+<p style="margin-left:11%;"><i>ACTIVATES</i>: <i>pulse</i>
+(Conversely: <b>--no-topl</b>) <br>
+See also <b>infer-analyze</b>(1). <b><br>
 --topl-only</b></p>
 
-<p style="margin-left:17%;">Activates: Enable topl and
-disable all other checkers (Conversely:
+<p style="margin-left:17%;">Activates: Enable <i>topl</i>
+and disable all other checkers (Conversely:
 <b>--no-topl-only</b>)</p>
 
 <p style="margin-left:11%;">See also
 <b>infer-analyze</b>(1). <b><br>
 --uninit</b></p>
 
-<p style="margin-left:17%;">Activates: checker uninit:
-Warns when values are used before having been initialized.
-(Conversely: <b>--no-uninit</b>)</p>
+<p style="margin-left:17%;">Activates: <i>uninit</i>
+checker: Warns when values are used before having been
+initialized.</p>
 
-<p style="margin-left:11%;">See also
-<b>infer-analyze</b>(1). <b><br>
+<p style="margin-left:11%;"><b>DEPRECATED</b>:
+Uninitialized value checking has moved to Pulse. <br>
+(Conversely: <b>--no-uninit</b>) <br>
+See also <b>infer-analyze</b>(1). <b><br>
 --uninit-only</b></p>
 
-<p style="margin-left:17%;">Activates: Enable uninit and
-disable all other checkers (Conversely:
+<p style="margin-left:17%;">Activates: Enable <i>uninit</i>
+and disable all other checkers (Conversely:
 <b>--no-uninit-only</b>)</p>
 
 <p style="margin-left:11%;">See also
@@ -2947,7 +3303,7 @@ Infer directory to generate its website at
 --Xbuck</b> <i>+string</i></p>
 
 <p style="margin-left:17%;">Pass values as command-line
-arguments to invocations of <i>&rsquo;buck build&rsquo;</i>.
+arguments to invocations of <i>&lsquo;buck build&lsquo;</i>.
 Only valid for <b>--buck-clang</b>.</p>
 
 <p style="margin-left:11%;">See also
@@ -2955,7 +3311,7 @@ Only valid for <b>--buck-clang</b>.</p>
 --Xbuck-no-inline</b> <i>+string</i></p>
 
 <p style="margin-left:17%;">Pass values as command-line
-arguments to invocations of <i>&rsquo;buck build&rsquo;</i>,
+arguments to invocations of <i>&lsquo;buck build&lsquo;</i>,
 don't inline any args starting with '@'. Only valid for
 <b>--buck-clang</b>.</p>
 
@@ -2964,16 +3320,16 @@ don't inline any args starting with '@'. Only valid for
 --Xbuck2</b> <i>+string</i></p>
 
 <p style="margin-left:17%;">Pass values as command-line
-arguments to invocations of <i>&rsquo;buck2
-build&rsquo;</i>. Only valid for <b>--buck-clang</b>.</p>
+arguments to invocations of <i>&lsquo;buck2
+build&lsquo;</i>. Only valid for <b>--buck-clang</b>.</p>
 
 <p style="margin-left:11%;">See also
 <b>infer-capture</b>(1). <b><br>
 --Xbuck2-no-inline</b> <i>+string</i></p>
 
 <p style="margin-left:17%;">Pass values as command-line
-arguments to invocations of <i>&rsquo;buck2
-build&rsquo;</i>, don't inline any args starting with '@'.
+arguments to invocations of <i>&lsquo;buck2
+build&lsquo;</i>, don't inline any args starting with '@'.
 Only valid for <b>--buck-clang</b>.</p>
 
 <p style="margin-left:11%;">See also
@@ -3004,8 +3360,8 @@ isysroot directory, to avoid absolute paths in tests</p>
 <p style="margin-left:17%;">Activates: Infer will use
 xcpretty together with xcodebuild to analyze an iOS app.
 xcpretty just needs to be in the path, infer command is
-still just <i>&rsquo;infer -- &lt;xcodebuild
-command&gt;&rsquo;</i>. (Conversely:
+still just <i>&lsquo;infer -- &lt;xcodebuild
+command&gt;&lsquo;</i>. (Conversely:
 <b>--no-xcpretty</b>)</p>
 
 <p style="margin-left:11%;">See also
@@ -3040,9 +3396,9 @@ may be passed to all infer commands using the
 <b>INFER_ARGS</b> environment variable (see the
 <i>OPTIONS</i> section). <b>INFER_ARGS</b> is expected to
 contain a string of ^-separated options. For instance,
-calling &rsquo;INFER_ARGS=--debug^--print-logs infer&rsquo;
-is equivalent to calling &rsquo;infer --debug
---print-logs&rsquo;.</p>
+calling &lsquo;INFER_ARGS=--debug^--print-logs infer&lsquo;
+is equivalent to calling &lsquo;infer --debug
+--print-logs&lsquo;.</p>
 
 
 <p style="margin-left:11%; margin-top: 1em"><b>INFERCONFIG</b>:

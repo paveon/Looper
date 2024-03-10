@@ -54,7 +54,7 @@
     test_listappend5_Bad/0,
     test_listappend6_Ok/0,
     test_listappend6_Bad/0,
-    fp_test_listappend7_Ok/0,
+    test_listappend7_Ok/0,
     test_listappend7_Bad/0,
     fp_test_listappend8_Ok/0,
     test_listappend8_Bad/0,
@@ -64,7 +64,9 @@
     test_listsub3_Bad/0,
     test_listsub4_Bad/0,
     test_listforeach_returnvalue_Ok/0,
-    test_listforeach_returnvalue_Bad/0
+    test_listforeach_returnvalue_Bad/0,
+    fp_test_string_Ok/0,
+    test_string_Bad/0
 ]).
 
 test_nil_Ok() ->
@@ -286,7 +288,7 @@ test_listappend6_Ok() ->
 test_listappend6_Bad() ->
     one() ++ [].
 
-fp_test_listappend7_Ok() ->
+test_listappend7_Ok() ->
     L = "sjhdkjxmcxc" ++ [1,2,3,4,5],
     ?ASSERT_EQUAL([115,106,104,100,107,106,120,109,99,120,99,1,2,3,4,5], L).
 
@@ -331,3 +333,11 @@ test_listforeach_returnvalue_Ok() ->
 test_listforeach_returnvalue_Bad() ->
     Y = lists:foreach(fun(X) -> X end, [1, 2, 3]),
     ?CRASH_IF_EQUAL(ok, Y).
+
+fp_test_string_Ok() ->
+    L = "foo",
+    ?ASSERT_EQUAL([$f, $o, $o], L).
+
+test_string_Bad() ->
+    L = "foo",
+    ?CRASH_IF_EQUAL([$f, $o, $o], L).

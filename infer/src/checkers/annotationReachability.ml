@@ -53,9 +53,14 @@ let method_overrides is_annotated tenv pname =
 
 let method_has_annot annot tenv pname =
   let has_annot ia = Annotations.ia_ends_with ia annot.Annot.class_name in
-  if Annotations.annot_ends_with annot dummy_constructor_annot then is_allocator tenv pname
-  else if Annotations.annot_ends_with annot Annotations.expensive then
-    check_attributes has_annot tenv pname || is_modeled_expensive tenv pname
+  if
+    Config.annotation_reachability_no_allocation
+    && Annotations.annot_ends_with annot dummy_constructor_annot
+  then is_allocator tenv pname
+  else if
+    Config.annotation_reachability_expensive
+    && Annotations.annot_ends_with annot Annotations.expensive
+  then check_attributes has_annot tenv pname || is_modeled_expensive tenv pname
   else check_attributes has_annot tenv pname
 
 
@@ -176,10 +181,9 @@ module AnnotationSpec = struct
 
   type t =
     { description: string  (** for debugging *)
-    ; source_predicate: predicate
-    ; sink_predicate: predicate
+    ; sink_predicate: predicate  (** decide if something is a sink *)
     ; sanitizer_predicate: predicate
-    ; sink_annotation: Annot.t
+    ; sink_annotation: Annot.t  (** used as key in the domain (sink -> procedure -> callsite) *)
     ; report: Domain.t InterproceduralAnalysis.t -> Domain.t -> unit }
 
   (* The default sanitizer does not sanitize anything *)
@@ -193,8 +197,6 @@ module StandardAnnotationSpec = struct
     let has_annot ia = Annotations.ia_ends_with ia snk_annot.Annot.class_name in
     let open AnnotationSpec in
     { description= "StandardAnnotationSpec"
-    ; source_predicate=
-        (fun tenv pname -> List.exists src_annots ~f:(fun a -> method_overrides_annot a tenv pname))
     ; sink_predicate= (fun tenv pname -> check_attributes has_annot tenv pname)
     ; sanitizer_predicate= default_sanitizer
     ; sink_annotation= snk_annot
@@ -341,7 +343,6 @@ module CxxAnnotationSpecs = struct
         with Caml.Not_found -> ()
     in
     { AnnotationSpec.description= Printf.sprintf "CxxAnnotationSpecs %s from config" spec_name
-    ; source_predicate= (fun _ pname -> src_pred pname) (* not used! *)
     ; sink_predicate= (fun _ pname -> snk_pred pname)
     ; sanitizer_predicate= (fun _ pname -> sanitizer_pred pname)
     ; sink_annotation= snk_annot
@@ -373,7 +374,6 @@ module NoAllocationAnnotationSpec = struct
   let spec =
     let open AnnotationSpec in
     { description= "NoAllocationAnnotationSpec"
-    ; source_predicate= (fun tenv pname -> method_overrides_annot no_allocation_annot tenv pname)
     ; sink_predicate= (fun tenv pname -> is_allocator tenv pname)
     ; sanitizer_predicate=
         (fun tenv pname -> check_attributes Annotations.ia_is_ignore_allocations tenv pname)
@@ -410,7 +410,6 @@ module ExpensiveAnnotationSpec = struct
   let spec =
     let open AnnotationSpec in
     { description= "ExpensiveAnnotationSpec"
-    ; source_predicate= is_expensive
     ; sink_predicate=
         (fun tenv pname ->
           let has_annot ia = Annotations.ia_ends_with ia expensive_annot.class_name in
@@ -434,7 +433,7 @@ let parse_user_defined_specs = function
       let parse_user_spec json =
         let open Yojson.Basic in
         let sources = Util.member "sources" json |> Util.to_list |> List.map ~f:Util.to_string in
-        let sinks = Util.member "sink" json |> Util.to_string in
+        let sinks = Util.member "sinks" json |> Util.to_list |> List.map ~f:Util.to_string in
         (sources, sinks)
       in
       List.map ~f:parse_user_spec user_specs
@@ -443,21 +442,22 @@ let parse_user_defined_specs = function
 
 
 let annot_specs =
+  let parse_one_spec (str_src_annots, str_snk_annots) =
+    List.map
+      ~f:(fun str_snk_annot -> StandardAnnotationSpec.from_annotations str_src_annots str_snk_annot)
+      str_snk_annots
+  in
   let user_defined_specs =
     parse_user_defined_specs Config.annotation_reachability_custom_pairs
-    |> List.map ~f:(fun (str_src_annots, str_snk_annot) ->
-           StandardAnnotationSpec.from_annotations str_src_annots str_snk_annot )
+    |> List.map ~f:parse_one_spec
   in
-  let open Annotations in
-  let cannot_call_ui_annots = [any_thread; worker_thread] in
-  let cannot_call_non_ui_annots = [any_thread; mainthread; ui_thread] in
+  let user_defined_specs = List.concat user_defined_specs in
   [ (Language.Clang, CxxAnnotationSpecs.from_config ())
   ; ( Language.Java
-    , ExpensiveAnnotationSpec.spec :: NoAllocationAnnotationSpec.spec
-      :: StandardAnnotationSpec.from_annotations cannot_call_ui_annots ui_thread
-      :: StandardAnnotationSpec.from_annotations cannot_call_ui_annots mainthread
-      :: StandardAnnotationSpec.from_annotations cannot_call_non_ui_annots worker_thread
-      :: user_defined_specs ) ]
+    , (if Config.annotation_reachability_expensive then [ExpensiveAnnotationSpec.spec] else [])
+      @ ( if Config.annotation_reachability_no_allocation then [NoAllocationAnnotationSpec.spec]
+          else [] )
+      @ user_defined_specs ) ]
 
 
 let get_annot_specs pname =

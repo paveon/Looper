@@ -13,11 +13,22 @@ module F = Format
 
 type callback_fun =
   | Procedure of Callbacks.proc_callback_t
+  | ProcedureWithSpecialization of
+      { procedure_cb: Callbacks.proc_callback_with_specialization_t
+      ; is_already_specialized: Specialization.t -> Summary.t -> bool }
   | DynamicDispatch of Callbacks.proc_callback_t
   | File of Callbacks.file_callback_t
 
 let interprocedural payload_field checker =
   Procedure (CallbackOfChecker.interprocedural_with_field payload_field checker)
+
+
+let interprocedural_with_specialization payload_field checker is_already_specialized =
+  ProcedureWithSpecialization
+    { procedure_cb=
+        CallbackOfChecker.interprocedural_with_field_and_specialization payload_field checker
+    ; is_already_specialized=
+        CallbackOfChecker.make_is_already_specialized_test payload_field is_already_specialized }
 
 
 let dynamic_dispatch payload_field checker =
@@ -55,10 +66,6 @@ let interprocedural3 payload_field1 payload_field2 payload_field3 ~set_payload c
 let file payload_field checker = File (CallbackOfChecker.interprocedural_file payload_field checker)
 
 let intraprocedural checker = Procedure (CallbackOfChecker.intraprocedural checker)
-
-let intraprocedural_with_payload payload_field checker =
-  Procedure (CallbackOfChecker.intraprocedural_with_field payload_field checker)
-
 
 let intraprocedural_with_field_dependency payload_field checker =
   Procedure (CallbackOfChecker.intraprocedural_with_field_dependency payload_field checker)
@@ -123,12 +130,11 @@ let all_checkers =
            interprocedural3 ~set_payload:(Field.fset Payloads.Fields.cost) Payloads.Fields.cost
              Payloads.Fields.buffer_overrun_analysis Payloads.Fields.purity Cost.checker
          in
-         [(checker, Clang); (checker, Java)] ) }
+         [(checker, Clang); (checker, Java); (checker, Hack)] ) }
   ; { checker= Looper
     ; callbacks=
         (let checker = interprocedural Payloads.Fields.looper LooperAnalysis.analyze_procedure in
          [(checker, Clang); (checker, Java)] ) }
-  ; {checker= Uninit; callbacks= [(interprocedural Payloads.Fields.uninit Uninit.checker, Clang)]}
   ; {checker= SIOF; callbacks= [(interprocedural Payloads.Fields.siof Siof.checker, Clang)]}
   ; { checker= LithoRequiredProps
     ; callbacks= [(interprocedural Payloads.Fields.litho_required_props RequiredProps.checker, Java)]
@@ -159,8 +165,16 @@ let all_checkers =
     }
   ; { checker= Pulse
     ; callbacks=
-        (let pulse = interprocedural Payloads.Fields.pulse Pulse.checker in
-         [(pulse, Clang); (pulse, Erlang); (pulse, Hack); (pulse, Java); (pulse, CIL)] ) }
+        (let pulse =
+           interprocedural_with_specialization Payloads.Fields.pulse Pulse.checker
+             Pulse.is_already_specialized
+         in
+         [ (pulse, Clang)
+         ; (pulse, Erlang)
+         ; (pulse, Hack)
+         ; (pulse, Java)
+         ; (pulse, CIL)
+         ; (pulse, Python) ] ) }
   ; { checker= Datalog
     ; callbacks=
         (let datalog = intraprocedural DatalogAnalysis.checker in
@@ -175,16 +189,9 @@ let all_checkers =
   ; {checker= Liveness; callbacks= [(intraprocedural Liveness.checker, Clang)]}
   ; { checker= InefficientKeysetIterator
     ; callbacks= [(intraprocedural InefficientKeysetIterator.checker, Java)] }
-  ; { checker= ImmutableCast
-    ; callbacks=
-        [(intraprocedural_with_payload Payloads.Fields.nullsafe ImmutableChecker.analyze, Java)] }
   ; { checker= FragmentRetainsView
     ; callbacks= [(intraprocedural FragmentRetainsViewChecker.callback_fragment_retains_view, Java)]
     }
-  ; { checker= Eradicate
-    ; callbacks=
-        [ (intraprocedural_with_payload Payloads.Fields.nullsafe Eradicate.analyze_procedure, Java)
-        ; (file Payloads.Fields.nullsafe FileLevelAnalysis.analyze_file, Java) ] }
   ; { checker= Biabduction
     ; callbacks=
         (let biabduction =
@@ -200,21 +207,18 @@ let all_checkers =
   ; { checker= ConfigImpactAnalysis
     ; callbacks=
         (let checker =
-           interprocedural3
-             ~set_payload:(Field.fset Payloads.Fields.config_impact_analysis)
-             Payloads.Fields.buffer_overrun_analysis Payloads.Fields.config_impact_analysis
-             Payloads.Fields.cost ConfigImpactAnalysis.checker
+           interprocedural Payloads.Fields.config_impact_analysis ConfigImpactAnalysis.checker
          in
          [(checker, Clang); (checker, Java)] ) }
-  ; { checker= SimpleShape
+  ; { checker= LineageShape
     ; callbacks=
-        (let checker = interprocedural Payloads.Fields.simple_shape SimpleShape.checker in
+        (let checker = interprocedural Payloads.Fields.lineage_shape LineageShape.checker in
          [(checker, Erlang)] ) }
-  ; { checker= SimpleLineage
+  ; { checker= Lineage
     ; callbacks=
         (let checker =
-           interprocedural_with_field_dependency ~dep_field:Payloads.Fields.simple_shape
-             Payloads.Fields.simple_lineage SimpleLineage.checker
+           interprocedural_with_field_dependency ~dep_field:Payloads.Fields.lineage_shape
+             Payloads.Fields.lineage Lineage.checker
          in
          [(checker, Erlang)] ) }
   ; { checker= ScopeLeakage
@@ -240,6 +244,9 @@ let register checkers =
       match callback with
       | Procedure procedure_cb ->
           Callbacks.register_procedure_callback checker language procedure_cb
+      | ProcedureWithSpecialization {procedure_cb; is_already_specialized} ->
+          Callbacks.register_procedure_callback_with_specialization checker language procedure_cb
+            ~is_already_specialized
       | DynamicDispatch procedure_cb ->
           Callbacks.register_procedure_callback checker ~dynamic_dispatch:true language procedure_cb
       | File callback ->

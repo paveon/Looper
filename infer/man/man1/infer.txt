@@ -56,8 +56,12 @@ OPTIONS
        supported options. The following is a list of all the supported
        options (see also --help-full for options reserved for internal use).
 
+       --analysis-schedule-file path
+           The file where an analysis schedule is stored. The default is
+           infer-out/analysis_dependency_graph           See also infer-analyze(1).
+
        --annotation-reachability
-           Activates: checker annotation-reachability: Given a pair of source
+           Activates: annotation-reachability checker: Given a pair of source
            and sink annotation, e.g. `@PerformanceCritical` and `@Expensive`,
            this checker will warn whenever some method annotated with
            `@PerformanceCritical` calls, directly or indirectly, another
@@ -65,10 +69,10 @@ OPTIONS
            --no-annotation-reachability)           See also infer-analyze(1).
 
        --annotation-reachability-custom-pairs json
-           Specify custom sources/sink for the annotation reachability
+           Specify custom sources/sinks for the annotation reachability
            checker           Example format: for custom annotations
            com.my.annotation.{Source1,Source2,Sink1}
-           { "sources" : ["Source1", "Source2"], "sink" : "Sink1" }
+           { "sources" : ["Source1", "Source2"], "sinks" : ["Sink1"] }
            See also infer-analyze(1).
 
        --annotation-reachability-cxx json
@@ -100,6 +104,17 @@ OPTIONS
            Override sources in all cxx annotation reachability specs with the
            given sources spec           See also infer-analyze(1).
 
+       --annotation-reachability-expensive
+           Activates: check if expensive methods (annotated @Expensive or
+           modeled) can call @PerformanceCritical (with annotation
+           reachability checker) (Conversely:
+           --no-annotation-reachability-expensive)           See also infer-analyze(1).
+
+       --annotation-reachability-no-allocation
+           Activates: check if methods annotated with @NoAllocation can
+           allocate (with annotation reachability checker) (Conversely:
+           --no-annotation-reachability-no-allocation)           See also infer-analyze(1).
+
        --annotation-reachability-only
            Activates: Enable annotation-reachability and disable all other
            checkers (Conversely: --no-annotation-reachability-only)       
@@ -109,10 +124,13 @@ OPTIONS
            Additional Buck flavors to append to targets discovered by the
            --buck-compilation-database option.           See also infer-capture(1).
 
-       --no-biabduction
-           Deactivates: checker biabduction: This analysis deals with a range
-           of issues, many linked to memory safety. (Conversely:
-           --biabduction)           See also infer-analyze(1).
+       --biabduction
+           Activates: biabduction checker: This analysis deals with a range
+           of issues, many linked to memory safety.           
+           DEPRECATED: This has been replaced by Pulse and will be removed
+           in the next release.
+            (Conversely: --no-biabduction)
+           See also infer-analyze(1).
 
        --biabduction-only
            Activates: Enable biabduction and disable all other checkers
@@ -201,20 +219,18 @@ OPTIONS
            Activates: Buck integration for Erlang. (Conversely:
            --no-buck-erlang)           See also infer-capture(1).
 
-       --buck-java-flavor
-           Activates: Buck integration for Java which uses the buck flavor
-           #infer-java-capture instead of genrules like buck-java.
-           (Conversely: --no-buck-java-flavor)           See also infer-capture(1).
-
-       --buck-java-flavor-suppress-config
-           Activates: Suppress setting buck config values for the infer
-           binary and its version in the buck-java-flavor integration.
-           (Conversely: --no-buck-java-flavor-suppress-config)       
+       --buck-java
+           Activates: Buck integration for Java. (Conversely: --no-buck-java)       
     See also infer-capture(1).
 
        --buck-java-heap-size-gb int
            Explicitly set the size of the Java heap of Buck processes, in
            gigabytes.           See also infer-capture(1).
+
+       --buck-java-suppress-config
+           Activates: Suppress setting buck config values for the infer
+           binary and its version in the buck-java integration. (Conversely:
+           --no-buck-java-suppress-config)           See also infer-capture(1).
 
        --buck-merge-all-deps
            Activates: Find and merge all infer dependencies produced by buck.
@@ -230,6 +246,19 @@ OPTIONS
            Buck2 BXL script (as a buck target) to run when capturing with
            buck2/clang integration.           See also infer-capture(1).
 
+       --buck2-inferconfig-target string
+           Buck2 target representing the inferconfig file; used in BXL
+           capture.           See also infer-capture(1).
+
+       --buck2-isolation-dir string
+           Run buck bxl capture with the given isolation directory as
+           parameter.           See also infer-capture(1).
+
+       --no-buck2-query-deps
+           Deactivates: Query deps of given targets and run capture on the
+           result (alternatively run capture on given targets) (Conversely:
+           --buck2-query-deps)           See also infer-capture(1).
+
        --buck2-root dir
            Specify the parent directory of buck-out (used only for buck2).       
     See also infer-capture(1) and infer-run(1).
@@ -239,7 +268,7 @@ OPTIONS
            --no-buck2-use-bxl)           See also infer-capture(1).
 
        --bufferoverrun
-           Activates: checker bufferoverrun: InferBO is a detector for
+           Activates: bufferoverrun checker: InferBO is a detector for
            out-of-bounds array accesses. (Conversely: --no-bufferoverrun)       
     See also infer-analyze(1).
 
@@ -255,7 +284,7 @@ OPTIONS
 
        --capture-block-list json
            Matcher or list of matchers for names of files that should not be
-           captured, hence not analyzed either. Clang and Java only.       
+           captured, hence not analyzed either. Clang, Java, and Hack only.       
     See also infer-capture(1) and infer-run(1).
 
        --no-censor-report +issue_type_regex
@@ -320,8 +349,16 @@ OPTIONS
            escaped for the shell, eg coming from Xcode (can be specified
            multiple times)           See also infer-capture(1).
 
+       --complete-capture-from path
+           Provide the path to an infer results directory containing a
+           capture database. The capture database specified with
+           --results-dir) (which must exist) will be completed from the input
+           database and according to the missing-* files in the results
+           directory. The exit code will be equal to the number of rows added
+           to the capture database.           See also infer-debug(1).
+
        --config-impact-analysis
-           Activates: checker config-impact-analysis: [EXPERIMENTAL] Collects
+           Activates: config-impact-analysis checker: [EXPERIMENTAL] Collects
            function that are called without config checks. (Conversely:
            --no-config-impact-analysis)           See also infer-analyze(1).
 
@@ -363,7 +400,7 @@ OPTIONS
     See also infer-analyze(1).
 
        --cost
-           Activates: checker cost: Computes the asymptotic complexity of
+           Activates: cost checker: Computes the asymptotic complexity of
            functions with respect to execution cost or other user defined
            resources. Can be used to detect changes in the complexity with
            `infer reportdiff`. (Conversely: --no-cost)           See also infer-analyze(1).
@@ -379,11 +416,6 @@ OPTIONS
        --no-cost-suppress-func-ptr
            Deactivates: Suppress printing function pointers in cost reports
            (Conversely: --cost-suppress-func-ptr)           See also infer-analyze(1).
-
-       --cost-tests-only-autoreleasepool
-           Activates: [EXPERIMENTAL] Report only autoreleasepool size results
-           in cost tests (Conversely: --no-cost-tests-only-autoreleasepool)       
-    See also infer-report(1) and infer-reportdiff(1).
 
        --costs-current path
            Costs report of the latest revision           See also infer-reportdiff(1).
@@ -401,7 +433,7 @@ OPTIONS
            without being reported as dead stores.           See also infer-analyze(1).
 
        --datalog
-           Activates: checker datalog: Experimental datalog-based points-to
+           Activates: datalog checker: Experimental datalog-based points-to
            analysis. (Conversely: --no-datalog)           See also infer-analyze(1).
 
        --datalog-only
@@ -439,9 +471,9 @@ OPTIONS
            infer-reportdiff(1).
 
        --no-default-checkers
-           Deactivates: Default checkers: --biabduction,
-           --fragment-retains-view, --inefficient-keyset-iterator,
-           --liveness, --parameter-not-null-checked, --racerd, --siof,
+           Deactivates: Default checkers: --fragment-retains-view,
+           --inefficient-keyset-iterator, --liveness,
+           --parameter-not-null-checked, --pulse, --racerd, --siof,
            --self-in-block, --starvation (Conversely: --default-checkers)       
     See also infer-analyze(1).
 
@@ -467,10 +499,6 @@ OPTIONS
              ARRAY_OUT_OF_BOUNDS_L1 (disabled by default),
              ARRAY_OUT_OF_BOUNDS_L2 (disabled by default),
              ARRAY_OUT_OF_BOUNDS_L3 (disabled by default),
-             AUTORELEASEPOOL_SIZE_COMPLEXITY_INCREASE (enabled by default),
-             AUTORELEASEPOOL_SIZE_COMPLEXITY_INCREASE_UI_THREAD (enabled by
-           default),
-             AUTORELEASEPOOL_SIZE_UNREACHABLE_AT_EXIT (disabled by default),
              Abduction_case_not_implemented (enabled by default),
              Array_of_pointsto (enabled by default),
              Assert_failure (enabled by default),
@@ -502,19 +530,18 @@ OPTIONS
              CHECKERS_CALLS_EXPENSIVE_METHOD (enabled by default),
              CHECKERS_EXPENSIVE_OVERRIDES_UNANNOTATED (enabled by default),
              CHECKERS_FRAGMENT_RETAINS_VIEW (enabled by default),
-             CHECKERS_IMMUTABLE_CAST (enabled by default),
              CHECKERS_PRINTF_ARGS (enabled by default),
              CLASS_CAST_EXCEPTION (disabled by default),
              CONDITION_ALWAYS_FALSE (disabled by default),
              CONDITION_ALWAYS_TRUE (disabled by default),
              CONFIG_IMPACT (disabled by default),
              CONFIG_IMPACT_STRICT (disabled by default),
-             CONFIG_IMPACT_STRICT_BETA (disabled by default),
              CONFIG_USAGE (disabled by default),
              CONSTANT_ADDRESS_DEREFERENCE (disabled by default),
              CONSTANT_ADDRESS_DEREFERENCE_LATENT (disabled by default),
              CREATE_INTENT_FROM_URI (enabled by default),
              CROSS_SITE_SCRIPTING (enabled by default),
+             CXX_REF_CAPTURED_IN_BLOCK (enabled by default),
              Cannot_star (enabled by default),
              DANGLING_POINTER_DEREFERENCE (disabled by default),
              DANGLING_POINTER_DEREFERENCE_MAYBE (disabled by default),
@@ -525,33 +552,10 @@ OPTIONS
              DIVIDE_BY_ZERO (disabled by default),
              DO_NOT_REPORT (enabled by default),
              EMPTY_VECTOR_ACCESS (enabled by default),
-             ERADICATE_ANNOTATION_GRAPH (enabled by default),
-             ERADICATE_BAD_NESTED_CLASS_ANNOTATION (enabled by default),
-             ERADICATE_CONDITION_REDUNDANT (enabled by default),
-             ERADICATE_FIELD_NOT_INITIALIZED (enabled by default),
-             ERADICATE_FIELD_NOT_NULLABLE (enabled by default),
-             ERADICATE_FIELD_OVER_ANNOTATED (enabled by default),
-             ERADICATE_INCONSISTENT_SUBCLASS_PARAMETER_ANNOTATION (enabled
-           by default),
-             ERADICATE_INCONSISTENT_SUBCLASS_RETURN_ANNOTATION (enabled by
-           default),
-             ERADICATE_META_CLASS_CAN_BE_NULLSAFE (disabled by default),
-             ERADICATE_META_CLASS_IS_NULLSAFE (disabled by default),
-             ERADICATE_META_CLASS_NEEDS_IMPROVEMENT (disabled by default),
-             ERADICATE_NULLABLE_DEREFERENCE (enabled by default),
-             ERADICATE_PARAMETER_NOT_NULLABLE (enabled by default),
-             ERADICATE_REDUNDANT_NESTED_CLASS_ANNOTATION (enabled by
-           default),
-             ERADICATE_RETURN_NOT_NULLABLE (enabled by default),
-             ERADICATE_RETURN_OVER_ANNOTATED (enabled by default),
-             ERADICATE_UNCHECKED_USAGE_IN_NULLSAFE (enabled by default),
-             ERADICATE_UNVETTED_THIRD_PARTY_IN_NULLSAFE (enabled by
-           default),
              EXECUTION_TIME_COMPLEXITY_INCREASE (enabled by default),
              EXECUTION_TIME_COMPLEXITY_INCREASE_UI_THREAD (enabled by
            default),
              EXECUTION_TIME_UNREACHABLE_AT_EXIT (disabled by default),
-             EXPENSIVE_AUTORELEASEPOOL_SIZE (disabled by default),
              EXPENSIVE_EXECUTION_TIME (disabled by default),
              EXPENSIVE_LOOP_INVARIANT_CALL (enabled by default),
              EXPOSED_INSECURE_INTENT_HANDLING (enabled by default),
@@ -564,7 +568,6 @@ OPTIONS
              INFERBO_ALLOC_IS_ZERO (enabled by default),
              INFERBO_ALLOC_MAY_BE_BIG (enabled by default),
              INFERBO_ALLOC_MAY_BE_NEGATIVE (enabled by default),
-             INFINITE_AUTORELEASEPOOL_SIZE (disabled by default),
              INFINITE_EXECUTION_TIME (disabled by default),
              INHERENTLY_DANGEROUS_FUNCTION (enabled by default),
              INSECURE_INTENT_HANDLING (enabled by default),
@@ -609,6 +612,9 @@ OPTIONS
              NO_TRUE_BRANCH_IN_IF (enabled by default),
              NO_TRUE_BRANCH_IN_IF_LATENT (disabled by default),
              NULLPTR_DEREFERENCE (enabled by default),
+             NULLPTR_DEREFERENCE_IN_NULLSAFE_CLASS (enabled by default),
+             NULLPTR_DEREFERENCE_IN_NULLSAFE_CLASS_LATENT (disabled by
+           default),
              NULLPTR_DEREFERENCE_LATENT (disabled by default),
              NULL_ARGUMENT (enabled by default),
              NULL_ARGUMENT_LATENT (disabled by default),
@@ -619,15 +625,20 @@ OPTIONS
              PRECONDITION_NOT_MET (enabled by default),
              PREMATURE_NIL_TERMINATION_ARGUMENT (enabled by default),
              PULSE_CONST_REFABLE (enabled by default),
+             PULSE_DICT_MISSING_KEY (disabled by default),
              PULSE_READONLY_SHARED_PTR_PARAM (enabled by default),
+             PULSE_REFERENCE_STABILITY (disabled by default),
              PULSE_RESOURCE_LEAK (enabled by default),
+             PULSE_TRANSITIVE_ACCESS (enabled by default),
+             PULSE_UNAWAITED_AWAITABLE (enabled by default),
+             PULSE_UNINITIALIZED_CONST (disabled by default),
              PULSE_UNINITIALIZED_VALUE (enabled by default),
              PULSE_UNINITIALIZED_VALUE_LATENT (disabled by default),
              PULSE_UNNECESSARY_COPY (enabled by default),
              PULSE_UNNECESSARY_COPY_ASSIGNMENT (enabled by default),
              PULSE_UNNECESSARY_COPY_ASSIGNMENT_CONST (disabled by default),
              PULSE_UNNECESSARY_COPY_ASSIGNMENT_MOVABLE (enabled by default),
-             PULSE_UNNECESSARY_COPY_INTERMEDIATE (disabled by default),
+             PULSE_UNNECESSARY_COPY_INTERMEDIATE (enabled by default),
              PULSE_UNNECESSARY_COPY_INTERMEDIATE_CONST (disabled by
            default),
              PULSE_UNNECESSARY_COPY_MOVABLE (enabled by default),
@@ -638,7 +649,7 @@ OPTIONS
              QUANDARY_TAINT_ERROR (enabled by default),
              REGEX_OP_ON_UI_THREAD (enabled by default),
              RESOURCE_LEAK (enabled by default),
-             RETAIN_CYCLE (disabled by default),
+             RETAIN_CYCLE (enabled by default),
              SCOPE_LEAKAGE (enabled by default),
              SENSITIVE_DATA_FLOW (disabled by default),
              SHELL_INJECTION (enabled by default),
@@ -656,7 +667,6 @@ OPTIONS
              THREAD_SAFETY_VIOLATION (enabled by default),
              TOPL_ERROR (enabled by default),
              TOPL_ERROR_LATENT (disabled by default),
-             UNINITIALIZED_VALUE (enabled by default),
              UNREACHABLE_CODE (enabled by default),
              UNTRUSTED_BUFFER_ACCESS (disabled by default),
              UNTRUSTED_DESERIALIZATION (enabled by default),
@@ -698,14 +708,6 @@ OPTIONS
            checker run; see individual checker options to turn them on or
            off.           See also infer-report(1).
 
-       --eradicate
-           Activates: checker eradicate: The eradicate `@Nullable` checker
-           for Java annotations. (Conversely: --no-eradicate)           See also infer-analyze(1).
-
-       --eradicate-only
-           Activates: Enable eradicate and disable all other checkers
-           (Conversely: --no-eradicate-only)           See also infer-analyze(1).
-
        --erlang-ast-dir dir
            Also load AST from all .json files in the given path. These .json
            files usually come from a previous run with --debug.       
@@ -719,6 +721,12 @@ OPTIONS
 
        --erlang-list-unfold-depth int
            Unfold Erlang lists up to depth int           See also infer-analyze(1).
+
+       --no-erlang-reliability
+           Deactivates: Analyze crashing executions. This flag affects both
+           capture and analysis. At capture time, it encodes Erlang specs; at
+           (Pulse) analysis time, it models Erlang exceptions (builtin or OTP
+           ones). (Conversely: --erlang-reliability)           See also infer-analyze(1) and infer-capture(1).
 
        --erlang-skip-compile
            Activates: Skip running compiler (erlc/rebar3), to save time. The
@@ -736,6 +744,13 @@ OPTIONS
            Specify a list of Java package prefixes for external Java
            packages. If set, the analysis will not report non-actionable
            warnings on those packages.           See also infer-analyze(1).
+
+       --extract-capture-from path
+           Provide the path to an infer results directory containing a
+           capture database. Together with a list of files provided through
+           the obligatory use of --changed-files-index, create a new capture
+           database containing only the artefacts related to these files (in
+           the location specified with --results-dir).           See also infer-debug(1).
 
        --fail-on-issue
            Activates: Exit with error code 2 if Infer found something to
@@ -762,14 +777,18 @@ OPTIONS
 
        --force-integration command
            Proceed as if the first argument after -- was command. Possible
-           values: ant, buck, buck1, buck2, gradle, gradlew, java, javac, cc,
-           clang, gcc, clang++, c++, g++, hackc, make, configure, cmake, waf,
-           mvn, mvnw, ndk-build, rebar3, erlc, xcodebuild.           See also infer-capture(1) and infer-run(1).
+           values: ant, buck1, buck, buck2, gradle, gradlew, java, javac,
+           kotlinc, cc, clang, gcc, clang++, c++, g++, hackc, make,
+           configure, cmake, waf, mvn, mvnw, ndk-build, python3, rebar3,
+           erlc, xcodebuild.           See also infer-capture(1) and infer-run(1).
 
        --no-fragment-retains-view
-           Deactivates: checker fragment-retains-view: Detects when Android
+           Deactivates: fragment-retains-view checker: Detects when Android
            fragments are not explicitly nullified before becoming
-           unreachable. (Conversely: --fragment-retains-view)           See also infer-analyze(1).
+           unreachable.           
+           DEPRECATED: Unmaintained due to poor precision.
+            (Conversely: --fragment-retains-view)
+           See also infer-analyze(1).
 
        --fragment-retains-view-only
            Activates: Enable fragment-retains-view and disable all other
@@ -841,21 +860,11 @@ OPTIONS
            Activates: Generate an html report of issues found. (Conversely:
            --no-html)           See also infer-explore(1).
 
-       --immutable-cast
-           Activates: checker immutable-cast: Detection of object cast from
-           immutable types to mutable types. For instance, it will detect
-           casts from `ImmutableList` to `List`, `ImmutableMap` to `Map`, and
-           `ImmutableSet` to `Set`. (Conversely: --no-immutable-cast)       
-    See also infer-analyze(1).
-
-       --immutable-cast-only
-           Activates: Enable immutable-cast and disable all other checkers
-           (Conversely: --no-immutable-cast-only)           See also infer-analyze(1).
-
        --impurity
-           Activates: checker impurity: Detects functions with potential
-           side-effects. Same as "purity", but implemented on top of Pulse.
-           (Conversely: --no-impurity)           See also infer-analyze(1).
+           Activates: impurity checker: Detects functions with potential
+           side-effects. Same as "purity", but implemented on top of Pulse.       
+    ACTIVATES: pulse (Conversely: --no-impurity)
+           See also infer-analyze(1).
 
        --impurity-only
            Activates: Enable impurity and disable all other checkers
@@ -873,7 +882,7 @@ OPTIONS
     See also infer-analyze(1).
 
        --no-inefficient-keyset-iterator
-           Deactivates: checker inefficient-keyset-iterator: Check for
+           Deactivates: inefficient-keyset-iterator checker: Check for
            inefficient uses of iterators that iterate on keys then lookup
            their values, instead of iterating on key-value pairs directly.
            (Conversely: --inefficient-keyset-iterator)           See also infer-analyze(1).
@@ -900,9 +909,10 @@ OPTIONS
     See also infer-report(1).
 
        --issues-tests-fields ,-separated sequence of { bug_type | bucket |
-       qualifier | severity | line | column | procedure |
+       qualifier | suggestion | severity | line | column | procedure |
        procedure_start_line | file | bug_trace | key | hash | line_offset |
-       qualifier_contains_potential_exception_note | nullsafe_extra }
+       qualifier_contains_potential_exception_note | nullsafe_extra |
+       taint_extra | transitive_callees_extra }
            Fields to emit with --issues-tests           See also infer-report(1).
 
        --java-jar-compiler path
@@ -914,8 +924,9 @@ OPTIONS
            is failing.           See also infer-analyze(1) and infer-capture(1).
 
        --jobs,-j int
-           Run the specified number of analysis jobs simultaneously       
-    See also infer-analyze(1).
+           Run the specified number of analysis jobs simultaneously. Defaults
+           to the minimum value of the max_jobs argument and the number of
+           CPUs.           See also infer-analyze(1).
 
        --keep-going
            Activates: Keep going when the analysis or capture encounter a
@@ -924,6 +935,75 @@ OPTIONS
        --kotlin-capture
            Activates: Enable Kotlin capture (experimental, do not use).
            (Conversely: --no-kotlin-capture)           See also infer-capture(1).
+
+       --lineage
+           Activates: lineage checker: Computes a dataflow graph (Conversely:
+           --no-lineage)           See also infer-analyze(1).
+
+       --no-lineage-dedup
+           Deactivates: In JSON output, attempt to print each entity at most
+           once. This is the default. The only reason you may want to turn
+           this off is to make hash collisions more visible; that is, cases
+           in which distinct entities get assigned the same ID. (Conversely:
+           --lineage-dedup)           See also infer-analyze(1).
+
+       --lineage-field-depth int
+           [EXPERIMENTAL] Maximal field depth sensitivity for lineage
+           analysis. 0 will make the analysis field insensitive.       
+    See also infer-analyze(1).
+
+       --lineage-field-max-cfg-size int
+           If set, field sensitivity is disabled on larger CFGs.       
+    See also infer-analyze(1).
+
+       --lineage-field-width int
+           [EXPERIMENTAL] Maximal width of structures for field sensitive
+           lineage analysis. Structure that have a higher number of fields
+           will be smashed into a single element. 0 will make the analysis
+           field insensitive. If not set, field width will be unlimited.       
+    See also infer-analyze(1).
+
+       --lineage-include-builtins
+           Activates: Include call/return edges to/from procedures that model
+           primitive Erlang operations, such as constructing a list.
+           (Conversely: --no-lineage-include-builtins)           See also infer-analyze(1).
+
+       --lineage-json-report
+           Activates: Enable lineage report in JSON format. (Conversely:
+           --no-lineage-json-report)           See also infer-analyze(1).
+
+       --lineage-keep-temporaries
+           Activates: Normally, lineage summaries do not mention temporary
+           variables introduced while compiling the high-level code to
+           Infer's IR (intermediate representation). If this option is
+           enabled, then the lineage graph produced corresponds to Infer's
+           IR. (Conversely: --no-lineage-keep-temporaries)           See also infer-analyze(1).
+
+       --lineage-max-cfg-size int
+           If set, larger CFGs are skipped.           See also infer-analyze(1).
+
+       --lineage-only
+           Activates: Enable lineage and disable all other checkers
+           (Conversely: --no-lineage-only)           See also infer-analyze(1).
+
+       --lineage-prevent-cycles
+           Activates: [EXPERIMENTAL] If set, Lineage will stop distinguishing
+           the fields of a variable when it notices recursive types (that is,
+           a sub-field having the same type as one of its "ancestors").
+           (Conversely: --no-lineage-prevent-cycles)           See also infer-analyze(1).
+
+       --lineage-seed int
+           Set the random seed used for hashing. (Various entities that get
+           reported need unique identifiers. To generate these unique
+           identifiers, in a distributed way without communication, we use
+           hashing. If you are unlucky and get collisions, you can try a
+           different seed.           See also infer-analyze(1).
+
+       --lineage-variant-width int
+           Maximal width of variant types for lineage analysis. A variant
+           type is the type of a variable whose value is within a statically
+           known atom set. The width of the type is the cardinal of that atom
+           set.           See also infer-analyze(1).
 
        --list-checkers
            Activates: Show the list of all available checkers. (Conversely:
@@ -934,7 +1014,7 @@ OPTIONS
            report. (Conversely: --no-list-issue-types)           See also infer-help(1).
 
        --litho-required-props
-           Activates: checker litho-required-props: Checks that all
+           Activates: litho-required-props checker: Checks that all
            non-optional `@Prop`s have been specified when constructing Litho
            components. (Conversely: --no-litho-required-props)       
     See also infer-analyze(1).
@@ -945,8 +1025,12 @@ OPTIONS
     See also infer-analyze(1).
 
        --no-liveness
-           Deactivates: checker liveness: Detection of dead stores and unused
+           Deactivates: liveness checker: Detection of dead stores and unused
            variables. (Conversely: --liveness)           See also infer-analyze(1).
+
+       --liveness-block-list-var-regex string
+           Specify a regular expression for variable names that are ignored
+           when reporting dead stores.           See also infer-analyze(1).
 
        --liveness-dangerous-classes json
            Specify classes where the destructor should be ignored when
@@ -967,8 +1051,19 @@ OPTIONS
            Do not start new parallel jobs if the load average is greater than
            that specified (Buck and make only)           See also infer-capture(1).
 
+       --lock-model json
+           Specify custom lock models for starvation analysis.       
+    Example for pthreads (already included in infer):
+           [{"lock":["pthread_mutex_lock"],"unlock":["pthread_mutex_unlock"]}]
+           
+           See also infer-analyze(1).
+
+       --log-missing-deps
+           Activates: Log analysis dependencies that cannot be found.
+           (Conversely: --no-log-missing-deps)           See also infer-analyze(1).
+
        --loop-hoisting
-           Activates: checker loop-hoisting: Detect opportunities to hoist
+           Activates: loop-hoisting checker: Detect opportunities to hoist
            function calls that are invariant outside of loop bodies for
            efficiency. (Conversely: --no-loop-hoisting)           See also infer-analyze(1).
 
@@ -989,8 +1084,8 @@ OPTIONS
            capture (Conversely: --mask-sawja-exceptions)           See also infer-capture(1).
 
        --max-jobs int
-           Maximum number of analysis jobs running simultaneously       
-    See also infer-analyze(1).
+           Maximum number of analysis jobs running simultaneously.
+           Experiments show current best value is 40 jobs.           See also infer-analyze(1).
 
        --max-nesting int
            Level of nested procedure calls to show. Trace elements beyond the
@@ -1018,8 +1113,8 @@ OPTIONS
            and deduplicated before being stored in the main results
            directory.           See also infer-report(1).
 
-       --merge-report-summaries +string
-           Specifies an Infer results directory. The report summaries in all
+       --merge-summaries +string
+           Specifies an Infer results directory. The summaries in all
            specified results directories will be merged together and
            deduplicated before reporting is done.           See also infer-report(1).
 
@@ -1032,7 +1127,7 @@ OPTIONS
            functions that never return null.           See also infer-analyze(1), infer-capture(1), and infer-run(1).
 
        --no-parameter-not-null-checked
-           Deactivates: checker parameter-not-null-checked: An
+           Deactivates: parameter-not-null-checked checker: An
            Objective-C-specific analysis to detect when a block parameter is
            used before being checked for null first. (Conversely:
            --parameter-not-null-checked)           See also infer-analyze(1).
@@ -1062,10 +1157,13 @@ OPTIONS
            infer-run(1).
 
        --printf-args
-           Activates: checker printf-args: Detect mismatches between the Java
+           Activates: printf-args checker: Detect mismatches between the Java
            `printf` format strings and the argument types For example, this
            checker will warn about the type error in `printf("Hello %d",
-           "world")` (Conversely: --no-printf-args)           See also infer-analyze(1).
+           "world")`           
+           DEPRECATED: Unmaintained.
+            (Conversely: --no-printf-args)
+           See also infer-analyze(1).
 
        --printf-args-only
            Activates: Enable printf-args and disable all other checkers
@@ -1086,6 +1184,11 @@ OPTIONS
            syntactic call graph reachable from either all captured procedures
            or those determined by the option --changed-files-index.
            (Conversely: --no-procedures-call-graph)           See also infer-debug(1).
+
+       --procedures-callees
+           Activates: Print the static callees of each procedure in the
+           output of --procedures (Conversely: --no-procedures-callees)       
+    See also infer-debug(1).
 
        --procedures-cfg
            Activates: Output a dotty file in
@@ -1119,8 +1222,8 @@ OPTIONS
 
        --procedures-summary
            Activates: Print the summaries of each procedure in the output of
-           --procedures. See also --procedures-summary-nonempty. (Conversely:
-           --no-procedures-summary)           See also infer-debug(1).
+           --procedures. See also --procedures-summary-skip-empty.
+           (Conversely: --no-procedures-summary)           See also infer-debug(1).
 
        --procedures-summary-json
            Activates: Emit the summaries of each procedure in the output of
@@ -1146,9 +1249,9 @@ OPTIONS
            Specify the root directory of the project           See also infer-analyze(1), infer-capture(1), infer-report(1), and
            infer-run(1).
 
-       --pulse
-           Activates: checker pulse: Memory and lifetime analysis.
-           (Conversely: --no-pulse)           See also infer-analyze(1).
+       --no-pulse
+           Deactivates: pulse checker: General-purpose memory and value
+           analysis engine. (Conversely: --pulse)           See also infer-analyze(1).
 
        --pulse-cut-to-one-path-procedures-pattern string
            Regex of methods for which pulse will only explore one path. Can
@@ -1161,8 +1264,11 @@ OPTIONS
            --no-pulse-inline-global-init-func-pointer)           See also infer-analyze(1).
 
        --pulse-log-summary-count
-           Activates: Log the number of summaries for each analyzed procedure
-           in Pulse (Conversely: --no-pulse-log-summary-count)       
+           Activates: Log the number of summaries (grouped by summary kind)
+           for each analyzed procedure in Pulse. Results are put in JSON
+           files under a 'pulse' subdirectory, one corresponding to each
+           analysis job. Note that when joining the files, deduplication
+           might be needed. (Conversely: --no-pulse-log-summary-count)       
     See also infer-analyze(1).
 
        --pulse-max-cfg-size int
@@ -1241,11 +1347,13 @@ OPTIONS
     See also infer-analyze(1).
 
        --pulse-models-for-erlang +path
-           Provide custom models for Erlang in JSON files. If a path to a
-           directory is given then the JSON files must have the `.json`
-           extension. Any other file will be ignored. The subdirectories will
-           be explored and must follow the same convention.            
-            The format is [SelectorBehavior, ...] where
+           Provide custom models for Erlang in JSON files or SQLite3. Files
+           must end with `.json` or `.db` respectively. If a path to a
+           directory is given then the subdirectories will be explored and
+           names must follow the same convention. SQLite3 format is
+           preferable when providing a large number of models because they
+           will be internally indexed by mfa.            
+            The format for JSON is [SelectorBehavior, ...] where
             SelectorBehavior := {"selector": Selector, "behavior": Behavior}
             Selector := ["MFA", {
               "module": "<module_name>",
@@ -1268,13 +1376,28 @@ OPTIONS
               | ["Tuple", [ErlangValue, ...] 
               | null
             
-            ErlangValue = null is to represent nondeterministic value
+            ErlangValue = null is to represent nondeterministic value 
+           
+            The format for SQLite3 is a DB with schema:
+               CREATE TABLE models(
+                 "mfa" TEXT,
+                 "behavior" TEXT
+               );
+            - `mfa` is module:function/arity, e.g. "mymod:f/0"
+            - `behavior` is a JSON `Behavior` (see above)
+           
            See also infer-analyze(1).
 
        --no-pulse-nullsafe-report-npe
            Deactivates: Report null dereference issues on files marked
            @Nullsafe. (Conversely: --pulse-nullsafe-report-npe)       
     See also infer-analyze(1).
+
+       --pulse-nullsafe-report-npe-as-separate-issue
+           Activates: Report null dereference issues on files marked
+           @Nullsafe as a separate NULLPTR_DEREFERENCE_IN_NULLSAFE_CLASS
+           issue type. (Conversely:
+           --no-pulse-nullsafe-report-npe-as-separate-issue)           See also infer-analyze(1).
 
        --pulse-only
            Activates: Enable pulse and disable all other checkers
@@ -1292,16 +1415,23 @@ OPTIONS
            Report data flows which pass through taint sink procname       
     See also infer-report(1).
 
-       --pulse-report-ignore-unknown-java-methods-patterns +string
-           On Java, do not report issues that are found on program paths that
-           contain calls to unknown methods (those without implementation)
-           unless a) this option isn't passed at all (the default, or with
-           --pulse-report-ignore-unknown-java-methods-patterns-reset), or b)
-           all the unknown method names match one of the provided patterns.       
-    See also infer-analyze(1).
-
        --pulse-skip-procedures regex
            Regex of procedures that should not be analyzed by Pulse.       
+    See also infer-analyze(1).
+
+       --pulse-specialization-iteration-limit int
+           Maximum number of iterative summary specialization at each call
+           site.           See also infer-analyze(1).
+
+       --pulse-specialization-limit int
+           Maximum number of summary specialization by procedure.       
+    See also infer-analyze(1).
+
+       --no-pulse-taint-check-history
+           Deactivates: Check values histories for taint events before
+           reporting a taint issue. This is a temporary flag while the taint
+           analysis transitions from being mainly attribute-based to being
+           history-based. (Conversely: --pulse-taint-check-history)       
     See also infer-analyze(1).
 
        --pulse-taint-config +path
@@ -1327,17 +1457,20 @@ OPTIONS
            this JSON format:             { "short_description": "<a short description of the issue>",
                "taint_flows": [{ "source_kinds": [<kinds>],
                                  "sink_kinds": [<kinds>],
-                                 "sanitizer_kinds": [<kinds>] }]
+                                 "sanitizer_kinds": [<kinds>] }],
+               "exclude_in": [<paths>],
+               "exclude_matching": [<regexps>]
              }
            where <kinds> are specified in taint source/sanitizer/sink
-           matchers (see --pulse-taint-sources). The field "sanitizer_kinds"
-           is optional (assumed to be empty), and a single policy can specify
+           matchers (see --pulse-taint-sources). The fields
+           "sanitizer_kinds", "exclude_in" and "exclude_matching" are
+           optional (assumed to be empty), and a single policy can specify
            several taint flows using a list. The following policy is always
            enabled:
            { "short_description": "...",
              "taint_flows": [{ "source_kinds": ["Simple"],
                                "sink_kinds": ["Simple"],
-                               "sanitizer_kinds": ["Simple"] }]
+                               "sanitizer_kinds": ["Simple"]  }]
            }
            See also infer-analyze(1).
 
@@ -1351,10 +1484,21 @@ OPTIONS
            --pulse-taint-sources for the fields format documentation.       
     See also infer-analyze(1).
 
+       --pulse-taint-short-traces
+           Activates: Cut off taint traces as soon as a tainted value flows
+           into a sink. This matters when the sink itself calls other sinks
+           of the same kind and as long as the value flows from call to call,
+           without this flag the trace would include the whole chain of
+           calls. (Conversely: --no-pulse-taint-short-traces)           See also infer-analyze(1).
+
        --pulse-taint-sinks json
            Quick way to specify simple sinks as a JSON objects. See
            --pulse-taint-sources for the fields format documentation.       
     See also infer-analyze(1).
+
+       --pulse-taint-skip-sources
+           Activates: Skip the analysis of methods declared as sources in the
+           taint. (Conversely: --no-pulse-taint-skip-sources)           See also infer-analyze(1).
 
        --pulse-taint-sources json
            Together with --pulse-taint-sanitizers, --pulse-taint-sinks,
@@ -1362,30 +1506,60 @@ OPTIONS
            taint properties. The JSON format of sources also applies to sinks
            and sanitizers. It consists of a list of objects, each with one of
            the following combinations of fields to identify relevant
-           procedures:             - "procedure": match a substring of the procedure name
+           procedures:           
+             - "field_regex": match a field name using an OCaml regex
+             - "procedure": match a substring of the procedure name
              - "procedure_regex": as above, but match using an OCaml regex
              - "class_name_regex": match all methods of classes whose names
            match the OCaml regex
              - "class_names" and "method_names":
                  match exact uses of methods of particular classes
+             - "class_names" and "procedure_regex":
+                 match exact uses of methods of particular classes matching
+           specified OCaml regex
+             - "class_names" and "field_names":
+                 match exact uses of fields of particular classes
              - "class_names" and "method_return_type_names":
                  match exact uses of methods with particular return types of
            particular classes
+             - "class_name_regex" and "procedure_regex":
+                 match methods based on separate OCaml regexes for both
+           classes and procedure names
+             - "class_with_annotation":
+                 match all procedures defined in a class annotated with
+           specified annotation
              - "overrides_of_class_with_annotation":
                  match all procedures defined in classes which inherit
                  from a superclass with the specified annotation
+             - "method_with_annotation":
+                 match all procedures marked by specified annotation
+             - "method_with_annotation" and "annotation_values":
+                 match all procedures marked by specified annotation with
+           specified values
+             - "class_with_annotation", "class_name_regex" and
+           "procedure_regex":
+                 match procedures based on specified class annotation and
+                 separate OCaml regexes for both classes and procedure names
+             - "field_with_annotation":
+                 match all fields marked by specified annotation
+             - "field_with_annotation" and "annotation_values":
+                 match all fields marked by specified annotation with
+           specified values
              - "allocation": (for taint sources only)
                  match allocations of the exact class name supplied
              - "block_passed_to": (for taint sources only)
                 match a substring of the procedure name that the block is
            passed to
+             - "block_passed_to_regex": (for taint sources only)
+                as above, but match using an OCaml regex
            
              Each object can also optionally specify:
              - "kinds": the kinds of taint, used in --pulse-taint-policies
                  to specify flows between sources/sanitizers/sinks
                  ("Simple" by default).
              - "taint_target":
-                 where the taint should be applied in the procedure.
+                 where the taint should be applied in the procedure or
+           field.
                  - "ReturnValue": (default for taint sources and
            propagators)
                  - "AllArguments": (default for taint sanitizers and sinks)
@@ -1395,17 +1569,35 @@ OPTIONS
                      all arguments except given indices (zero-indexed)
                  - ["ArgumentsMatchingTypes", [<type list>]]:
                      arguments with types containing supplied strings
-                 - ["Fields", [<(string * taint_target) list>]]:
+                 - "InstanceReference": this/self references of instance
+           methods
+                 - ["FieldsOfValue", [<(string * taint_target) list>]]:
                      fields given by name in return value, arguments or
            other fields
+                 - "GetField" : a given field is read
+                 - "SetField" : a given field is set
                N.B. for methods, index 0 is this/self.
+           
+             For all the regex-based matchers, we can also specify:
+              - "exclude_from_regex_in" - to specify a list of header files,
+           such that we exclude any classes, field or methods from those
+           files from the regexes.
+           
+             For field matchers, we can also specify:
+              - "sanitized_in" - to specify a list of files where using the
+           source shouldn't be flagged.
+             
            See also infer-analyze(1).
+
+       --pulse-unsafe-malloc
+           Activates: Assume that malloc(3) never returns null. (Conversely:
+           --no-pulse-unsafe-malloc)           See also infer-analyze(1).
 
        --pulse-widen-threshold int
            Stop exploring new paths after int loop iterations           See also infer-analyze(1).
 
        --purity
-           Activates: checker purity: Detects pure (side-effect-free)
+           Activates: purity checker: Detects pure (side-effect-free)
            functions. A different implementation of "impurity". (Conversely:
            --no-purity)           See also infer-analyze(1).
 
@@ -1414,11 +1606,15 @@ OPTIONS
            (Conversely: --no-purity-only)           See also infer-analyze(1).
 
        --quandary
-           Activates: checker quandary: The Quandary taint analysis detects
+           Activates: quandary checker: The Quandary taint analysis detects
            flows of values between sources and sinks, except if the value
            went through a "sanitizer". In addition to some defaults, users
-           can specify their own sources, sinks, and sanitizers functions.
-           (Conversely: --no-quandary)           See also infer-analyze(1).
+           can specify their own sources, sinks, and sanitizers functions.       
+    
+           DEPRECATED: Taint analysis is now supported by the Pulse checker
+           and Quandary will be removed in the next release.
+            (Conversely: --no-quandary)
+           See also infer-analyze(1).
 
        --quandary-endpoints json
            Specify endpoint classes for Quandary           See also infer-analyze(1).
@@ -1441,7 +1637,7 @@ OPTIONS
            --no-quiet | -Q)           See also infer-analyze(1) and infer-report(1).
 
        --no-racerd
-           Deactivates: checker racerd: Thread safety analysis. (Conversely:
+           Deactivates: racerd checker: Thread safety analysis. (Conversely:
            --racerd)           See also infer-analyze(1).
 
        --racerd-always-report-java
@@ -1465,6 +1661,23 @@ OPTIONS
            Activates: Reactive mode: the analysis starts from the files
            captured since the infer command started (Conversely:
            --no-reactive | -R)           See also infer-analyze(1).
+
+       --replay-analysis-schedule
+           Activates: Replay the analysis schedule stored in
+           --replay-analysis-schedule-file, which should analyze the
+           procedures in the same order as the previous analysis. This should
+           drastically limit non-determinism in the results, as well as
+           prevent repeated work, leading to a faster second analysis. Only
+           works if a previous analysis has just run on the same code.
+           (Conversely: --no-replay-analysis-schedule)           See also infer-analyze(1).
+
+       --replay-ondemand-should-error
+           Activates: [debug] Whether triggering the analysis of a procedure
+           via ondemand should log an error when replaying an analysis
+           schedule with --replay-analysis-schedule. Enable when replaying
+           the same analysis on the same capture data to debug cases where
+           dependencies that were recorded are insufficient. (Conversely:
+           --no-replay-ondemand-should-error)           See also infer-analyze(1).
 
        --no-report
            Deactivates: Run the reporting phase once the analysis has
@@ -1516,16 +1729,16 @@ OPTIONS
            --no-sarif)           See also infer-run(1).
 
        --scheduler { file | restart | callgraph }
-           Specify the scheduler used for the analysis phase:           - file: schedule one job per file
-           - callgraph: schedule one job per procedure, following the
+           Specify the scheduler used for the analysis phase:           - file: schedules one job per file
+           - callgraph: schedules one job per procedure, following the
            syntactic call graph. Usually faster than "file".
-           - restart: same as callgraph but uses locking to try and avoid
-           duplicate work between different analysis processes and thus
-           performs better in some circumstances
+           - restart: schedules one job per procedure, using locking to try
+           and avoid duplicate work between different analysis processes and
+           thus performs generally better on high parallelism
            See also infer-analyze(1).
 
        --scope-leakage
-           Activates: checker scope-leakage: The Java/Kotlin checker takes
+           Activates: scope-leakage checker: The Java/Kotlin checker takes
            into account a set of "scope" annotations and a must-not-hold
            relation over the scopes. The checker raises an alarm if there
            exists a field access path from object A to object B, with
@@ -1541,7 +1754,7 @@ OPTIONS
            input.           See also infer-debug(1) and infer-explore(1).
 
        --no-self-in-block
-           Deactivates: checker self-in-block: An Objective-C-specific
+           Deactivates: self-in-block checker: An Objective-C-specific
            analysis to detect when a block captures `self`. (Conversely:
            --self-in-block)           See also infer-analyze(1).
 
@@ -1555,7 +1768,7 @@ OPTIONS
            --no-shrink-analysis-db)           See also infer-analyze(1).
 
        --sil-validation
-           Activates: checker sil-validation: This checker validates that all
+           Activates: sil-validation checker: This checker validates that all
            SIL instructions in all procedure bodies conform to a (front-end
            specific) subset of SIL. (Conversely: --no-sil-validation)       
     See also infer-analyze(1).
@@ -1564,69 +1777,8 @@ OPTIONS
            Activates: Enable sil-validation and disable all other checkers
            (Conversely: --no-sil-validation-only)           See also infer-analyze(1).
 
-       --simple-lineage
-           Activates: checker simple-lineage: Computes a dataflow graph
-           (Conversely: --no-simple-lineage)           See also infer-analyze(1).
-
-       --no-simple-lineage-dedup
-           Deactivates: In JSON output, attempt to print each entity at most
-           once. This is the default. The only reason you may want to turn
-           this off is to make hash collisions more visible; that is, cases
-           in which distinct entities get assigned the same ID. (Conversely:
-           --simple-lineage-dedup)           See also infer-analyze(1).
-
-       --simple-lineage-field-depth int
-           [EXPERIMENTAL] Maximal field depth sensitivity for lineage
-           analysis. 0 will make the analysis field insensitive.       
-    See also infer-analyze(1).
-
-       --simple-lineage-field-width int
-           [EXPERIMENTAL] Maximal width of structures for field sensitive
-           lineage analysis. Structure that have a higher number of fields
-           will be smashed into a single element. 0 will make the analysis
-           field insensitive. If not set, field width will be unlimited.       
-    See also infer-analyze(1).
-
-       --simple-lineage-include-builtins
-           Activates: Include call/return edges to/from procedures that model
-           primitive Erlang operations, such as constructing a list.
-           (Conversely: --no-simple-lineage-include-builtins)           See also infer-analyze(1).
-
-       --simple-lineage-json-report
-           Activates: Enable simple lineage report in JSON format.
-           (Conversely: --no-simple-lineage-json-report)           See also infer-analyze(1).
-
-       --simple-lineage-keep-temporaries
-           Activates: Normally, lineage summaries do not mention temporary
-           variables introduced while compiling the high-level code to
-           Infer's IR (intermediate representation). If this option is
-           enabled, then the lineage graph produced corresponds to Infer's
-           IR. (Conversely: --no-simple-lineage-keep-temporaries)       
-    See also infer-analyze(1).
-
-       --simple-lineage-max-cfg-size int
-           If set, larger CFGs are skipped.           See also infer-analyze(1).
-
-       --simple-lineage-only
-           Activates: Enable simple-lineage and disable all other checkers
-           (Conversely: --no-simple-lineage-only)           See also infer-analyze(1).
-
-       --simple-lineage-prevent-cycles
-           Activates: [EXPERIMENTAL] If set, SimpleLineage will stop
-           distinguishing the fields of a variable when it notices recursive
-           types (that is, a sub-field having the same type as one of its
-           "ancestors"). (Conversely: --no-simple-lineage-prevent-cycles)       
-    See also infer-analyze(1).
-
-       --simple-lineage-seed int
-           Set the random seed used for hashing. (Various entities that get
-           reported need unique identifiers. To generate these unique
-           identifiers, in a distributed way without communication, we use
-           hashing. If you are unlucky and get collisions, you can try a
-           different seed.           See also infer-analyze(1).
-
        --no-siof
-           Deactivates: checker siof: Catches Static Initialization Order
+           Deactivates: siof checker: Catches Static Initialization Order
            Fiascos in C++, that can lead to subtle,
            compiler-version-dependent errors. (Conversely: --siof)       
     See also infer-analyze(1).
@@ -1727,18 +1879,36 @@ OPTIONS
            Timeout for SQLite results database operations, in milliseconds.       
     See also infer-analyze(1), infer-capture(1), and infer-run(1).
 
+       --sqlite-max-blob-size int
+           Maximum blob/string size for data written in SQLite.       
+    See also infer-analyze(1), infer-capture(1), and infer-run(1).
+
+       --sqlite-mmap-size int
+           Size of memory map for mmaped SQLite databases, zero value
+           disables memory mapping.           See also infer-analyze(1), infer-capture(1), and infer-run(1).
+
        --sqlite-page-size int
            SQLite page size in bytes, must be a power of two between 512 and
            65536.           See also infer-analyze(1), infer-capture(1), and infer-run(1).
 
        --no-starvation
-           Deactivates: checker starvation: Detect various kinds of
+           Deactivates: starvation checker: Detect various kinds of
            situations when no progress is being made because of concurrency
            errors. (Conversely: --starvation)           See also infer-analyze(1).
 
        --starvation-only
            Activates: Enable starvation and disable all other checkers
            (Conversely: --no-starvation-only)           See also infer-analyze(1).
+
+       --store-analysis-schedule
+           Activates: Store the analysis schedule for later replay, honoring
+           --replay-analysis-schedule-file if present. This can be useful to
+           store a schedule done with one version of infer to load with
+           another version of infer. There is no guarantee infer will be able
+           to load the previous schedule but using this mechanism gives a
+           higher chance of success compared with having to read the previous
+           results database successfully as fewer datatypes are involved.
+           (Conversely: --no-store-analysis-schedule)           See also infer-analyze(1).
 
        --tenv-json file
            Path to TEnv json file           See also infer-capture(1).
@@ -1757,21 +1927,14 @@ OPTIONS
            info.           See also infer-analyze(1).
 
        --topl
-           Activates: checker topl: Detect errors based on user-provided
+           Activates: topl checker: Detect errors based on user-provided
            state machines describing temporal properties over multiple
-           objects. (Conversely: --no-topl)           See also infer-analyze(1).
+           objects.           ACTIVATES: pulse (Conversely: --no-topl)
+           See also infer-analyze(1).
 
        --topl-only
            Activates: Enable topl and disable all other checkers (Conversely:
            --no-topl-only)           See also infer-analyze(1).
-
-       --uninit
-           Activates: checker uninit: Warns when values are used before
-           having been initialized. (Conversely: --no-uninit)           See also infer-analyze(1).
-
-       --uninit-only
-           Activates: Enable uninit and disable all other checkers
-           (Conversely: --no-uninit-only)           See also infer-analyze(1).
 
        --version
            Print version information and exit           See also infer-run(1).

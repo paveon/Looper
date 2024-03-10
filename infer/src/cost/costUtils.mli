@@ -33,7 +33,7 @@ val cost_of_itv :
 val string_len_range_itv :
      BufferOverrunUtils.ModelEnv.model_env
   -> Exp.t
-  -> from:(Exp.t * Typ.IntegerWidths.t) option
+  -> from:(Exp.t * IntegerWidths.t) option
   -> BufferOverrunDomain.Mem.t
   -> Itv.t
 (** Given a string of length n and an optional starting index i (0 by default), return itv
@@ -53,7 +53,3 @@ module Container : S
 module CString : S
 
 module NSCollection : S
-
-val get_nodes_in_autoreleasepool : Procdesc.t -> Procdesc.NodeSet.t
-(** Return nodes inside autorelease pool block, i.e. which are between [autoreleasePoolPush] and
-    [autoreleasePoolPop] *)

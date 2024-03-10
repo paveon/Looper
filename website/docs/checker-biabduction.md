@@ -5,6 +5,8 @@ description: "This analysis deals with a range of issues, many linked to memory 
 
 This analysis deals with a range of issues, many linked to memory safety.
 
+**\*\*\*DEPRECATED\*\*\*** This has been replaced by Pulse and will be removed in the next release.
+
 Activate with `--biabduction`.
 
 Supported languages:
@@ -13,6 +15,7 @@ Supported languages:
 - Erlang: No
 - Hack: No
 - Java: Yes
+- Python: No
 
 Read more about its foundations in the [Separation Logic and Biabduction page](separation-logic-and-bi-abduction).
 

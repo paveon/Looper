@@ -14,6 +14,8 @@ SOURCES = $(shell find $(MVN_ROOT) -type f -name '*.java' -o -name 'pom.xml')
 
 CLEAN_EXTRA = \
   $(MVN_DIRS:%=../codetoanalyze/mvn/%/target) \
+  $(MVN_DIRS:%=../codetoanalyze/mvn/%/module1/target) \
+  $(MVN_DIRS:%=../codetoanalyze/mvn/%/module2parent/module2/target) \
   $(MVN_DIRS:%=../codetoanalyze/mvn/%/com) \
   $(MVN_DIRS:%=infer-out-%) \
   $(MVN_DIRS:%=issues-%.exp.test)
@@ -25,10 +27,12 @@ infer-out/report.json:
 	$(QUIET)$(MKDIR_P) $(@D)
 	$(QUIET)touch $@
 
+# TODO: fix FN_twoResourcesBad in pulse tests and remove --biabduction-only below
+
 infer-out-%/report.json: $(JAVA_DEPS) $(SOURCES)
 	$(QUIET)cd $(MVN_ROOT)/$* && \
 	$(call silent_on_success,Testing mvn Java integration: $*,\
-	  $(INFER_BIN) --results-dir $(CURDIR)/$(@D) \
+	  $(INFER_BIN) --biabduction-only --results-dir $(CURDIR)/$(@D) \
 	    --project-root $(CURDIR)/$(TESTS_DIR) -- \
 	    $(MVN) clean compile)
 

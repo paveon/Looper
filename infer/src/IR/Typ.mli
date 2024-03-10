@@ -11,19 +11,6 @@
 open! IStd
 module F = Format
 
-module IntegerWidths : sig
-  type t = {char_width: int; short_width: int; int_width: int; long_width: int; longlong_width: int}
-  [@@deriving compare, equal]
-
-  val java : t
-
-  val load : SourceFile.t -> t option
-
-  module SQLite : sig
-    val serialize : t option -> Sqlite3.Data.t
-  end
-end
-
 (** Kinds of integers *)
 type ikind =
   | IChar  (** [char] *)
@@ -40,13 +27,7 @@ type ikind =
   | IULongLong  (** [unsigned long long] (or [unsigned _int64] on Microsoft Visual C) *)
   | I128  (** [__int128_t] *)
   | IU128  (** [__uint128_t] *)
-[@@deriving compare]
-
-val equal_ikind : ikind -> ikind -> bool
-
-val width_of_ikind : IntegerWidths.t -> ikind -> int
-
-val range_of_ikind : IntegerWidths.t -> ikind -> Z.t * Z.t
+[@@deriving compare, equal, hash, normalize]
 
 val ikind_is_char : ikind -> bool
 (** Check whether the integer kind is a char *)
@@ -75,8 +56,8 @@ type type_quals [@@deriving compare, equal]
 val mk_type_quals :
      ?default:type_quals
   -> ?is_const:bool
+  -> ?is_reference:bool
   -> ?is_restrict:bool
-  -> ?is_trivially_copyable:bool
   -> ?is_volatile:bool
   -> unit
   -> type_quals
@@ -85,12 +66,10 @@ val is_const : type_quals -> bool
 
 val is_restrict : type_quals -> bool
 
-val is_trivially_copyable : type_quals -> bool
-
 val is_volatile : type_quals -> bool
 
 (** types for sil (structured) expressions *)
-type t = {desc: desc; quals: type_quals} [@@deriving compare, equal, yojson_of, sexp, hash]
+type t = {desc: desc; quals: type_quals}
 
 and desc =
   | Tint of ikind  (** integer type *)
@@ -103,19 +82,28 @@ and desc =
   | Tarray of {elt: t; length: IntLit.t option; stride: IntLit.t option}
       (** array type with statically fixed length and stride *)
 
+and objc_block_sig = {class_name: name option; name: string; mangled: string}
+[@@deriving compare, equal, yojson_of, sexp, hash, normalize]
+
+and c_function_sig =
+  {c_name: QualifiedCppName.t; c_mangled: string option; c_template_args: template_spec_info}
+[@@deriving compare, equal, yojson_of, sexp, hash, normalize]
+
 and name =
   | CStruct of QualifiedCppName.t
   | CUnion of QualifiedCppName.t
-      (** qualified name does NOT contain template arguments of the class. It will contain template
-          args of its parent classes, for example: MyClass<int>::InnerClass<int> will store
-          "MyClass<int>", "InnerClass" *)
-  | CppClass of {name: QualifiedCppName.t; template_spec_info: template_spec_info; is_union: bool}
+  | CppClass of
+      {name: QualifiedCppName.t; template_spec_info: template_spec_info; is_union: bool [@ignore]}
   | CSharpClass of CSharpClassName.t
   | ErlangType of ErlangTypeName.t
   | HackClass of HackClassName.t
   | JavaClass of JavaClassName.t
-  | ObjcClass of QualifiedCppName.t  (** ObjC class *)
+  | ObjcClass of QualifiedCppName.t
   | ObjcProtocol of QualifiedCppName.t
+  | PythonClass of PythonClassName.t
+  | ObjcBlock of objc_block_sig
+  | CFunction of c_function_sig
+[@@deriving hash, sexp]
 
 and template_arg = TType of t | TInt of Int64.t | TNull | TNullPtr | TOpaque
 
@@ -162,7 +150,7 @@ val is_strong_pointer : t -> bool
 
 module Name : sig
   (** Named types. *)
-  type t = name [@@deriving compare, yojson_of, sexp, hash]
+  type t = name [@@deriving compare, yojson_of, sexp, hash, normalize]
 
   val compare_name : t -> t -> int
   (** Similar to compare, but compares only names, except template arguments. *)
@@ -201,6 +189,14 @@ module Name : sig
 
   val is_objc_protocol : t -> bool
 
+  val is_objc_class : t -> bool
+
+  val is_objc_block : t -> bool
+
+  val is_hack_class : t -> bool
+
+  val is_python_class : t -> bool
+
   module C : sig
     val from_string : string -> t
 
@@ -215,6 +211,23 @@ module Name : sig
     val is_class : t -> bool
   end
 
+  module Hack : sig
+    val static_companion : t -> t
+    (** See {!HackClassName.static_companion} *)
+
+    val static_companion_origin : t -> t
+    (** See {!HackClassName.static_companion_origin} *)
+
+    val is_static_companion : t -> bool
+    (** See {!HackClassName.is_static_companion} *)
+
+    val is_generated_curry : t -> bool
+    (** See {!HackClassName.is_generated_curry} *)
+
+    val extract_curry_info : t -> (HackClassName.t * string) option
+    (** See {!HackClassName.extract_curry_info} *)
+  end
+
   module Java : sig
     val from_string : string -> t
     (** Create a typename from a Java classname in the form "package.class" *)
@@ -227,9 +240,6 @@ module Name : sig
 
     val is_external : t -> bool
     (** return true if the typename is in the .inferconfig list of external classes *)
-
-    val is_anonymous_inner_class_name_exn : t -> bool
-    (** Throws if it is not a Java class *)
 
     val is_anonymous_inner_class_name_opt : t -> bool option
     (** return None if it is not a Java class *)
@@ -308,6 +318,9 @@ val strip_ptr : t -> t
 val is_ptr_to_ignore_quals : t -> ptr:t -> bool
 (** check if [ptr] is a pointer type to [t], ignoring quals *)
 
+val is_ptr_to_const : t -> bool
+(** check if typ is a pointer type to const *)
+
 val array_elem : t option -> t -> t
 (** If an array type, return the type of the element. If not, return the default type if given,
     otherwise raise an exception *)
@@ -318,8 +331,6 @@ val is_cpp_class : t -> bool
 
 val is_pointer_to_cpp_class : t -> bool
 
-val is_pointer_to_objc_non_tagged_class : t -> bool
-
 val is_pointer_to_smart_pointer : t -> bool
 
 val is_pointer_to_unique_pointer : t -> bool
@@ -328,11 +339,15 @@ val shared_pointer_matcher : QualifiedCppName.Match.quals_matcher
 
 val is_shared_pointer : t -> bool
 
+val is_folly_coro : t -> bool
+
 val is_pointer_to_void : t -> bool
 
 val is_void : t -> bool
 
 val is_pointer_to_int : t -> bool
+
+val is_pointer_to_const : t -> bool
 
 val is_pointer_to_function : t -> bool
 
@@ -342,7 +357,7 @@ val is_reference : t -> bool
 
 val is_rvalue_reference : t -> bool
 
-val is_const_reference : t -> bool
+val is_const_reference_on_source : t -> bool
 
 val is_struct : t -> bool
 
@@ -359,7 +374,3 @@ val is_java_type : t -> bool
 (** is [t] a type produced by the Java frontend? *)
 
 val unsome : string -> t option -> t
-
-module Normalizer : HashNormalizer.S with type t = t
-
-module NameNormalizer : HashNormalizer.S with type t = name

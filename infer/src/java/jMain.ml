@@ -35,21 +35,29 @@ let do_source_file program tenv source_basename package_opt source_file =
   store_icfg source_file cfg
 
 
+let do_class tenv program cn node =
+  let class_source_file = SourceFile.from_abs_path (JFrontend.classname_path cn) in
+  L.(debug Capture Medium)
+    "@\nfilename (class): %a (%s)@." SourceFile.pp class_source_file (JBasics.cn_name cn) ;
+  init_global_state class_source_file ;
+  let cfg = JFrontend.compute_class_icfg class_source_file program tenv node in
+  store_icfg class_source_file cfg ;
+  JFrontend.cache_classname cn
+
+
 let capture_libs program tenv =
-  let capture_class tenv cn node =
+  let filter_and_capture_class_only tenv cn node =
     match node with
     | Javalib.JInterface _ ->
         ()
     | Javalib.JClass _ when JFrontend.is_classname_cached cn ->
         ()
     | Javalib.JClass _ ->
-        let class_source_file = SourceFile.from_abs_path (JFrontend.classname_path cn) in
-        init_global_state class_source_file ;
-        let cfg = JFrontend.compute_class_icfg class_source_file program tenv node in
-        store_icfg class_source_file cfg ;
-        JFrontend.cache_classname cn
+        do_class tenv program cn node
   in
-  JProgramDesc.Classmap.iter (capture_class tenv) (JProgramDesc.get_classmap program)
+  JProgramDesc.Classmap.iter
+    (filter_and_capture_class_only tenv)
+    (JProgramDesc.get_classmap program)
 
 
 (* load a stored global tenv if the file is found, and create a new one otherwise *)
@@ -59,7 +67,7 @@ let load_tenv () =
       Tenv.create ()
   | Some _ when Config.biabduction_models_mode ->
       L.die InternalError "Unexpected global tenv file found in '%s' while generating the models"
-        (ResultsDir.get_path JavaGlobalTypeEnvironment)
+        (ResultsDir.get_path GlobalTypeEnvironment)
   | Some tenv ->
       tenv
 
@@ -67,7 +75,7 @@ let load_tenv () =
 (** Store to a file the type environment containing all the types required to perform the analysis *)
 let save_tenv tenv =
   L.(debug Capture Medium) "writing new global tenv@." ;
-  Tenv.store_global tenv
+  Tenv.store_global ~normalize:true tenv
 
 
 let store_callee_attributes tenv program =
@@ -80,7 +88,8 @@ let store_callee_attributes tenv program =
 
 
 (* The program is loaded and translated *)
-let do_all_files sources program =
+let do_all_files classpath program =
+  let {JClasspath.sources; JClasspath.classes; _} = classpath in
   let tenv = load_tenv () in
   let skip source_file =
     let is_path_matching path =
@@ -92,17 +101,29 @@ let do_all_files sources program =
   let translate_source_file basename package_opt source_file =
     if not (skip source_file) then do_source_file program tenv basename package_opt source_file
   in
-  String.Map.iteri
-    ~f:(fun ~key:basename ~data:file_entry ->
-      match file_entry with
-      | JClasspath.Singleton source_file ->
-          translate_source_file basename None source_file
-      | JClasspath.Duplicate source_files ->
-          List.iter
-            ~f:(fun (package, source_file) ->
-              translate_source_file basename (Some package) source_file )
-            source_files )
-    sources ;
+  if String.Map.is_empty sources then (
+    L.(debug Capture Medium) "no source files found, capturing class files directly@." ;
+    JBasics.ClassSet.iter
+      (fun cn ->
+        if JFrontend.is_classname_cached cn then ()
+        else
+          let class_source_file = SourceFile.from_abs_path (JFrontend.classname_path cn) in
+          if not (skip class_source_file) then
+            let node = JProgramDesc.lookup_node cn program in
+            Option.iter ~f:(do_class tenv program cn) node )
+      classes )
+  else
+    String.Map.iteri
+      ~f:(fun ~key:basename ~data:file_entry ->
+        match file_entry with
+        | JClasspath.Singleton source_file ->
+            translate_source_file basename None source_file
+        | JClasspath.Duplicate source_files ->
+            List.iter
+              ~f:(fun (package, source_file) ->
+                translate_source_file basename (Some package) source_file )
+              source_files )
+      sources ;
   if Config.dependency_mode then capture_libs program tenv ;
   store_callee_attributes tenv program ;
   save_tenv tenv ;
@@ -123,9 +144,9 @@ let main load_sources_and_classes =
   JBasics.set_permissive true ;
   JClasspath.with_classpath load_sources_and_classes ~f:(fun classpath ->
       let program = JProgramDesc.load classpath in
-      do_all_files classpath.sources program )
+      do_all_files classpath program )
 
 
-let from_arguments path = main (JClasspath.FromArguments {path})
+let from_arguments ~sources path = main (JClasspath.FromArguments {path; sources})
 
 let from_verbose_out verbose_out_file = main (JClasspath.FromVerboseOut {verbose_out_file})

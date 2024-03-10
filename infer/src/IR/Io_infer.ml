@@ -29,14 +29,42 @@ module Html = struct
     let fd = DB.Results_dir.(create_file (Abs_source_dir source)) dir_path in
     let outc = Unix.out_channel_of_descr fd in
     let fmt = F.formatter_of_out_channel outc in
-    let s =
-      {|<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
-<html>
-<head>
-<title>|}
-      ^ fname
-      ^ {|</title>
-<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+    let script =
+      {|
+<script>
+var detailsOpen = false;
+function toggleDetailsBlock() {
+  detailsOpen = !detailsOpen;
+  var details = document.querySelectorAll("details");
+  details.forEach(d => {
+    d.open = detailsOpen;
+  });
+  return detailsOpen;
+}
+
+function toggleListingOnTop() {
+  var sticky_class = "sticky_header";
+  var listing = document.getElementById("node_listing");
+  if (listing.classList.contains(sticky_class)) {
+    listing.classList.remove(sticky_class);
+  } else {
+    listing.classList.add(sticky_class);
+  }
+}
+       
+function toggleListingVisibility() {
+  var listing = document.querySelector("#node_listing > listing");
+  if (listing.style.display == "none") {
+  listing.style.display = "";
+  } else {
+    listing.style.display = "none";
+  }
+}
+</script>
+|}
+    in
+    let style =
+      {|
 <style type="text/css">
 body { background-color:#fff; color:#000; font-family:Helvetica, sans-serif; font-size:10pt }
 h1 { font-size:14pt }
@@ -54,12 +82,31 @@ h1 { font-size:14pt }
 .tooltip { display: none; background-color:#FFF0F0; border: 2px solid #F00; font-weight: normal; left:10em; padding: 2px; position: absolute; top: -1em; -webkit-border-radius:5px; -webkit-box-shadow:1px 1px 7px #000; z-index: 1}
 .with_tooltip { position: relative; }
 .with_tooltip:hover .tooltip, .visited:hover .tooltip { display: block; }
+#node_listing { margin-top: 5pt; margin-bottom: 5pt; }
+.sticky_header { position: fixed; top: 0; width: 100%; background-color: #eeeee4; }         
+details { padding-left: 20pt; }
+summary { margin-left: -20pt; }
+.d_with_indent { padding-left: 20pt; }
+.d_with_indent_name { margin-left: -20pt; }
 </style>
+|}
+    in
+    let page =
+      Printf.sprintf
+        {|
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<html>
+<head>
+<title>%s</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+%s
+%s
 </head>
 <body>
 |}
+        fname script style
     in
-    F.pp_print_string fmt s ;
+    F.pp_print_string fmt page ;
     (fd, fmt)
 
 

@@ -17,10 +17,10 @@ type error =
 
 val pp_error : Textual.SourceFile.t -> F.formatter -> error -> unit
 
+val error_to_string : Textual.SourceFile.t -> error -> string
+
 val parse_string : Textual.SourceFile.t -> string -> (Textual.Module.t, error list) result
   [@@warning "-unused-value-declaration"]
-
-type whichCapture = DoliCapture | TextualCapture
 
 module TextualFile : sig
   type t =
@@ -31,12 +31,15 @@ module TextualFile : sig
 
   type sil = {sourcefile: Textual.SourceFile.t; cfg: Cfg.t; tenv: Tenv.t}
 
+  val translate_module :
+    Textual.SourceFile.t -> Textual.Module.t -> (sil, Textual.SourceFile.t * error list) result
+
   val translate : t -> (sil, Textual.SourceFile.t * error list) result
 
-  val capture : sil -> Tenv.t
+  val capture : use_global_tenv:bool -> sil -> unit
 
   val line_map : t -> LineMap.t option [@@warning "-unused-value-declaration"]
 end
 
-val capture : capture:whichCapture -> TextualFile.t list -> unit
-(** turn a list of textual files or doli files into a SIL-Java program and capture them. *)
+val capture : TextualFile.t list -> unit
+(** turn a list of textual files into a SIL-Java program and capture them. *)

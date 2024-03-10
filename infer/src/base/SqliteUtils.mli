@@ -11,6 +11,9 @@ open! IStd
     particular, they may raise if the [Sqlite3.Rc.t] result of certain operations is unexpected. *)
 exception Error of string
 
+(** Raised from serializers when final size exceeds Sqlite3 limits (normally 1000_000_000 bytes). *)
+exception DataTooBig
+
 val check_result_code : Sqlite3.db -> log:string -> Sqlite3.Rc.t -> unit
 (** Assert that the result is either [Sqlite3.Rc.OK] or [Sqlite3.Rc.ROW]. If the result is not
     valid, raise {!Error}. *)
@@ -60,8 +63,11 @@ val result_unit : ?finalize:bool -> Sqlite3.db -> log:string -> Sqlite3.stmt -> 
 val db_close : Sqlite3.db -> unit
 (** Close the given database and asserts that it was effective. Raises {!Error} if not. *)
 
-val with_attached_db : Sqlite3.db -> db_file:string -> db_name:string -> f:(unit -> unit) -> unit
-(** Attach the given [db_file] as [db_name], execute [f], then detach. *)
+val with_attached_db :
+  db_file:string -> db_name:string -> ?immutable:bool -> f:(unit -> 'a) -> Sqlite3.db -> 'a
+(** Attach the given [db_file] as [db_name], execute [f], then detach. If [immutable=true], attach
+    the database with the [immutable] Sqlite flag. See [https://www.sqlite.org/uri.html] for more
+    info. *)
 
 (** An API commonly needed to store and retrieve objects from the database *)
 module type Data = sig

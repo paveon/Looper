@@ -14,17 +14,14 @@ INFER_OPTIONS = --project-root $(CODETOANALYZE_DIR) --fail-on-issue
 INFERPRINT_OPTIONS = --issues-tests
 
 SOURCES = $(CODETOANALYZE_DIR)/hello.c
-OBJECTS = $(SOURCES:$(CODETOANALYZE_DIR)/%.c=%.o)
+CLEAN_EXTRA = $(SOURCES:$(CODETOANALYZE_DIR)/%.c=%.o)
 
-default: compile
+default: test
 
 issues.exp.test: $(CLANG_DEPS) $(SOURCES)
 	$(QUIET)$(call silent_on_success,Testing Infer fails on issue,\
 	  exit_code=0; $(INFER_BIN) --fail-on-issue -- clang $(CLANG_OPTIONS) $(SOURCES) || exit_code=$$?; \
 	  echo "infer exit code: $$exit_code" > $@)
-
-.PHONY: compile
-compile: $(OBJECTS)
 
 .PHONY: print
 print: issues.exp.test
@@ -40,4 +37,4 @@ replace: issues.exp.test
 
 .PHONY: clean
 clean:
-	rm -rf issues.exp.test infer-out $(OBJECTS)
+	rm -rf issues.exp.test infer-out $(CLEAN_EXTRA)

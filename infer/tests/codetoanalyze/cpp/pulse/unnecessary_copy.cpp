@@ -4,12 +4,16 @@
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
  */
+
 #include <algorithm>
+#include <assert.h>
 #include <list>
 #include <map>
+#include <memory>
 #include <set>
 #include <string>
 #include <vector>
+
 #include "header.h"
 
 struct Arr {
@@ -283,10 +287,9 @@ void source_dispatch_const_fcn_bad(const std::set<int>& source) {
   auto it = source.find(3); // const find is dispatched since argument is const
 }
 
-void source_dispatch_non_const_fcn_bad_FN(std::set<int> source) {
+void source_dispatch_non_const_fcn_bad(std::set<int> source) {
   auto cpy = source;
-  auto it = source.find(3); // non-const version is dispatched, but find doesn't
-                            // actually change this*
+  auto it = source.find(3);
 }
 
 void iterator_ptr_modified_ok(const std::vector<int>& numbers) {
@@ -301,7 +304,7 @@ struct SimpleS {
 
 struct SwapSimple {
   SimpleS v;
-  void swap_bad(SwapSimple& x) {
+  void swap_bad_FN(SwapSimple& x) {
     const auto temp = v;
     v = x.v;
     x.v = temp; // report copy assignment from const
@@ -310,7 +313,7 @@ struct SwapSimple {
 
 struct SwapVector {
   std::vector<int> v;
-  void swap_bad(SwapVector& x) {
+  void swap_bad_FN(SwapVector& x) {
     const auto temp = v;
     v = x.v;
     x.v = temp; // report copy assignment from const
@@ -661,6 +664,34 @@ void copy_assignment_const_ref_member_ok(const Arr& arr) {
   my_vec = arr.vec;
 }
 
+void copy_assignment_const_value_param_bad(const Arr arr) {
+  Arr my_arr;
+  my_arr = arr; // fix here is to remove const from param type
+}
+
+void copy_assignment_const_ref_param_ok(const Arr& arr) {
+  Arr my_arr;
+  const Arr& c = arr;
+  my_arr = c;
+}
+
+int intermediate_copy_assignment_const_ref_ok(const Arr& arr) {
+  const auto& c = arr;
+  return get_first_elem(c);
+}
+
+int intermediate_copy_assignment_const_value_bad(const Arr arr) {
+  return get_first_elem(arr); // fix here is to remove const from param type
+}
+
+struct Wrapper {
+  Arr my_field;
+  const Arr& get_const_ref();
+
+  void intermediate_const_ref_callee_ok() { get_first_elem(get_const_ref()); }
+
+  void assignment_const_ref_ok() { my_field = get_const_ref(); }
+};
 class FVector {
 
   FVector(FVector const& rhs) {
@@ -696,6 +727,23 @@ class NonTrivialCopyClass {
     }
     return *this;
   }
+
+ private:
+  long my_int1_;
+  long my_int2_;
+};
+
+class NonTrivialCopySmallClass {
+ public:
+  NonTrivialCopySmallClass& operator=(const NonTrivialCopySmallClass& rhs) {
+    if (this == &rhs) {
+      return *this;
+    }
+    return *this;
+  }
+
+ private:
+  int my_int1_;
 };
 
 class FieldCopyClass {
@@ -704,20 +752,60 @@ class FieldCopyClass {
   Arr my_arr1_;
   Arr my_arr2_;
   NonTrivialCopyClass nt_;
+  NonTrivialCopySmallClass nt_small_;
 
   void set_field_ok(Arr arg) {
     my_arr1_ = my_arr2_; // rhs is a field, we cannot suggest move
   }
 
   void copy_assign_bad(NonTrivialCopyClass arg) { nt_ = arg; }
+
+  void copy_assign_small_ok(NonTrivialCopySmallClass arg) { nt_small_ = arg; }
+
   void copy_assign_from_global_ok() {
     my_arr1_ = global; // rhs is a global, we cannot suggest move
+  }
+
+  FieldCopyClass* getPtr() { return this; }
+  void copy_assign_from_this_pointed_ok() {
+    auto t = getPtr();
+    my_arr1_ = t->my_arr1_;
   }
 };
 
 void intermediate_copy_global_ok() {
   get_first_elem(global); // we cannot suggest moving global
 }
+
+class CopyConstructGlobalOk {
+  Arr my_arr;
+
+ public:
+  CopyConstructGlobalOk() : my_arr(global) {}
+};
+
+void copy_from_global_bad(bool b) { auto x = b ? global : global; }
+
+class CopyConstructFromRefOk {
+  Arr my_arr;
+
+ public:
+  CopyConstructFromRefOk(Arr& arr) : my_arr(arr) {}
+};
+
+class CopyConstructFromRefBad1 {
+  Arr my_arr;
+
+ public:
+  CopyConstructFromRefBad1(Arr arr) : my_arr(arr) {}
+};
+
+class CopyConstructFromRefBad2 {
+  Arr my_arr;
+
+ public:
+  CopyConstructFromRefBad2(Arr&& arr) : my_arr(arr) {}
+};
 
 std::map<std::string, std::string> unreliable_source_ok(
     const std::map<std::string, std::string>& input) {
@@ -742,7 +830,124 @@ void normal_copy_from_lvalue_ref_bad(std::string& str) {
   auto f = str; // still report here
 }
 
-void infermediate_copy_from_lvalue_ref_ok(Arr& arr) {
+void intermediate_copy_from_lvalue_ref_ok(Arr& arr) {
   get_first_elem(arr); // don't report since we can't safely move str without
                        // affecting callees
+}
+
+void intermediate_copy_from_pointer_ok(Arr* arr) { get_first_elem(*arr); }
+
+std::string unknown_modification_twice_ok(std::string p) {
+  std::string path = p;
+  std::replace(path.begin(), path.end(), '\\', '/');
+  return path;
+}
+
+void assert_false(
+    const std::string& s) { // summary for this results in 0 disjuncts
+  assert(false);
+};
+
+struct NonDisjJoin_ok {
+
+  NonDisjJoin_ok(std::string myStr, int k) : NonDisjJoin_ok(myStr) {
+    if (k > 0) {
+      assert_false(myStr);
+    } // here we were joining 0 disjuncts (with NonDisj.bottom) with Foo(myStr)
+    // which resulted in ignoring the read of myStr in the conditional. Fixed
+    // now.
+  }
+
+  NonDisjJoin_ok(std::string s) {}
+};
+
+struct NonDisjJoinLoop_ok_FP {
+
+  NonDisjJoinLoop_ok_FP(std::string myStr, int k)
+      : NonDisjJoinLoop_ok_FP(myStr) {
+    for (int i = 0; i < k; i++) {
+      assert_false(myStr);
+    } // still doesn't work. TODO
+  }
+
+  NonDisjJoinLoop_ok_FP(std::string s) {}
+};
+
+struct Ptr {
+  int* ptr;
+  std::vector<int> vec;
+};
+
+Ptr* get_unknown_ptr_field();
+
+Ptr global_ptr;
+class UnownedTest {
+  Arr field;
+  Ptr ptr_field;
+  std::vector<int> vec_field;
+  int* ptr;
+
+  void copy_assignment_points_to_global_ok() {
+    auto& ref = global;
+    field = ref; // we can't suggest moving here
+  }
+
+  void copy_assignment_copy_of_global_bad() {
+    auto ref = global;
+    field = ref; // moving is ok here
+  }
+
+  Arr* get_global_ptr() { return &global; }
+
+  void copy_assignment_via_callee_points_to_global_ok() {
+    auto& ref = get_global_ptr()->vec;
+    vec_field = ref; // we can't suggest moving here
+  }
+
+  void copy_assignment_points_to_ref_param_ok(Arr& param) {
+    auto& ref = param;
+    field = ref; // we can't suggest moving here
+  }
+
+  void intermediate_copy_points_to_global_ok() {
+    auto& ref = global;
+    get_first_elem(ref);
+  }
+
+  void intermediate_copy_copy_of_global_bad() {
+    auto ref = global;
+    get_first_elem(ref); // ok to move here
+  }
+
+  void intermediate_copy_via_callee_points_to_global_ok() {
+    auto& ref = get_global_ptr()->vec;
+    modify_arg(ref); // we can't suggest moving here
+  }
+
+  void intermediate_copy_points_to_ref_param_ok(Arr& param) {
+    auto& ref = param;
+    get_first_elem(ref);
+  }
+
+  void copy_assignment_copy_ptr_bad() {
+    Ptr c{};
+    c.ptr = global_ptr.ptr;
+    ptr_field = c; // ok to move here
+  }
+
+  void copy_assign_from_unknown_ok() { ptr_field = *get_unknown_ptr_field(); }
+};
+
+struct ArrWrap {
+  Arr arr;
+};
+
+void captured_by_ref_ok() {
+  Arr x;
+  auto _ = [&]() {
+    ArrWrap y;
+    y.arr = x;
+    return y;
+  };
+  x.arr[0] = 42;
 }

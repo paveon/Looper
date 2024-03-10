@@ -37,7 +37,6 @@ codetoanalyze/c/biabduction/memory_leaks/test.c, conditional_last_instruction, 2
 codetoanalyze/c/biabduction/memory_leaks/test.c, malloc_sizeof_value_leak_bad, 7, BIABDUCTION_MEMORY_LEAK, no_bucket
 codetoanalyze/c/biabduction/memory_leaks/test.c, malloc_sizeof_value_leak_bad, 8, ARRAY_OUT_OF_BOUNDS_L3, no_bucket
 codetoanalyze/c/biabduction/misc/abduce.c, FN_set_ptr_param_array_get_null_bad, 3, PRECONDITION_NOT_MET, no_bucket
-codetoanalyze/c/biabduction/misc/arrays.c, DecodeCurrentValue, 5, Assert_failure, no_bucket
 codetoanalyze/c/biabduction/misc/example.c, null_deref_bad, 2, NULL_DEREFERENCE, B1
 codetoanalyze/c/biabduction/misc/example.c, local_addr_noalias_bad, 4, NULL_DEREFERENCE, B1
 codetoanalyze/c/biabduction/misc/example.c, global_addr_alias_bad, 3, NULL_DEREFERENCE, B1
@@ -94,7 +93,6 @@ codetoanalyze/c/biabduction/null_dereference/memcpy-test.c, testError2, 5, NULL_
 codetoanalyze/c/biabduction/null_dereference/memcpy-test.c, testError3, 4, NULL_DEREFERENCE, B1
 codetoanalyze/c/biabduction/null_dereference/null_pointer_dereference.c, simple_null_pointer, 2, NULL_DEREFERENCE, B1
 codetoanalyze/c/biabduction/null_dereference/null_pointer_dereference.c, null_pointer_interproc, 2, NULL_DEREFERENCE, B1
-codetoanalyze/c/biabduction/null_dereference/null_pointer_dereference.c, null_pointer_with_function_pointer, 4, NULL_DEREFERENCE, B1
 codetoanalyze/c/biabduction/null_dereference/null_pointer_dereference.c, basic_null_dereference, 2, NULL_DEREFERENCE, B1
 codetoanalyze/c/biabduction/null_dereference/null_pointer_dereference.c, no_check_for_null_after_malloc, 3, NULL_DEREFERENCE, B1
 codetoanalyze/c/biabduction/null_dereference/null_pointer_dereference.c, no_check_for_null_after_realloc, 9, NULL_DEREFERENCE, B1

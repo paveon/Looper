@@ -25,7 +25,8 @@ test: issues.exp.test
 	$(call check_no_diff,$(TEST_REL_DIR)/issues.exp$(TEST_RESULT_SUFFIX),$(TEST_REL_DIR)/issues.exp.test$(TEST_SUFFIX))
 
 issues.exp.test: $(SOURCES) $(INFER_BIN) $(HACKC)
-	$(INFER_BIN) capture --hackc-binary $(HACKC) -- hackc compile-infer $(SOURCES) >& $@
+	$(INFER_BIN) capture --debug-level-capture 1 --hackc-binary $(HACKC) -- $(HACKC) compile-infer $(SOURCES) 2>&1 \
+	  | sed -e 's/[0-9\.]\+[mμ]\?s/X/g' > $@
 
 .PHONY: replace
 replace: issues.exp.test
@@ -33,7 +34,7 @@ replace: issues.exp.test
 
 .PHONY: clean
 clean:
-	$(REMOVE_DIR) issues.exp.test$(TEST_SUFFIX) $(OBJECTS) $(CLEAN_EXTRA)
+	$(REMOVE_DIR) issues.exp.test$(TEST_SUFFIX) $(CLEAN_EXTRA)
 ifneq ($(INFER_OUT),.)
 	$(REMOVE_DIR) $(INFER_OUT)
 endif

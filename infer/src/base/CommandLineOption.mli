@@ -18,8 +18,7 @@ type parse_mode =
   | NoParse  (** all arguments are anonymous arguments, no parsing is attempted *)
 [@@deriving compare]
 
-val is_originator : bool
-(** Do not use this value, use [Config.is_originator] instead *)
+val is_originator : bool [@@deprecated "Do not use this value, use [Config.is_originator] instead"]
 
 val init_work_dir : string
 
@@ -215,6 +214,12 @@ val mk_subcommand :
     (otherwise the command is considered internal). [on_unknown_arg] is the action taken on unknown
     anonymous arguments; it is `Reject by default. *)
 
+val infer_top_results_dir_env_var : string
+(** environment variable used for the results dir of the originator process *)
+
+val infer_cwd_env_var : string
+(** environment variable pointing to the originator's process working directory *)
+
 val args_env_var : string
 (** environment variable use to pass arguments from parent to child processes *)
 
@@ -270,3 +275,11 @@ val keep_args_file : bool ref
 
 val inferconfig_path_arg : string
 (** name of argument for choosing path to inferconfig *)
+
+val add_to_env_args : string list -> unit
+(** add the provided extra arguments to arguments held in [args_env_var] in the current process
+    environment *)
+
+val in_env_with_extra_args : string list -> f:(unit -> 'a) -> 'a
+(** like [add_to_env_args] but only add the extra arguments during the execution of [f] and restore
+    the environment after [f] has returned *)

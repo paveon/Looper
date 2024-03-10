@@ -7,8 +7,6 @@
 
 package codetoanalyze.java.pulse;
 
-import codetoanalyze.java.pulse.sinks.InferTaintSinks;
-
 /** testing basic intraprocedural functionality: assignment, ifs, loops, casts */
 public class Basics {
 
@@ -235,65 +233,20 @@ public class Basics {
         InferTaint.inferUniversalSanitizer(InferTaint.inferSecretSource()));
   }
 
-  void taintedBasedOnClassNameRegexBad() {
-    Object src = InferTaint.inferSecretSource();
-    InferTaintSinks.sink1(src);
-    InferTaintSinks.sink2(src);
+  Object inferUniversalSanitizer() {
+    return InferTaint.inferSecretSource();
   }
 
-  void notTaintedBasedOnClassNameRegexOk() {
-    Object src = InferTaint.inferSecretSource();
-    InferTaint.sink1(src);
-    InferTaint.sink2(src);
+  // sanitizer should take precedence
+  void FP_returnedFromSanitizedTaintedToSinkOk() {
+    InferTaint.inferSensitiveSink(inferUniversalSanitizer());
   }
 
-  void taintedFromInferBaseSourceBad() {
-    InferChildSource ics = new InferChildSource();
-    Object source = ics.inferBaseSecretSource();
-    InferTaint.inferSensitiveSink(source);
-  }
-
-  void notTaintedFromInferBaseNotSourceGood() {
-    InferChildSource ics = new InferChildSource();
-    Object notSource = ics.inferBaseNotSource();
-    InferTaint.inferSensitiveSink(notSource);
-  }
-
-  void taintedFromInferChildSourceBad() {
-    InferChildSource ics = new InferChildSource();
-    Object source = ics.inferChildSecretSource();
-    InferTaint.inferSensitiveSink(source);
-  }
-
-  void notTaintedFromInferChildNotSourceGood() {
-    InferChildSource ics = new InferChildSource();
-    Object notSource = ics.inferChildNotSource();
-    InferTaint.inferSensitiveSink(notSource);
-  }
-
-  // first parameter is tainted based on the config
-  void firstParameterTainted(Object tainted, Object notTainted) {
-    // should be tainted
-    InferTaint.inferSensitiveSink(tainted);
-    // should not be tainted
-    InferTaint.inferSensitiveSink(notTainted);
-  }
-
-  void callbackAnonymousClassTaintedBad() {
-    InferTaint.addCallback(
-        new Callback() {
-          // result parameter is tainted based on the config
-          public void onCompletion(Object result) {
-            InferTaint.inferSensitiveSink(result);
-          }
-        });
-  }
-
-  void callbackLambdaTaintedBad() {
-    InferTaint.addCallback(
-        // result parameter is tainted based on the config
-        result -> {
-          InferTaint.inferSensitiveSink(result);
-        });
+  void taintOnUnrelatedBoolOk(boolean notTaintedFlag) {
+    boolean taintedFlag = (boolean) InferTaint.inferSecretSource();
+    boolean uberFlag = notTaintedFlag || taintedFlag;
+    if (!uberFlag) {
+      InferTaint.inferSensitiveSink(notTaintedFlag);
+    }
   }
 }

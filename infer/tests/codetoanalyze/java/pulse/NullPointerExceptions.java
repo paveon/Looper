@@ -91,6 +91,12 @@ public class NullPointerExceptions {
   class B {
     A a;
 
+    public B() {}
+
+    public B(A a) {
+      this.a = a;
+    }
+
     void test() {}
   }
 
@@ -103,6 +109,14 @@ public class NullPointerExceptions {
   // npe with a chain of fields
   class C {
     B b;
+  }
+
+  public int FN_nullPointerExceptionWithNullByDefaultBad(C c) {
+    return (new B()).a.x;
+  }
+
+  public int nullPointerExceptionWithExplicitNullInitBad(C c) {
+    return (new B(null)).a.x;
   }
 
   public int FN_nullPointerExceptionWithAChainOfFields(C c) {
@@ -672,7 +686,7 @@ public class NullPointerExceptions {
     a.x = 0;
   }
 
-  void call_incr_deref_with_alias_good() {
+  void call_incr_deref_with_alias_Ok() {
     A a = new A();
     a.x = 0;
     incr_deref(a, a);
@@ -682,10 +696,60 @@ public class NullPointerExceptions {
     a.x = 0;
   }
 
+  // An other example wich require alias specialization, but with interfering calls
+  // with and without alias
+  void incr_deref2(A a1, A a2) {
+    a1.x++;
+    a2.x++;
+  }
+
+  void call_incr_deref2_bad() {
+    A a = new A();
+    A a1 = new A();
+    A a2 = new A();
+    a.x = 0;
+    a1.x = 0;
+    a2.x = 0;
+    incr_deref2(a, a);
+    incr_deref2(a1, a2);
+    if (a1.x == 1 && a2.x == 1 && a.x == 2) {
+      a1 = null;
+    }
+    a1.x = 0;
+  }
+
+  void call_incr_deref2_Ok() {
+    A a = new A();
+    A a1 = new A();
+    A a2 = new A();
+    a.x = 0;
+    a1.x = 0;
+    a2.x = 0;
+    incr_deref2(a, a);
+    incr_deref2(a1, a2);
+    if (!(a1.x == 1 && a2.x == 1 && a.x == 2)) {
+      a1 = null;
+    }
+    a1.x = 0;
+  }
+
+  // An other example wich require multiple alias specializations
+  void incr_deref3(A a1, A a2, A a3) {
+    a1.x++;
+  }
+
+  void call_incr_deref3_bad() {
+    A a1 = new A();
+    A a2 = new A();
+    A a3 = new A();
+    incr_deref3(null, null, null);
+  }
+
   interface AFunction {
     void run(A a);
   }
 
+  // need combination of alias specialization and dynamic type specialization
   void test_capture_alias_bad() {
     A a = new A();
     a.x = 0;
@@ -702,8 +766,7 @@ public class NullPointerExceptions {
     b.x = 0;
   }
 
-  // FP because incr_deref.run(a) results in an unknown call
-  void test_capture_alias_good_FP() {
+  void test_capture_alias_good() {
     A a = new A();
     a.x = 0;
     AFunction incr_deref =

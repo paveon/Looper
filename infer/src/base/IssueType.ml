@@ -91,8 +91,6 @@ module Unsafe : sig
   val all_issues : unit -> t list
 
   val set_enabled : t -> bool -> unit
-
-  module IssueSet : PrettyPrintable.PPUniqRankSet with type elt = t
 end = struct
   module T = struct
     type t =
@@ -120,9 +118,18 @@ end = struct
   (** keep track of the list of all declared issue types *)
   let all_issues = ref IssueSet.empty
 
+  let checker_names_to_remove = ["BIABDUCTION"; "CHECKERS"; "INFERBO"; "PULSE"]
+
+  let remove_leading_checker_name = function
+    | first :: rest when List.mem ~equal:String.equal checker_names_to_remove first ->
+        rest
+    | l ->
+        l
+
+
   let prettify s =
-    String.lowercase s |> String.split ~on:'_' |> List.map ~f:String.capitalize
-    |> String.concat ~sep:" " |> String.strip
+    String.split ~on:'_' s |> remove_leading_checker_name |> List.map ~f:String.lowercase
+    |> List.map ~f:String.capitalize |> String.concat ~sep:" " |> String.strip
 
 
   let set_enabled issue b = issue.enabled <- b
@@ -210,17 +217,7 @@ end = struct
     ; ( "EXECUTION_TIME_UNREACHABLE_AT_EXIT"
       , [%blob "./documentation/issues/EXECUTION_TIME_UNREACHABLE_AT_EXIT.md"] )
     ; ("INFINITE_EXECUTION_TIME", [%blob "./documentation/issues/INFINITE_EXECUTION_TIME.md"])
-    ; ("EXPENSIVE_EXECUTION_TIME", [%blob "./documentation/issues/EXPENSIVE_EXECUTION_TIME.md"])
-    ; ( "AUTORELEASEPOOL_SIZE_COMPLEXITY_INCREASE"
-      , [%blob "./documentation/issues/AUTORELEASEPOOL_SIZE_COMPLEXITY_INCREASE.md"] )
-    ; ( "AUTORELEASEPOOL_SIZE_COMPLEXITY_INCREASE_UI_THREAD"
-      , [%blob "./documentation/issues/AUTORELEASEPOOL_SIZE_COMPLEXITY_INCREASE_UI_THREAD.md"] )
-    ; ( "AUTORELEASEPOOL_SIZE_UNREACHABLE_AT_EXIT"
-      , [%blob "./documentation/issues/AUTORELEASEPOOL_SIZE_UNREACHABLE_AT_EXIT.md"] )
-    ; ( "INFINITE_AUTORELEASEPOOL_SIZE"
-      , [%blob "./documentation/issues/INFINITE_AUTORELEASEPOOL_SIZE.md"] )
-    ; ( "EXPENSIVE_AUTORELEASEPOOL_SIZE"
-      , [%blob "./documentation/issues/EXPENSIVE_AUTORELEASEPOOL_SIZE.md"] ) ]
+    ; ("EXPENSIVE_EXECUTION_TIME", [%blob "./documentation/issues/EXPENSIVE_EXECUTION_TIME.md"]) ]
 
 
   (** cost issues are already registered below.*)
@@ -400,11 +397,6 @@ let checkers_fragment_retain_view =
     ~user_documentation:[%blob "./documentation/issues/CHECKERS_FRAGMENT_RETAINS_VIEW.md"]
 
 
-let checkers_immutable_cast =
-  register ~id:"CHECKERS_IMMUTABLE_CAST" Warning ImmutableCast
-    ~user_documentation:[%blob "./documentation/issues/CHECKERS_IMMUTABLE_CAST.md"]
-
-
 let checkers_printf_args =
   register ~id:"CHECKERS_PRINTF_ARGS" Error PrintfArgs
     ~user_documentation:[%blob "./documentation/issues/CHECKERS_PRINTF_ARGS.md"]
@@ -432,11 +424,6 @@ let config_impact_analysis_strict =
     ~user_documentation:[%blob "./documentation/issues/CONFIG_IMPACT_STRICT.md"]
 
 
-let config_impact_analysis_strict_beta =
-  register ~enabled:false ~id:"CONFIG_IMPACT_STRICT_BETA" Advice ConfigImpactAnalysis
-    ~user_documentation:[%blob "./documentation/issues/CONFIG_IMPACT_STRICT_BETA.md"]
-
-
 let pulse_config_usage =
   register ~enabled:false ~id:"CONFIG_USAGE" Info Pulse
     ~user_documentation:[%blob "./documentation/issues/CONFIG_USAGE.md"]
@@ -450,6 +437,11 @@ let pulse_const_refable =
 let constant_address_dereference =
   register_with_latent ~enabled:false ~id:"CONSTANT_ADDRESS_DEREFERENCE" Warning Pulse
     ~user_documentation:[%blob "./documentation/issues/CONSTANT_ADDRESS_DEREFERENCE.md"]
+
+
+let cxx_ref_captured_in_block =
+  register ~id:"CXX_REF_CAPTURED_IN_BLOCK" ~hum:"C++ Reference Captured in Block" Error SelfInBlock
+    ~user_documentation:[%blob "./documentation/issues/CXX_REF_CAPTURED_IN_BLOCK.md"]
 
 
 let create_intent_from_uri =
@@ -492,127 +484,6 @@ let do_not_report = register_hidden ~id:"DO_NOT_REPORT" Error Quandary
 let empty_vector_access =
   register ~id:"EMPTY_VECTOR_ACCESS" Error Biabduction
     ~user_documentation:[%blob "./documentation/issues/EMPTY_VECTOR_ACCESS.md"]
-
-
-(* A technical issue needed to output the annotation graph for the class - not intended to be surfaces to the end user *)
-let eradicate_annotation_graph =
-  (* Enabled by default since this requires a special mode anyway *)
-  register ~id:"ERADICATE_ANNOTATION_GRAPH" ~hum:"Annotation Graph" Info Eradicate
-    ~user_documentation:""
-
-
-(* Condition redundant is a very non-precise issue. Depending on the origin of what is compared with
-   null, this can have a lot of reasons to be actually nullable.
-
-   Until it is made non-precise, it is recommended to not turn this warning on.  But even when it is
-   on, this should not be more than advice. *)
-let eradicate_condition_redundant =
-  register ~id:"ERADICATE_CONDITION_REDUNDANT" ~hum:"Condition Redundant" Advice Eradicate
-    ~user_documentation:[%blob "./documentation/issues/ERADICATE_CONDITION_REDUNDANT.md"]
-
-
-let eradicate_field_not_initialized =
-  register ~id:"ERADICATE_FIELD_NOT_INITIALIZED" ~hum:"Field Not Initialized" Warning Eradicate
-    ~user_documentation:[%blob "./documentation/issues/ERADICATE_FIELD_NOT_INITIALIZED.md"]
-
-
-let eradicate_field_not_nullable =
-  register ~id:"ERADICATE_FIELD_NOT_NULLABLE" ~hum:"Field Not Nullable" Warning Eradicate
-    ~user_documentation:[%blob "./documentation/issues/ERADICATE_FIELD_NOT_NULLABLE.md"]
-
-
-(* Very non-precise issue. Should be actually turned off unless for experimental purposes. *)
-let eradicate_field_over_annotated =
-  register ~id:"ERADICATE_FIELD_OVER_ANNOTATED" ~hum:"Field Over Annotated" Advice
-    Eradicate (* TODO *)
-    ~user_documentation:""
-
-
-let eradicate_inconsistent_subclass_parameter_annotation =
-  register ~id:"ERADICATE_INCONSISTENT_SUBCLASS_PARAMETER_ANNOTATION"
-    ~hum:"Inconsistent Subclass Parameter Annotation" Warning Eradicate
-    ~user_documentation:
-      [%blob "./documentation/issues/ERADICATE_INCONSISTENT_SUBCLASS_PARAMETER_ANNOTATION.md"]
-
-
-let eradicate_inconsistent_subclass_return_annotation =
-  register ~id:"ERADICATE_INCONSISTENT_SUBCLASS_RETURN_ANNOTATION"
-    ~hum:"Inconsistent Subclass Return Annotation" Warning Eradicate
-    ~user_documentation:
-      [%blob "./documentation/issues/ERADICATE_INCONSISTENT_SUBCLASS_RETURN_ANNOTATION.md"]
-
-
-let eradicate_redundant_nested_class_annotation =
-  register ~id:"ERADICATE_REDUNDANT_NESTED_CLASS_ANNOTATION"
-    ~hum:"@Nullsafe annotation is redundant" Advice Eradicate (* TODO *)
-    ~user_documentation:""
-
-
-let eradicate_bad_nested_class_annotation =
-  register ~id:"ERADICATE_BAD_NESTED_CLASS_ANNOTATION"
-    ~hum:"@Nullsafe annotation is inconsistent with outer class" Warning Eradicate (* TODO *)
-    ~user_documentation:""
-
-
-let eradicate_nullable_dereference =
-  register ~id:"ERADICATE_NULLABLE_DEREFERENCE" ~hum:"Nullable Dereference" Warning
-    Eradicate (* TODO *)
-    ~user_documentation:""
-
-
-let eradicate_parameter_not_nullable =
-  register ~id:"ERADICATE_PARAMETER_NOT_NULLABLE" ~hum:"Parameter Not Nullable" Warning Eradicate
-    ~user_documentation:[%blob "./documentation/issues/ERADICATE_PARAMETER_NOT_NULLABLE.md"]
-
-
-let eradicate_return_not_nullable =
-  register ~id:"ERADICATE_RETURN_NOT_NULLABLE" ~hum:"Return Not Nullable" Warning Eradicate
-    ~user_documentation:[%blob "./documentation/issues/ERADICATE_RETURN_NOT_NULLABLE.md"]
-
-
-(* Very non-precise issue. Should be actually turned off unless for experimental purposes. *)
-let eradicate_return_over_annotated =
-  register ~id:"ERADICATE_RETURN_OVER_ANNOTATED" ~hum:"Return Over Annotated" Advice Eradicate
-    ~user_documentation:[%blob "./documentation/issues/ERADICATE_RETURN_OVER_ANNOTATED.md"]
-
-
-let eradicate_unchecked_usage_in_nullsafe =
-  register ~id:"ERADICATE_UNCHECKED_USAGE_IN_NULLSAFE"
-    ~hum:"Nullsafe mode: unchecked usage of a value" Warning Eradicate (* TODO *)
-    ~user_documentation:""
-
-
-let eradicate_unvetted_third_party_in_nullsafe =
-  register ~id:"ERADICATE_UNVETTED_THIRD_PARTY_IN_NULLSAFE"
-    ~hum:"Nullsafe mode: unchecked usage of unvetted third-party" Warning Eradicate (* TODO *)
-    ~user_documentation:""
-
-
-(* Meta issues in eradicate are technical issues reflecting null-safety state of classes in general,
-   in contrast with concrete nullability type violations *)
-
-let eradicate_meta_class_is_nullsafe =
-  register ~id:"ERADICATE_META_CLASS_IS_NULLSAFE"
-    ~hum:
-      "Class is marked @Nullsafe and has 0 issues" (* Should be enabled for special integrations *)
-    ~enabled:false Info Eradicate (* TODO *)
-    ~user_documentation:""
-
-
-let eradicate_meta_class_needs_improvement =
-  register ~id:"ERADICATE_META_CLASS_NEEDS_IMPROVEMENT"
-    ~hum:
-      "Class needs improvement to become @Nullsafe" (* Should be enabled for special integrations *)
-    ~enabled:false Info Eradicate
-    ~user_documentation:[%blob "./documentation/issues/ERADICATE_META_CLASS_NEEDS_IMPROVEMENT.md"]
-
-
-let eradicate_meta_class_can_be_nullsafe =
-  register ~id:"ERADICATE_META_CLASS_CAN_BE_NULLSAFE"
-    ~hum:"Class has 0 issues and can be marked @Nullsafe"
-      (* Should be enabled for special integrations *)
-    ~enabled:false Advice Eradicate (* TODO *)
-    ~user_documentation:""
 
 
 let exposed_insecure_intent_handling =
@@ -864,6 +735,11 @@ let nullptr_dereference =
     ~user_documentation:[%blob "./documentation/issues/NULLPTR_DEREFERENCE.md"]
 
 
+let nullptr_dereference_in_nullsafe_class =
+  register_with_latent ~id:"NULLPTR_DEREFERENCE_IN_NULLSAFE_CLASS" ~hum:"Null Dereference" Error
+    Pulse ~user_documentation:[%blob "./documentation/issues/NULLPTR_DEREFERENCE.md"]
+
+
 let optional_empty_access =
   register_with_latent ~id:"OPTIONAL_EMPTY_ACCESS" Error Pulse
     ~user_documentation:[%blob "./documentation/issues/OPTIONAL_EMPTY_ACCESS.md"]
@@ -876,6 +752,16 @@ let precondition_not_met = register_hidden ~id:"PRECONDITION_NOT_MET" Warning Bi
 let premature_nil_termination =
   register ~id:"PREMATURE_NIL_TERMINATION_ARGUMENT" Warning Biabduction
     ~user_documentation:[%blob "./documentation/issues/PREMATURE_NIL_TERMINATION_ARGUMENT.md"]
+
+
+let pulse_dict_missing_key =
+  register ~enabled:false ~id:"PULSE_DICT_MISSING_KEY" Error Pulse
+    ~user_documentation:[%blob "./documentation/issues/PULSE_DICT_MISSING_KEY.md"]
+
+
+let pulse_transitive_access =
+  register ~enabled:true ~id:"PULSE_TRANSITIVE_ACCESS" Error Pulse
+    ~user_documentation:[%blob "./documentation/issues/PULSE_TRANSITIVE_ACCESS.md"]
 
 
 let pulse_memory_leak_c =
@@ -891,6 +777,16 @@ let pulse_memory_leak_cpp =
 let pulse_resource_leak =
   register ~enabled:true ~id:"PULSE_RESOURCE_LEAK" Error Pulse
     ~user_documentation:"See [RESOURCE_LEAK](#resource_leak)"
+
+
+let pulse_unawaited_awaitable =
+  register ~enabled:true ~id:"PULSE_UNAWAITED_AWAITABLE" Error Pulse ~hum:"Unawaited Awaitable"
+    ~user_documentation:[%blob "./documentation/issues/PULSE_UNAWAITED_AWAITABLE.md"]
+
+
+let pulse_uninitialized_const =
+  register ~enabled:false ~id:"PULSE_UNINITIALIZED_CONST" Error Pulse ~hum:"Uninitialized Const"
+    ~user_documentation:[%blob "./documentation/issues/PULSE_UNINITIALIZED_CONST.md"]
 
 
 let pure_function =
@@ -940,7 +836,7 @@ let resource_leak =
 
 
 let retain_cycle =
-  register ~enabled:false ~id:"RETAIN_CYCLE" Error Pulse
+  register ~enabled:true ~id:"RETAIN_CYCLE" Error Pulse
     ~user_documentation:[%blob "./documentation/issues/RETAIN_CYCLE.md"]
 
 
@@ -1015,15 +911,9 @@ let topl_error =
     ~user_documentation:[%blob "./documentation/issues/TOPL_ERROR.md"]
 
 
-let uninitialized_value =
-  register ~id:"UNINITIALIZED_VALUE" Error Uninit
-    ~user_documentation:[%blob "./documentation/issues/UNINITIALIZED_VALUE.md"]
-
-
 let uninitialized_value_pulse =
   register_with_latent ~id:"PULSE_UNINITIALIZED_VALUE" Error Pulse ~hum:"Uninitialized Value"
-    ~user_documentation:
-      "See [UNINITIALIZED_VALUE](#uninitialized_value). Re-implemented using Pulse."
+    ~user_documentation:[%blob "./documentation/issues/PULSE_UNINITIALIZED_VALUE.md"]
 
 
 let unnecessary_copy_pulse =
@@ -1049,9 +939,9 @@ let unnecessary_copy_assignment_movable_pulse =
 
 
 let unnecessary_copy_intermediate_pulse =
-  register ~enabled:false ~id:"PULSE_UNNECESSARY_COPY_INTERMEDIATE" Error Pulse
+  register ~id:"PULSE_UNNECESSARY_COPY_INTERMEDIATE" Error Pulse
     ~hum:"Unnecessary Copy Intermediate"
-    ~user_documentation:"See [PULSE_UNNECESSARY_COPY](#pulse_unnecessary_copy)."
+    ~user_documentation:[%blob "./documentation/issues/PULSE_UNNECESSARY_COPY_INTERMEDIATE.md"]
 
 
 let unnecessary_copy_intermediate_const_pulse =
@@ -1164,6 +1054,11 @@ let vector_invalidation =
     ~user_documentation:[%blob "./documentation/issues/VECTOR_INVALIDATION.md"]
 
 
+let pulse_reference_stability =
+  register ~id:"PULSE_REFERENCE_STABILITY" ~enabled:false Error Pulse
+    ~user_documentation:[%blob "./documentation/issues/PULSE_REFERENCE_STABILITY.md"]
+
+
 let weak_self_in_noescape_block =
   register ~id:"WEAK_SELF_IN_NO_ESCAPE_BLOCK" Error SelfInBlock
     ~user_documentation:[%blob "./documentation/issues/WEAK_SELF_IN_NO_ESCAPE_BLOCK.md"]
@@ -1176,22 +1071,14 @@ let wrong_argument_number =
 let unreachable_cost_call ~kind = register_cost ~enabled:false ~kind "%s_UNREACHABLE_AT_EXIT"
 
 (* register enabled cost issues *)
-let is_autoreleasepool_size_issue =
-  let autoreleasepool_size_issues = ref IssueSet.empty in
-  let add_autoreleasepool_size_issue ~kind issue_type =
-    match (kind : CostKind.t) with
-    | AutoreleasepoolSize ->
-        autoreleasepool_size_issues := IssueSet.add !autoreleasepool_size_issues issue_type
-    | OperationCost | AllocationCost ->
-        ()
-  in
+let () =
   List.iter CostKind.enabled_cost_kinds ~f:(fun CostKind.{kind} ->
       List.iter [true; false] ~f:(fun is_on_ui_thread ->
-          add_autoreleasepool_size_issue ~kind (unreachable_cost_call ~kind) ;
-          add_autoreleasepool_size_issue ~kind (infinite_cost_call ~kind) ;
-          add_autoreleasepool_size_issue ~kind (expensive_cost_call ~kind) ;
-          add_autoreleasepool_size_issue ~kind (complexity_increase ~kind ~is_on_ui_thread) ) ) ;
-  fun issue_type -> IssueSet.mem issue_type !autoreleasepool_size_issues
+          ignore (unreachable_cost_call ~kind) ;
+          ignore (infinite_cost_call ~kind) ;
+          ignore (expensive_cost_call ~kind) ;
+          ignore (complexity_increase ~kind ~is_on_ui_thread) ;
+          () ) )
 
 
 module Map = PrettyPrintable.MakePPMap (struct

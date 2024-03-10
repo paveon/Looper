@@ -24,7 +24,7 @@ module ModelEnv = struct
     ; node_hash: int
     ; location: Location.t
     ; tenv: Tenv.t
-    ; integer_type_widths: Typ.IntegerWidths.t
+    ; integer_type_widths: IntegerWidths.t
     ; get_summary: BoSummary.get_summary }
 
   let mk_model_env pname ?caller_pname ~node_hash location tenv integer_type_widths get_summary =
@@ -95,6 +95,8 @@ module Exec = struct
             L.die InternalError "Erlang not supported"
         | Language.Hack ->
             L.die InternalError "Hack not supported"
+        | Language.Python ->
+            L.die InternalError "Python not supported"
       in
       if Int.equal dimension 1 then Dom.Mem.add_stack ~represents_multiple_values loc arr mem
       else Dom.Mem.add_heap ~represents_multiple_values loc arr mem
@@ -221,7 +223,7 @@ module Exec = struct
             if Language.curr_language_is Java then
               Dom.Val.of_java_array_alloc allocsite ~length:size ~traces
             else
-              let stride = Some (Typ.width_of_ikind integer_type_widths IChar / 8) in
+              let stride = Some (IntegerWidths.width_of_ikind integer_type_widths IChar / 8) in
               let offset = Itv.zero in
               Dom.Val.of_c_array_alloc allocsite ~stride ~offset ~size ~traces
           in
@@ -397,7 +399,7 @@ module ReplaceCallee = struct
       IOption.value_default_f (CacheForMakeShared.find_opt pname) ~f:(fun () ->
           let result =
             match pname with
-            | Procname.C ({template_args= Typ.Template {args}} as name)
+            | Procname.C ({c_template_args= Typ.Template {args}} as name)
               when Procname.C.is_make_shared name -> (
               match strip_ttype args with
               | Some (class_typ_templ :: param_typs_templ) ->

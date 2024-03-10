@@ -44,12 +44,34 @@ let pp_objc_accessor_type fmt objc_accessor_type =
 
 
 type var_data =
-  {name: Mangled.t; typ: Typ.t; modify_in_block: bool; is_constexpr: bool; is_declared_unused: bool}
+  { name: Mangled.t
+  ; typ: Typ.t
+  ; modify_in_block: bool
+  ; is_constexpr: bool
+  ; is_declared_unused: bool
+  ; is_structured_binding: bool
+  ; has_cleanup_attribute: bool
+  ; tmp_id: Ident.t option }
 [@@deriving compare]
 
-let pp_var_data fmt {name; typ; modify_in_block; is_declared_unused} =
-  F.fprintf fmt "@[<h>{ name=@ %a;@ typ=@ %a;@ modify_in_block=@ %b;@ is_declared_unused=@ %b@ }@]"
+let default_var_data pvar typ =
+  { name= Pvar.get_name pvar
+  ; typ
+  ; modify_in_block= false
+  ; is_constexpr= false
+  ; is_declared_unused= false
+  ; is_structured_binding= false
+  ; has_cleanup_attribute= false
+  ; tmp_id= Pvar.get_tmp_id pvar }
+
+
+let pp_var_data fmt
+    {name; typ; modify_in_block; is_declared_unused; is_structured_binding; has_cleanup_attribute} =
+  F.fprintf fmt
+    "@[<h>{ name=@ %a;@ typ=@ %a;@ modify_in_block=@ %b;@ is_declared_unused=@ %b;@ \
+     is_structured_binding=@ %b;@ has_cleanup_attribute=@ %b@ }@]"
     Mangled.pp name (Typ.pp_full Pp.text) typ modify_in_block is_declared_unused
+    is_structured_binding has_cleanup_attribute
 
 
 type specialized_with_aliasing_info = {orig_proc: Procname.t; aliases: Pvar.t list list}
@@ -83,6 +105,7 @@ type t =
   ; is_abstract: bool  (** the procedure is abstract *)
   ; is_biabduction_model: bool  (** the procedure is a model for the biabduction analysis *)
   ; is_bridge_method: bool  (** the procedure is a bridge method *)
+  ; is_cpp_const_member_fun: bool  (** true if the procedure is a const function *)
   ; is_cpp_copy_assignment: bool  (** true if the procedure is a copy assignment *)
   ; is_cpp_copy_ctor: bool  (** true if the procedure is a copy constructor *)
   ; is_cpp_move_ctor: bool  (** true if the procedure is a move constructor *)
@@ -93,6 +116,8 @@ type t =
   ; is_defined: bool  (** true if the procedure is defined, and not just declared *)
   ; is_java_synchronized_method: bool  (** the procedure is a Java synchronized method *)
   ; is_csharp_synchronized_method: bool  (** the procedure is a C# synchronized method *)
+  ; is_hack_async: bool
+  ; is_hack_wrapper: bool
   ; block_as_arg_attributes: block_as_arg_attributes option
         (** Present if the procedure is an Objective-C block that has been passed to a given method
             as argument, including whether it is in a position annotated with the NS_NOESCAPE
@@ -101,7 +126,10 @@ type t =
   ; is_objc_arc_on: bool  (** the ObjC procedure is compiled with ARC *)
   ; is_specialized: bool  (** the procedure is a clone specialized for dynamic dispatch handling *)
   ; is_synthetic_method: bool  (** the procedure is a synthetic method *)
-  ; is_variadic: bool  (** the procedure is variadic, only supported for Clang procedures *)
+  ; is_clang_variadic: bool  (** the procedure is variadic, only supported for Clang procedures *)
+  ; hack_variadic_position: int option
+        (** the procedure is variadic and [Some n] means the variadic vector is composed of the
+            arguments n, n+1, ..., length formals -1 *)
   ; sentinel_attr: (int * int) option  (** __attribute__((sentinel(int, int))) *)
   ; specialized_with_aliasing_info: specialized_with_aliasing_info option
   ; specialized_with_closures_info: specialized_with_closures_info option
@@ -124,8 +152,6 @@ type t =
 
 let get_access attributes = attributes.access
 
-let get_formals attributes = attributes.formals
-
 let get_pvar_formals attributes =
   let pname = attributes.proc_name in
   List.map attributes.formals ~f:(fun (name, typ, _) -> (Pvar.mk name pname, typ))
@@ -139,6 +165,10 @@ let get_passed_by_value_formals attributes =
 let get_passed_by_ref_formals attributes =
   List.filteri (get_pvar_formals attributes) ~f:(fun i _ ->
       List.mem ~equal:Int.equal attributes.reference_formals i )
+
+
+let get_pointer_formals attributes =
+  List.filter (get_pvar_formals attributes) ~f:(fun (_, typ) -> Typ.is_strong_pointer typ)
 
 
 let get_proc_name attributes = attributes.proc_name
@@ -168,6 +198,7 @@ let default translation_unit proc_name =
   ; is_abstract= false
   ; is_biabduction_model= false
   ; is_bridge_method= false
+  ; is_cpp_const_member_fun= false
   ; is_cpp_copy_assignment= false
   ; is_cpp_copy_ctor= false
   ; is_cpp_move_ctor= false
@@ -176,6 +207,8 @@ let default translation_unit proc_name =
   ; is_defined= false
   ; is_java_synchronized_method= false
   ; is_csharp_synchronized_method= false
+  ; is_hack_async= false
+  ; is_hack_wrapper= false
   ; block_as_arg_attributes= None
   ; is_no_return= false
   ; is_objc_arc_on= false
@@ -183,7 +216,8 @@ let default translation_unit proc_name =
   ; specialized_with_aliasing_info= None
   ; specialized_with_closures_info= None
   ; is_synthetic_method= false
-  ; is_variadic= false
+  ; is_clang_variadic= false
+  ; hack_variadic_position= None
   ; sentinel_attr= None
   ; clang_method_kind= ClangMethodKind.C_FUNCTION
   ; loc= Location.dummy
@@ -242,6 +276,7 @@ let pp f
      ; is_abstract
      ; is_biabduction_model
      ; is_bridge_method
+     ; is_cpp_const_member_fun
      ; is_cpp_copy_assignment
      ; is_cpp_copy_ctor
      ; is_cpp_move_ctor
@@ -250,6 +285,8 @@ let pp f
      ; is_defined
      ; is_java_synchronized_method
      ; is_csharp_synchronized_method
+     ; is_hack_async
+     ; is_hack_wrapper
      ; block_as_arg_attributes
      ; is_no_return
      ; is_objc_arc_on
@@ -257,7 +294,8 @@ let pp f
      ; specialized_with_aliasing_info
      ; specialized_with_closures_info
      ; is_synthetic_method
-     ; is_variadic
+     ; is_clang_variadic
+     ; hack_variadic_position
      ; sentinel_attr
      ; clang_method_kind
      ; loc
@@ -300,6 +338,8 @@ let pp f
   pp_bool_default ~default:default.is_abstract "is_abstract" is_abstract f () ;
   pp_bool_default ~default:default.is_biabduction_model "is_model" is_biabduction_model f () ;
   pp_bool_default ~default:default.is_bridge_method "is_bridge_method" is_bridge_method f () ;
+  pp_bool_default ~default:default.is_cpp_const_member_fun "is_cpp_const_member_fun "
+    is_cpp_const_member_fun f () ;
   pp_bool_default ~default:default.is_cpp_copy_assignment "is_cpp_copy_assignment"
     is_cpp_copy_assignment f () ;
   pp_bool_default ~default:default.is_cpp_copy_ctor "is_cpp_copy_ctor" is_cpp_copy_ctor f () ;
@@ -311,6 +351,8 @@ let pp f
     is_java_synchronized_method f () ;
   pp_bool_default ~default:default.is_csharp_synchronized_method "is_csharp_synchronized_method"
     is_csharp_synchronized_method f () ;
+  pp_bool_default ~default:default.is_hack_async "is_hack_async" is_hack_async f () ;
+  pp_bool_default ~default:default.is_hack_wrapper "is_hack_wrapper" is_hack_wrapper f () ;
   if
     not
       ([%equal: block_as_arg_attributes option] default.block_as_arg_attributes
@@ -340,7 +382,8 @@ let pp f
       specialized_with_closures_info ;
   pp_bool_default ~default:default.is_synthetic_method "is_synthetic_method" is_synthetic_method f
     () ;
-  pp_bool_default ~default:default.is_variadic "is_variadic" is_variadic f () ;
+  pp_bool_default ~default:default.is_clang_variadic "is_clang_variadic" is_clang_variadic f () ;
+  Option.iter hack_variadic_position ~f:(fun n -> F.fprintf f "; hack_variadic_position= %d@," n) ;
   if not ([%equal: (int * int) option] default.sentinel_attr sentinel_attr) then
     F.fprintf f "; sentinel_attr= %a@,"
       (Pp.option (Pp.pair ~fst:F.pp_print_int ~snd:F.pp_print_int))
@@ -364,6 +407,21 @@ let pp f
   pp_bool_default ~default:default.is_ret_type_pod "is_ret_type_pod" is_ret_type_pod f () ;
   pp_bool_default ~default:default.is_ret_constexpr "is_ret_constexpr" is_ret_constexpr f () ;
   F.fprintf f "; proc_id= %a }@]" Procname.pp_unique_id proc_name
+
+
+let get_this attributes =
+  let open IOption.Let_syntax in
+  let+ name =
+    match Procname.get_language attributes.proc_name with
+    | Java ->
+        if Procname.is_java_instance_method attributes.proc_name then Some Mangled.this else None
+    | Clang -> (
+        if Procname.is_objc_instance_method attributes.proc_name then Some Mangled.self
+        else match attributes.clang_method_kind with CPP_INSTANCE -> Some Mangled.this | _ -> None )
+    | CIL | Erlang | Hack | Python ->
+        None
+  in
+  Pvar.mk name attributes.proc_name
 
 
 module SQLite = SqliteUtils.MarshalledDataNOTForComparison (struct

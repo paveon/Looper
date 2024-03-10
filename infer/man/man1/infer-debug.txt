@@ -63,6 +63,10 @@ DEBUG PROCEDURES
            or those determined by the option --changed-files-index.
            (Conversely: --no-procedures-call-graph)
 
+       --procedures-callees
+           Activates: Print the static callees of each procedure in the
+           output of --procedures (Conversely: --no-procedures-callees)
+
        --procedures-cfg
            Activates: Output a dotty file in
            infer-out/captured/<file_name>/<proc_name>.dot for each procedure
@@ -93,8 +97,8 @@ DEBUG PROCEDURES
 
        --procedures-summary
            Activates: Print the summaries of each procedure in the output of
-           --procedures. See also --procedures-summary-nonempty. (Conversely:
-           --no-procedures-summary)
+           --procedures. See also --procedures-summary-skip-empty.
+           (Conversely: --no-procedures-summary)
 
        --procedures-summary-json
            Activates: Emit the summaries of each procedure in the output of
@@ -107,6 +111,21 @@ DEBUG PROCEDURES
            --procedures-summary-json. See also --changed-files-index.)
            (Conversely: --no-procedures-summary-skip-empty)
 DEBUG SOURCE FILES
+       --complete-capture-from path
+           Provide the path to an infer results directory containing a
+           capture database. The capture database specified with
+           --results-dir) (which must exist) will be completed from the input
+           database and according to the missing-* files in the results
+           directory. The exit code will be equal to the number of rows added
+           to the capture database.
+
+       --extract-capture-from path
+           Provide the path to an infer results directory containing a
+           capture database. Together with a list of files provided through
+           the obligatory use of --changed-files-index, create a new capture
+           database containing only the artefacts related to these files (in
+           the location specified with --results-dir).
+
        --source-files
            Activates: Print source files discovered by infer (Conversely:
            --no-source-files)

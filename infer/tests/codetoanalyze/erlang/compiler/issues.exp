@@ -1,7 +1,3 @@
------ otp_gen_server -----
-otp_gen_server:test_cast_Bad/0: badmatch
-otp_gen_server:test_cast_Ok/0: ok
-
 ----- otp_lists -----
 otp_lists:fp_test_any1_Ok/0: ok
 otp_lists:test_any2_Bad/0: case_clause
@@ -187,6 +183,18 @@ features_functions:test_call4_Ok/0: ok
 features_functions:test_override_Bad/0: expected_crash
 features_functions:test_override_Ok/0: ok
 
+----- features_gen_server -----
+features_gen_server:test_call1_Bad/0: expected_crash
+features_gen_server:test_call2_Bad/0: expected_crash
+features_gen_server:test_call3_Bad/0: expected_crash
+features_gen_server:test_call4_Bad/0: timeout
+features_gen_server:test_call5_Bad/0: expected_crash
+features_gen_server:test_call_and_cast_Ok/0: ok
+features_gen_server:test_call_callee_Bad/0: expected_crash
+features_gen_server:test_cast_Bad/0: expected_crash
+features_gen_server:test_start_link2_Ok/0: ok
+features_gen_server:test_start_link3_Ok/0: ok
+
 ----- features_guard_bifs -----
 features_guard_bifs:test_accepts_atom1_Ok/0: ok
 features_guard_bifs:test_accepts_atom2_Ok/0: ok
@@ -251,6 +259,7 @@ features_lambdas:test_scopes3_Bad/0: badmatch
 features_lambdas:test_scopes4_Ok/0: ok
 
 ----- features_lc -----
+features_lc:fn_test_simple4_Bad/0: function_clause
 features_lc:test_empty_Bad/0: function_clause
 features_lc:test_empty_Ok/0: ok
 features_lc:test_filtered1_Bad/0: function_clause
@@ -264,6 +273,7 @@ features_lc:test_simple2_Bad/0: function_clause
 features_lc:test_simple2_Ok/0: ok
 features_lc:test_simple3_Bad/0: function_clause
 features_lc:test_simple3_Ok/0: ok
+features_lc:test_simple4_Ok/0: ok
 features_lc:test_two_filters_Bad/0: function_clause
 features_lc:test_two_filters_Ok/0: ok
 features_lc:test_two_gen1_Bad/0: function_clause
@@ -275,10 +285,10 @@ features_lc:test_two_gen2_Ok/0: ok
 features_lists:fn_test_listadd4_Bad/0: expected_crash
 features_lists:fn_test_listappend4_Bad/0: expected_crash
 features_lists:fn_test_reverse4_Bad/0: expected_crash
-features_lists:fp_test_listappend7_Ok/0: ok
 features_lists:fp_test_listappend8_Ok/0: ok
 features_lists:fp_test_listsub1_Ok/0: ok
 features_lists:fp_test_listsub2_Ok/0: ok
+features_lists:fp_test_string_Ok/0: ok
 features_lists:test_cons1_Bad/0: case_clause
 features_lists:test_cons1_Ok/0: ok
 features_lists:test_cons2_Bad/0: case_clause
@@ -313,6 +323,7 @@ features_lists:test_listappend5_Bad/0: badarg
 features_lists:test_listappend6_Bad/0: badarg
 features_lists:test_listappend6_Ok/0: ok
 features_lists:test_listappend7_Bad/0: badarg
+features_lists:test_listappend7_Ok/0: ok
 features_lists:test_listappend8_Bad/0: badarg
 features_lists:test_listappend9_Ok/0: ok
 features_lists:test_listforeach_returnvalue_Bad/0: expected_crash
@@ -330,6 +341,7 @@ features_lists:test_reverse2_Ok/0: ok
 features_lists:test_reverse3_Bad/0: expected_crash
 features_lists:test_reverse3_Ok/0: ok
 features_lists:test_reverse4_Ok/0: ok
+features_lists:test_string_Bad/0: expected_crash
 
 ----- features_logic -----
 features_logic:test_and00_Bad/0: if_clause
@@ -401,9 +413,9 @@ features_receive:test_receive8_Bad/0: case_clause
 features_receive:test_receive_bad_timeout_Bad/0: badmatch
 
 ----- features_records -----
+features_records:fn_test_lyse_user_pattern_matching_fun_Bad/0: expected_crash
 features_records:fp_test_lyse_robot_nested_Ok/0: ok
 features_records:fp_test_lyse_robot_update_Ok/0: ok
-features_records:fp_test_lyse_user_pattern_matching_fun_Ok/0: ok
 features_records:test_field2_Bad/0: expected_crash
 features_records:test_field2_Ok/0: ok
 features_records:test_field3_Bad/0: expected_crash
@@ -456,7 +468,7 @@ features_records:test_lyse_robot_update_literals_Bad/0: expected_crash
 features_records:test_lyse_robot_update_literals_Ok/0: ok
 features_records:test_lyse_user_guard_Bad/0: expected_crash
 features_records:test_lyse_user_guard_Ok/0: ok
-features_records:test_lyse_user_pattern_matching_fun_Bad/0: expected_crash
+features_records:test_lyse_user_pattern_matching_fun_Ok/0: ok
 features_records:test_lyse_user_pattern_matching_fun_literals_Bad/0: expected_crash
 features_records:test_lyse_user_pattern_matching_fun_literals_Ok/0: ok
 features_records:test_nested_Bad/0: expected_crash
@@ -742,9 +754,14 @@ topl_less:test_d_Ok/0: ok
 topl_less:test_e_Bad/0: topl_error
 
 ----- topl_process -----
+topl_process:fpl_test_3_Ok/0: ok
 topl_process:test_1_Ok/0: ok
 topl_process:test_2_Bad/0: expected_crash
-topl_process:test_3_Ok/0: ok
+
+----- topl_str_literal -----
+topl_str_literal:test_1_Ok/0: ok
+topl_str_literal:test_2_Ok/0: ok
+topl_str_literal:test_3_Bad/0: taint_error
 
 ----- topl_taint -----
 topl_taint:fn_test_send2_Bad/0: taint_error

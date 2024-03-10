@@ -14,9 +14,9 @@ INFER_OPTIONS = --project-root $(CODETOANALYZE_DIR)
 INFERPRINT_OPTIONS = --issues-tests
 
 SOURCES = $(CODETOANALYZE_DIR)/hello.c
-OBJECTS = $(SOURCES:$(CODETOANALYZE_DIR)/%.c=%.o)
+CLEAN_EXTRA = $(SOURCES:$(CODETOANALYZE_DIR)/%.c=%.o)
 
-default: compile
+default: test
 
 output.exp.test: $(CLANG_DEPS) $(SOURCES) $(MAKEFILE_LIST)
 	$(INFER_BIN) $(INFER_OPTIONS) -- clang $(CLANG_OPTIONS) $(SOURCES)
@@ -37,9 +37,6 @@ output.exp.test: $(CLANG_DEPS) $(SOURCES) $(MAKEFILE_LIST)
 	echo "# infer debug --source-files --source-files-filter 'nothing matches this'" >> $@
 	$(INFER_BIN) debug --source-files  --source-files-filter 'nothing matches this' >> $@
 
-.PHONY: compile
-compile: $(OBJECTS)
-
 .PHONY: print
 print: output.exp.test
 
@@ -54,4 +51,4 @@ replace: output.exp.test
 
 .PHONY: clean
 clean:
-	rm -rf output.exp.test infer-out $(OBJECTS)
+	rm -rf output.exp.test infer-out $(CLEAN_EXTRA)

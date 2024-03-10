@@ -15,8 +15,14 @@ module ProcNameDispatcher = struct
       @ PulseModelsObjC.transfer_ownership_matchers @ PulseModelsCpp.abort_matchers
       @ PulseModelsAndroid.matchers @ PulseModelsC.matchers @ PulseModelsCpp.matchers
       @ PulseModelsErlang.matchers @ PulseModelsGenericArrayBackedCollection.matchers
-      @ PulseModelsJava.matchers @ PulseModelsObjC.matchers @ PulseModelsOptional.matchers
-      @ PulseModelsSmartPointers.matchers @ PulseModelsLocks.matchers @ Basic.matchers )
+      @ PulseModelsHack.matchers @ PulseModelsJava.matchers @ PulseModelsObjC.matchers
+      @ PulseModelsOptional.matchers @ PulseModelsSmartPointers.matchers @ PulseModelsLocks.matchers
+      @ Basic.matchers )
 end
 
-let dispatch tenv proc_name args = ProcNameDispatcher.dispatch (tenv, proc_name) proc_name args
+let dispatch tenv proc_name args =
+  match ProcNameDispatcher.dispatch (tenv, proc_name) proc_name args with
+  | None ->
+      PulseModelsErlang.get_model_from_db proc_name args |> Option.map ~f:lift_model
+  | m ->
+      m

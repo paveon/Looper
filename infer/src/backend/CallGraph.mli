@@ -5,23 +5,12 @@
  * LICENSE file in the root directory of this source tree.
  *)
 open! IStd
-module F = Format
 
-module type NodeSig = sig
+module Node : sig
   type t = private {id: int; pname: Procname.t; mutable successors: int list; mutable flag: bool}
 
-  val make : int -> Procname.t -> int list -> t
-
-  val add_successor : t -> int -> unit
-
   val set_flag : t -> unit
-
-  val unset_flag : t -> unit
-
-  val pp_dot : mem:(int -> bool) -> F.formatter -> t -> unit
 end
-
-module Node : NodeSig
 
 type t
 
@@ -40,8 +29,6 @@ val mem : t -> int -> bool
 val mem_procname : t -> Procname.t -> bool
 (** is there a node for [procname] in the graph? *)
 
-val flag : t -> Procname.t -> unit
-
 val flag_reachable : t -> Procname.t -> unit
 (** flag all nodes reachable from the node of the given procname, if it exists *)
 
@@ -50,15 +37,19 @@ val iter_unflagged_leaves : f:(Node.t -> unit) -> t -> unit
 
 val remove : t -> Procname.t -> unit
 
-val to_dotty : t -> string -> unit
+val to_dotty : t -> ResultsDirEntryName.id -> unit
 (** output call graph in dotty format with the given filename in results dir *)
 
-val add_edge : t -> pname:Procname.t -> successor_pname:Procname.t -> unit
-(** add an edge from [pname] to [successor_pname] in the graph, creating a node for [pname] if there
-    isn't one already *)
+val add_edge : t -> Procname.t -> successor:Procname.t -> unit
+(** add an edge from the proc name to [successor] in the graph, creating a node for the proc name if
+    there isn't one already *)
 
 val create_node : t -> Procname.t -> Procname.t list -> unit
 (** create a new node with edges from [pname] to [successor_pnames] in the graph *)
+
+val create_node_with_id : t -> id:int -> Procname.t -> successors:int list -> unit
+
+val node_of_id : t -> int -> Node.t option
 
 val fold_flagged : t -> f:(Node.t -> 'a -> 'a) -> 'a -> 'a
 (** perform a fold over the nodes in the graph with flag set to true *)

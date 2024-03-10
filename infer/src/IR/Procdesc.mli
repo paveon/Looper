@@ -19,10 +19,10 @@ end
 (** node of the control flow graph *)
 module Node : sig
   (** type of nodes *)
-  type t [@@deriving compare]
+  type t [@@deriving compare, hash]
 
   (** node id *)
-  type id = private int [@@deriving compare, equal]
+  type id = private int [@@deriving compare, equal, hash]
 
   type destruction_kind =
     | DestrBreakStmt
@@ -122,6 +122,9 @@ module Node : sig
   val append_instrs : t -> Sil.instr list -> unit
   (** Append the instructions to the list of instructions to execute *)
 
+  val prepend_instrs : t -> Sil.instr list -> unit
+  (** Prepend the instructions to the list of instructions to execute *)
+
   val d_instrs : highlight:Sil.instr option -> t -> unit
   (** Dump instructions for the node, highlighting the given subinstruction if present *)
 
@@ -176,14 +179,8 @@ module Node : sig
   (** Set an exit node corresponding to a start node of a code block. Using this, when there is a
       code block, frontend can keep the correspondence between start/exit nodes of a code block. *)
 
-  val get_code_block_exit : t -> t option
-  (** Get an exit node corresponding to a start node of a code block. *)
-
   val is_dangling : t -> bool
   (** Returns true if the node is dangling, i.e. no successors and predecessors *)
-
-  val hash : t -> int
-  (** Hash function for nodes *)
 
   val pp : Format.formatter -> t -> unit
   (** Pretty print the node *)
@@ -266,6 +263,9 @@ val get_passed_by_value_formals : t -> (Pvar.t * Typ.t) list
 val get_passed_by_ref_formals : t -> (Pvar.t * Typ.t) list
 (** Return pvar and type of formal parameters that are passed by reference *)
 
+val get_pointer_formals : t -> (Pvar.t * Typ.t) list
+(** Return pvar and type of formal parameters that are passed as pointer, i.e. [T*] *)
+
 val get_loc : t -> Location.t
 (** Return loc information for the procedure *)
 
@@ -275,6 +275,10 @@ val get_locals : t -> ProcAttributes.var_data list
 val is_local : t -> Pvar.t -> bool
 (** [is_local pdesc pvar] is [true] iff [pvar] is a local variable of [pdesc]. This function
     performs a linear search on the local variables of [pdesc]. *)
+
+val is_non_structured_binding_local_or_formal : t -> Pvar.t -> bool
+(** Similar to [is_local], but returns [true] when [pvar] is a non-structured-binding local variable
+    or a formal variable of [pdesc]. *)
 
 val get_nodes : t -> Node.t list
 (** Return the nodes, excluding the start node and the exit node. *)
@@ -302,9 +306,6 @@ val is_java_synchronized : t -> bool
 
 val is_csharp_synchronized : t -> bool
 (** Return [true] if the procedure is synchronized via a C# lock *)
-
-val is_objc_arc_on : t -> bool
-(** Return [true] iff the ObjC procedure is compiled with ARC *)
 
 val iter_instrs : (Node.t -> Sil.instr -> unit) -> t -> unit
 (** iterate over all nodes and their instructions *)
@@ -337,9 +338,6 @@ val iter_nodes : (Node.t -> unit) -> t -> unit
 val fold_nodes : t -> init:'accum -> f:('accum -> Node.t -> 'accum) -> 'accum
 (** fold over all the nodes of a procedure *)
 
-val fold_slope_range : Node.t -> Node.t -> init:'accum -> f:('accum -> Node.t -> 'accum) -> 'accum
-(** fold between two nodes or until we reach a branching structure *)
-
 val set_succs : Node.t -> normal:Node.t list option -> exn:Node.t list option -> unit
 (** Set the successor nodes and exception nodes, if given, and update predecessor links *)
 
@@ -366,8 +364,6 @@ val pp_with_instrs : ?print_types:bool -> Format.formatter -> t -> unit
 
 val is_specialized : t -> bool
 
-val is_kotlin : t -> bool
-
 val is_captured_pvar : t -> Pvar.t -> bool
 (** true if pvar is a captured variable of a cpp lambda or obcj block *)
 
@@ -375,8 +371,6 @@ val is_captured_var : t -> Var.t -> bool
 (** true if var is a captured variable of a cpp lambda or obcj block *)
 
 val has_modify_in_block_attr : t -> Pvar.t -> bool
-
-val deep_copy_code_from_pdesc : orig_pdesc:t -> dest_pdesc:t -> unit
 
 val size : t -> int
 (** Return number of nodes, plus number of instructions (in nodes), plus number of edges (between
@@ -398,6 +392,10 @@ val load : Procname.t -> t option
 
 val load_exn : Procname.t -> t
 (** like [load], but raises an exception if no procdesc is available. *)
+
+val load_uid : ?capture_only:bool -> string -> t option
+(** like [load] but takes a database key for the procedure directly (generated from
+    [Procname.to_unique_id]) and optionally only looks inside the capture database *)
 
 val mark_if_unchanged : old_pdesc:t -> new_pdesc:t -> unit
 (** Record the [changed] attribute in-place on [new_pdesc] if it is unchanged wrt [old_pdsec] *)

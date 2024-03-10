@@ -19,15 +19,17 @@ let manpage_s_notes = "NOTES"
 
 let is_env_var_set v = Option.value (Option.map (Sys.getenv v) ~f:(String.equal "1")) ~default:false
 
+let infer_cwd_env_var = "INFER_CWD"
+
 (** The working directory of the initial invocation of infer, to which paths passed as command line
     options are relative. *)
 let init_work_dir, is_originator =
-  match Sys.getenv "INFER_CWD" with
+  match Sys.getenv infer_cwd_env_var with
   | Some dir ->
       (dir, false)
   | None ->
       let real_cwd = Utils.realpath (Sys.getcwd ()) in
-      Unix.putenv ~key:"INFER_CWD" ~data:real_cwd ;
+      Unix.putenv ~key:infer_cwd_env_var ~data:real_cwd ;
       (real_cwd, true)
 
 
@@ -1004,6 +1006,9 @@ let rev_prefix_before_rest args =
   rev_prefix_before_rest_ [] args
 
 
+(** environment variable used for the results dir of the originator process *)
+let infer_top_results_dir_env_var = "INFER_TOP_RESULTS_DIR"
+
 (** environment variable use to pass arguments from parent to child processes *)
 let args_env_var = "INFER_ARGS"
 
@@ -1099,7 +1104,8 @@ let parse ?config_file ~usage action initial_command =
          environment contributes to the length of the command to be run. If the environment + CLI is
          too big, running any command will fail with a cryptic "exit code 127" error. Use an argfile
          to prevent this from happening *)
-      let file = Filename.temp_file "args" "" in
+      let in_dir = Sys.getenv "TMPDIR" in
+      let file = Filename.temp_file ?in_dir "args" "" in
       Out_channel.with_file file ~f:(fun oc -> Out_channel.output_lines oc argv_to_export) ;
       if not !keep_args_file then Utils.unlink_file_on_exit file ;
       "@" ^ file )
@@ -1216,3 +1222,22 @@ let show_manual ?(scrub_defaults = false) ?internal_section format default_doc c
   in
   Cmdliner.Manpage.print format Format.std_formatter (command_doc.title, blocks) ;
   ()
+
+
+let add_to_env_args extra_args =
+  let old_infer_args = Sys.getenv args_env_var |> Option.value ~default:"" in
+  let args =
+    if String.equal old_infer_args "" then extra_args
+    else
+      (* HACK: it's ok to consider the string corresponding to potentially several args as one arg
+         here because when we'll format the final string it will keep it intact *)
+      old_infer_args :: extra_args
+  in
+  let env_value = String.concat ~sep:(String.of_char env_var_sep) args in
+  Unix.putenv ~key:args_env_var ~data:env_value
+
+
+let in_env_with_extra_args extra_args ~f =
+  let old_infer_args = Sys.getenv args_env_var |> Option.value ~default:"" in
+  add_to_env_args extra_args ;
+  protect ~f ~finally:(fun () -> Unix.putenv ~key:args_env_var ~data:old_infer_args)

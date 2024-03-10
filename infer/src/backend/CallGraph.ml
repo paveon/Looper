@@ -7,7 +7,7 @@
 open! IStd
 module F = Format
 
-module type NodeSig = sig
+module NodeUnsafe : sig
   type t = private {id: int; pname: Procname.t; mutable successors: int list; mutable flag: bool}
 
   val make : int -> Procname.t -> int list -> t
@@ -15,13 +15,7 @@ module type NodeSig = sig
   val add_successor : t -> int -> unit
 
   val set_flag : t -> unit
-
-  val unset_flag : t -> unit
-
-  val pp_dot : mem:(int -> bool) -> F.formatter -> t -> unit
-end
-
-module Node : NodeSig = struct
+end = struct
   type t = {id: int; pname: Procname.t; mutable successors: int list; mutable flag: bool}
 
   let make id pname successors = {id; pname; successors; flag= false}
@@ -29,16 +23,18 @@ module Node : NodeSig = struct
   let add_successor node successor = node.successors <- successor :: node.successors
 
   let set_flag n = n.flag <- true
+end
 
-  let unset_flag n = n.flag <- false
+(* defined in two parts just to avoid having to write types for functions only used in this file
+   that don't need to violate [private] *)
+module Node = struct
+  include NodeUnsafe
 
   let pp_dot ~mem fmt {id; pname; successors; flag} =
     let pp_id fmt id = F.fprintf fmt "N%d" id in
     let pp_edge fmt src dst = if mem dst then F.fprintf fmt "  %a -> %a ;@\n" pp_id src pp_id dst in
-    let pp_flag fmt flag = F.fprintf fmt "%B" flag in
-    F.fprintf fmt "  %a [ label = %S, flag = %a ];@\n" pp_id id
-      (F.asprintf "%a" Procname.pp pname)
-      pp_flag flag ;
+    let node_info = F.asprintf "%a\nflag=%B" Procname.pp_verbose pname flag in
+    F.fprintf fmt "  %a [ label = %S ];@\n" pp_id id node_info ;
     List.iter successors ~f:(pp_edge fmt id) ;
     F.pp_print_newline fmt ()
 end
@@ -96,6 +92,12 @@ let create_node ({node_map} as graph) pname successor_pnames =
   NodeMap.replace node_map id node
 
 
+let create_node_with_id {id_map; node_map} ~id proc_name ~successors =
+  let node = Node.make id proc_name successors in
+  IdMap.replace id_map proc_name id ;
+  NodeMap.replace node_map id node
+
+
 let get_or_init_node node_map id pname =
   match NodeMap.find_opt node_map id with
   | Some node ->
@@ -106,7 +108,7 @@ let get_or_init_node node_map id pname =
       new_node
 
 
-let add_edge ({node_map} as graph) ~pname ~successor_pname =
+let add_edge ({node_map} as graph) pname ~successor:successor_pname =
   let id = get_or_set_id graph pname in
   let successor = get_or_set_id graph successor_pname in
   let node = get_or_init_node node_map id pname in
@@ -114,8 +116,6 @@ let add_edge ({node_map} as graph) ~pname ~successor_pname =
   get_or_init_node node_map successor successor_pname |> ignore ;
   Node.add_successor node successor
 
-
-let flag g pname = node_of_procname g pname |> Option.iter ~f:Node.set_flag
 
 let flag_reachable g start_pname =
   let process_node init (n : Node.t) =
@@ -138,8 +138,8 @@ let pp_dot fmt ({node_map} as g) =
   F.fprintf fmt "}@."
 
 
-let to_dotty g filename =
-  let outc = Filename.concat Config.results_dir filename |> Out_channel.create in
+let to_dotty g results_dir_entry =
+  let outc = ResultsDir.get_path results_dir_entry |> Out_channel.create in
   let fmt = F.formatter_of_out_channel outc in
   pp_dot fmt g ;
   Out_channel.close outc

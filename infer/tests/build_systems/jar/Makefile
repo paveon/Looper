@@ -7,7 +7,7 @@ TESTS_DIR = ../..
 
 INFERPRINT_OPTIONS = --issues-tests
 
-MVN_DIR = ../codetoanalyze/mvn/simple_app
+MVN_DIR = ../codetoanalyze/mvn/simple_app_for_jar_test
 SOURCES = $(MVN_DIR)/pom.xml $(shell find $(MVN_DIR) -type f -name '*.java')
 JAR_FILE = $(MVN_DIR)/target/simple-app-1.0-SNAPSHOT.jar
 
@@ -15,7 +15,10 @@ CLEAN_EXTRA = $(TARGET)
 
 include $(TESTS_DIR)/infer.make
 
+# TODO: fix FN_twoResourcesBad in pulse tests and remove --biabduction-only below
+
 infer-out/report.json: $(JAVA_DEPS) $(SOURCES)
 	$(QUIET)cd $(MVN_DIR) && $(MVN) --quiet clean install
 	$(QUIET)$(call silent_on_success,Testing mvn Java integration: $*,\
-		$(INFER_BIN) --project-root $(TESTS_DIR) --generated-classes $(JAR_FILE) --sourcepath $(MVN_DIR))
+	  $(INFER_BIN) --biabduction-only --project-root $(TESTS_DIR) \
+	               --generated-classes $(JAR_FILE) --sourcepath $(MVN_DIR))

@@ -33,13 +33,21 @@ let proc_names_of_source =
       "SELECT procedure_names FROM source_files WHERE source_file = :k"
   in
   fun source ->
-    Database.with_registered_statement stmt ~f:(fun db stmt ->
-        SourceFile.SQLite.serialize source
-        |> Sqlite3.bind stmt 1
-        |> SqliteUtils.check_result_code db ~log:"load bind source file" ;
-        SqliteUtils.result_single_column_option ~finalize:false db
-          ~log:"SourceFiles.proc_names_of_source" stmt
-        |> Option.value_map ~default:[] ~f:Procname.SQLiteList.deserialize )
+    let res_opt =
+      Database.with_registered_statement stmt ~f:(fun db stmt ->
+          SourceFile.SQLite.serialize source
+          |> Sqlite3.bind stmt 1
+          |> SqliteUtils.check_result_code db ~log:"load bind source file" ;
+          SqliteUtils.result_single_column_option ~finalize:false db
+            ~log:"SourceFiles.proc_names_of_source" stmt
+          |> Option.map ~f:Procname.SQLiteList.deserialize )
+    in
+    match res_opt with
+    | None ->
+        MissingDependencies.record_sourcefile source ;
+        []
+    | Some procs ->
+        procs
 
 
 let add source_file cfg tenv integer_type_widths =
@@ -88,7 +96,7 @@ let add source_file cfg tenv integer_type_widths =
   DBWriter.add_source_file
     ~source_file:(SourceFile.SQLite.serialize source_file)
     ~tenv:(Tenv.SQLite.serialize tenv)
-    ~integer_type_widths:(Typ.IntegerWidths.SQLite.serialize integer_type_widths)
+    ~integer_type_widths:(IntegerWidths.SQLite.serialize integer_type_widths)
     ~proc_names:(Procname.SQLiteList.serialize proc_names)
 
 

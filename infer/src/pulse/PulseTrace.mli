@@ -8,6 +8,7 @@ open! IStd
 module F = Format
 module CallEvent = PulseCallEvent
 module ValueHistory = PulseValueHistory
+module CellId = PulseValueHistory.CellId
 
 type t =
   | Immediate of {location: Location.t; history: ValueHistory.t}
@@ -18,6 +19,12 @@ type t =
       ; in_call: t  (** last step of the trace is in a call to [f] made at [location] *) }
 [@@deriving compare, equal]
 
+module Set : sig
+  include PrettyPrintable.PPSet with type elt = t
+
+  val map_callee : CallEvent.t -> Location.t -> t -> t
+end
+
 val pp : pp_immediate:(F.formatter -> unit) -> F.formatter -> t -> unit
 
 val get_outer_location : t -> Location.t
@@ -27,8 +34,17 @@ val get_outer_location : t -> Location.t
 val get_start_location : t -> Location.t
 (** initial step in the history if not empty, or else same as {!get_outer_location} *)
 
+val add_call :
+     CallEvent.t
+  -> Location.t
+  -> ValueHistory.t CellId.Map.t
+  -> default_caller_history:ValueHistory.t
+  -> t
+  -> t
+
 val add_to_errlog :
      ?include_value_history:bool
+  -> ?include_taint_events:bool (** to avoid showing unrelated taint traces for non-taint issues *)
   -> nesting:int
   -> pp_immediate:(F.formatter -> unit)
   -> t
@@ -47,8 +63,11 @@ val synchronous_add_to_errlog :
     happen at the same location, then that call will only appear once and the rest of those traces
     will then be added synchronously as well *)
 
-val find_map : t -> f:(ValueHistory.event -> 'a option) -> 'a option
-(** [find_map] applied to history events; does not look into contextual events *)
+val find_map_last_main : t -> f:(ValueHistory.event -> 'a option) -> 'a option
+(** [find_map] applied to history events in reverse order; does not look into contextual events *)
 
-val has_invalidation : t -> bool
-(** whether the main part of the trace contains an invalidation event *)
+val exists_main : t -> f:(ValueHistory.event -> bool) -> bool
+(** whether the trace contains an event satisfying [f]; does not look into contextual events *)
+
+val get_trace_until : t -> f:(ValueHistory.event -> bool) -> t option
+(** build a sub-trace leading to the first element of the trace satisfying [f] *)

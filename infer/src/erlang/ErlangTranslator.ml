@@ -101,10 +101,10 @@ let builtin_call_2 (env : (_, _) Env.t) ret_var builtin arg1 arg2 =
 
 
 let mk_atom_call (env : (_, _) Env.t) ret_var atom =
-  let value_exp = Exp.Const (Cstr atom) in
+  let name_exp = Exp.Const (Cstr atom) in
   let hash = ErlangTypeName.calculate_hash atom in
   let hash_exp = Exp.Const (Cint (IntLit.of_int hash)) in
-  builtin_call_2 env ret_var BuiltinDecl.__erlang_make_atom value_exp hash_exp
+  builtin_call_2 env ret_var BuiltinDecl.__erlang_make_atom name_exp hash_exp
 
 
 (** Calls make_integer on the value_exp expression. Does not check if value_exp is indeed an
@@ -1009,7 +1009,16 @@ and translate_expression_listcomprehension (env : (_, _) Env.t) ret_var expressi
   let loop_body_with_filters = List.fold_right filters ~f:apply_one_filter ~init:loop_body in
   (* Translate generators *)
   let extract_generator (qual : Ast.qualifier) =
-    match qual with Generator {pattern; expression} -> Some (pattern, expression) | _ -> None
+    match qual with
+    | Generator {pattern; expression} ->
+        Some (pattern, expression)
+    | MapGenerator _ ->
+        (* TODO: add support for map generators: T163176600 *)
+        L.debug Capture Verbose
+          "@[todo ErlangTranslator.translate_expression map generator instance(s)." ;
+        None
+    | _ ->
+        None
   in
   let generators = List.filter_map ~f:extract_generator qualifiers in
   (* Wrap filtered expression with loops for generators*)
@@ -1537,6 +1546,17 @@ let translate_one_spec (env : (_, _) Env.t) function_ spec =
     body.exit_failure |~~> [Procdesc.get_exit_node procdesc]
 
 
+let add_module_info_field (env : (_, _) Env.t) tenv =
+  let typ = Typ.ErlangType ModuleInfo in
+  Tenv.mk_struct tenv typ |> ignore ;
+  let field =
+    ( Fieldname.make typ ErlangTypeName.module_info_field_name
+    , Typ.mk_struct typ
+    , Map.data env.module_info )
+  in
+  Tenv.add_field tenv typ field
+
+
 (** Translate forms of a module. *)
 let translate_module (env : (_, _) Env.t) module_ base_dir =
   let f env {Ast.location; simple_form} =
@@ -1560,5 +1580,6 @@ let translate_module (env : (_, _) Env.t) module_ base_dir =
   (* Processing in order due to [file] attributes updating the path. *)
   let env = List.fold_left module_ ~f ~init:env in
   DB.Results_dir.init env.location.file ;
-  let tenv = Tenv.FileLocal (Tenv.create ()) in
-  SourceFiles.add env.location.file env.cfg tenv None
+  let tenv = Tenv.create () in
+  add_module_info_field env tenv ;
+  SourceFiles.add env.location.file env.cfg (Tenv.FileLocal tenv) None

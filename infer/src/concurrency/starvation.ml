@@ -408,7 +408,7 @@ let set_initial_attributes ({InterproceduralAnalysis.proc_desc} as interproc) as
   let procname = Procdesc.get_proc_name proc_desc in
   if not Config.starvation_whole_program then astate
   else
-    match Procname.base_of procname with
+    match procname with
     | Procname.Java java_pname when Procname.Java.is_class_initializer java_pname ->
         (* we are analyzing the class initializer, don't go through on-demand again *)
         astate
@@ -635,14 +635,20 @@ let should_report_deadlock_on_current_proc current_elem endpoint_elem =
 
 
 let should_report attrs =
-  match Procname.base_of (ProcAttributes.get_proc_name attrs) with
-  | Procname.Java java_pname ->
-      (not (Procname.Java.is_autogen_method java_pname))
-      && not (Procname.Java.is_class_initializer java_pname)
-  | Procname.ObjC_Cpp _ ->
-      true
-  | _ ->
-      false
+  let procname = ProcAttributes.get_proc_name attrs in
+  let should_report' procname =
+    match procname with
+    | Procname.Java java_pname ->
+        (not (Procname.Java.is_autogen_method java_pname))
+        && not (Procname.Java.is_class_initializer java_pname)
+    | Procname.ObjC_Cpp _ ->
+        true
+    | Procname.C _ ->
+        true
+    | _ ->
+        false
+  in
+  should_report' procname
 
 
 let fold_reportable_summaries analyze_ondemand tenv clazz ~init ~f =

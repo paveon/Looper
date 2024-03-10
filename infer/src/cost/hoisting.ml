@@ -89,11 +89,9 @@ let do_report extract_cost_if_expensive proc_desc err_log
     | None ->
         (IssueType.invariant_call, "", [loop_inv_trace_elem])
   in
-  let message =
-    F.asprintf "%s%s. It can be moved out of the loop at %a." exp_desc cost_msg Location.pp
-      loop_head_loc
-  in
-  Reporting.log_issue proc_desc err_log ~loc ~ltr LoopHoisting issue message
+  let message = F.asprintf "%s%s." exp_desc cost_msg in
+  let suggestion = F.asprintf "Move it out of the loop at %a." Location.pp loop_head_loc in
+  Reporting.log_issue ~suggestion proc_desc err_log ~loc ~ltr LoopHoisting issue message
 
 
 let report_errors proc_desc tenv err_log get_callee_purity reaching_defs_invariant_map
@@ -117,10 +115,8 @@ let report_errors proc_desc tenv err_log get_callee_purity reaching_defs_invaria
     loop_head_to_inv_instrs
 
 
-let checker
-    ({InterproceduralAnalysis.proc_desc; exe_env; err_log; analyze_dependency} as analysis_data) =
-  let proc_name = Procdesc.get_proc_name proc_desc in
-  let tenv = Exe_env.get_proc_tenv exe_env proc_name in
+let checker ({InterproceduralAnalysis.proc_desc; err_log; analyze_dependency; tenv} as analysis_data)
+    =
   let cfg = InstrCFG.from_pdesc proc_desc in
   (* computes reaching defs: node -> (var -> node set) *)
   let reaching_defs_invariant_map = ReachingDefs.compute_invariant_map proc_desc in

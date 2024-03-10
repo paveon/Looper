@@ -1,0 +1,139 @@
+// Copyright (c) Facebook, Inc. and its affiliates.
+//
+// This source code is licensed under the MIT license found in the
+// LICENSE file in the root directory of this source tree.
+
+.source_language = "hack"
+
+// These functions have OCaml models
+declare $builtins.nondet() : int
+
+type HackDict .final {}
+
+type HackString = { val: *string }
+
+define $builtins.hack_string(str: *string): *HackMixed {
+  #entry:
+    n0 = __sil_allocate(<HackString>)
+    n1: *string = load &str
+    store n0.HackString.val <- n1 : *string
+    ret n0
+}
+
+type HackInt = .final { val: int }
+
+define $builtins.hack_int(i: int): *HackInt {
+  #entry:
+    n0 = __sil_allocate(<HackInt>)
+    n1: int = load &i
+    store n0.HackInt.val <- n1 : int
+    ret n0
+}
+
+type HackFloat = .final { val: float }
+
+define $builtins.hack_float(f: float): *HackFloat {
+  #entry:
+    n0 = __sil_allocate(<HackFloat>)
+    n1: float = load &f
+    store n0.HackFloat.val <- n1 : float
+    ret n0
+}
+
+type HackBool = .final { val: int }
+
+define $builtins.hack_bool(b: int): *HackBool {
+  #entry:
+    n0 = __sil_allocate(<HackBool>)
+    n1: int = load &b
+    store n0.HackBool.val <- n1 : int
+    ret n0
+}
+
+define $builtins.hack_make_true(): *HackBool {
+  #entry:
+    ret $builtins.hack_bool(1)
+}
+
+define $builtins.hack_make_false(): *HackBool {
+  #entry:
+    ret $builtins.hack_bool(0)
+}
+
+define $builtins.hack_make_random_bool(): *HackBool {
+  #entry:
+    ret $builtins.hack_bool($builtins.nondet())
+}
+
+define $builtins.hhbc_class_has_reified_generics(class: *HackMixed): *HackMixed {
+  #entry:
+    ret $builtins.hack_make_false()
+}
+
+define $builtins.hhbc_has_reified_parent(class: *HackMixed): *HackMixed {
+  #entry:
+    ret $builtins.hack_make_false()
+}
+
+define $builtins.hhbc_is_type_null(o: *HackMixed): *HackMixed {
+  #entry:
+    jmp tlab, flab
+
+  #tlab:
+    n0: *HackMixed = load &o
+    prune __sil_ne(n0, 0)
+    ret $builtins.hack_make_false()
+
+  #flab:
+    n0: *HackMixed = load &o
+    prune __sil_lnot(__sil_ne(n0, 0))
+    ret $builtins.hack_make_true()
+}
+
+define $builtins.hhbc_is_late_bound_cls(o: *HackMixed): *HackMixed {
+  #entry:
+    ret $builtins.hack_make_random_bool()
+}
+
+define $builtins.hhbc_lock_obj(o: *HackMixed): *HackMixed {
+  #entry:
+    ret null
+}
+
+define $builtins.hhbc_check_this(o: *HackMixed): *HackMixed {
+  #entry:
+    ret null
+}
+
+type HackVec = .final {
+  __infer_model_backing_vec_fst: *HackMixed;
+  __infer_model_backing_vec_snd: *HackMixed;
+  __infer_model_backing_vec_size: int;
+  __infer_model_backing_last_read: int
+}
+
+declare $builtins.hhbc_new_vec(...): *HackMixed
+declare $builtins.hhbc_await(*HackMixed): *HackMixed
+
+// This actually only works for vecs at the moment
+// new fst is old second
+// new snd is appended value
+// size is incremented
+// old fst is fake awaited
+define $builtins.hack_array_cow_append(v: *HackVec, o: *HackMixed): *HackMixed {
+  #entry:
+    n0: *HackMixed = load &v
+    n1: *HackMixed = load n0.HackVec.__infer_model_backing_vec_fst
+    n2: *HackMixed = load n0.HackVec.__infer_model_backing_vec_snd
+    n3 = $builtins.hhbc_await(n1)
+    n4: *HackMixed = load &o
+    n5 = $builtins.hhbc_new_vec(n2, n4)
+    n6: int = load n0.HackVec.__infer_model_backing_vec_size
+    store n5.HackVec.__infer_model_backing_vec_size <- __sil_plusa_int(n6,1) : int
+    ret n5
+}
+
+define HackMixed._86reifiedinit(o: *HackMixed): *HackMixed {
+  #entry:
+    ret null
+}

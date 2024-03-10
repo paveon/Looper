@@ -16,7 +16,6 @@ type mode =
   | Analyze
   | Ant of {prog: string; args: string list}
   | Buck2Clang of {build_cmd: string list}
-  | Buck2Java of {build_cmd: string list}
   | BuckClangFlavor of {build_cmd: string list}
   | BuckCompilationDB of {deps: BuckMode.clang_compilation_db_deps; prog: string; args: string list}
   | BuckErlang of {prog: string; args: string list}
@@ -24,13 +23,17 @@ type mode =
   | BuckJavaFlavor of {build_cmd: string list}
   | BxlClang of {build_cmd: string list}
   | BxlClangFile
+  | BxlJava of {build_cmd: string list}
   | Clang of {compiler: Clang.compiler; prog: string; args: string list}
   | ClangCompilationDB of {db_files: [`Escaped of string | `Raw of string] list}
   | Gradle of {prog: string; args: string list}
   | Javac of {compiler: Javac.compiler; prog: string; args: string list}
+  | Kotlinc of {prog: string; args: string list}
   | JsonSIL of {cfg_json: string; tenv_json: string}
   | Maven of {prog: string; args: string list}
   | NdkBuild of {build_cmd: string list}
+  | Python of {prog: string; args: string list}
+  | PythonBytecode of {files: string list}
   | Rebar3 of {args: string list}
   | Erlc of {args: string list}
   | Hackc of {prog: string; args: string list}
@@ -40,7 +43,12 @@ type mode =
 
 let is_analyze_mode = function Analyze -> true | _ -> false
 
-let is_compatible_with_textual_generation = function Javac _ -> true | _ -> false
+let is_compatible_with_textual_generation = function
+  | Javac _ | Python _ | PythonBytecode _ ->
+      true
+  | _ ->
+      false
+
 
 let pp_mode fmt = function
   | Analyze ->
@@ -49,8 +57,6 @@ let pp_mode fmt = function
       F.fprintf fmt "Ant driver mode:@\nprog = '%s'@\nargs = %a" prog Pp.cli_args args
   | Buck2Clang {build_cmd} ->
       F.fprintf fmt "Buck2/Clang driver mode: build_cmd = %a" Pp.cli_args build_cmd
-  | Buck2Java {build_cmd} ->
-      F.fprintf fmt "Buck2/Java driver mode: build_cmd = %a" Pp.cli_args build_cmd
   | BuckClangFlavor {build_cmd} ->
       F.fprintf fmt "BuckClangFlavor driver mode: build_cmd = %a" Pp.cli_args build_cmd
   | BuckCompilationDB {deps; prog; args} ->
@@ -66,6 +72,8 @@ let pp_mode fmt = function
       F.fprintf fmt "BxlClang driver mode:@\nbuild command = %a" Pp.cli_args build_cmd
   | BxlClangFile ->
       F.fprintf fmt "BxlClang file driver mode"
+  | BxlJava {build_cmd} ->
+      F.fprintf fmt "BxlJava driver mode:@\nbuild command = %a" Pp.cli_args build_cmd
   | Clang {prog; args} ->
       F.fprintf fmt "Clang driver mode:@\nprog = '%s'@\nargs = %a" prog Pp.cli_args args
   | ClangCompilationDB _ ->
@@ -74,12 +82,18 @@ let pp_mode fmt = function
       F.fprintf fmt "Gradle driver mode:@\nprog = '%s'@\nargs = %a" prog Pp.cli_args args
   | Javac {prog; args} ->
       F.fprintf fmt "Javac driver mode:@\nprog = '%s'@\nargs = %a" prog Pp.cli_args args
+  | Kotlinc {prog; args} ->
+      F.fprintf fmt "Kotlinc driver mode:@\nprog = '%s'@\nargs = %a" prog Pp.cli_args args
   | JsonSIL {cfg_json; tenv_json} ->
       F.fprintf fmt "Json driver mode:@\ncfg_json= '%s'@\ntenv_json = %s" cfg_json tenv_json
   | Maven {prog; args} ->
       F.fprintf fmt "Maven driver mode:@\nprog = '%s'@\nargs = %a" prog Pp.cli_args args
   | NdkBuild {build_cmd} ->
       F.fprintf fmt "NdkBuild driver mode: build_cmd = %a" Pp.cli_args build_cmd
+  | Python {prog; args} ->
+      F.fprintf fmt "Python driver mode:@\nprog = '%s'@\nargs = %a" prog Pp.cli_args args
+  | PythonBytecode {files} ->
+      F.fprintf fmt "Python driver mode:@\nfiles = '%a'" Pp.cli_args files
   | Rebar3 {args} ->
       F.fprintf fmt "Rebar3 driver mode:@\nargs = %a" Pp.cli_args args
   | Erlc {args} ->
@@ -138,15 +152,6 @@ let capture ~changed_files mode =
       |> Out_channel.write_lines infer_deps_file ;
       () )
     else
-      let dolifiles = Config.capture_doli in
-      ( match dolifiles with
-      | [] ->
-          ()
-      | _ :: _ ->
-          let dfiles =
-            List.map dolifiles ~f:(fun x -> TextualParser.TextualFile.StandaloneFile x)
-          in
-          TextualParser.capture ~capture:DoliCapture dfiles ) ;
       match mode with
       | Analyze ->
           ()
@@ -156,9 +161,6 @@ let capture ~changed_files mode =
       | Buck2Clang {build_cmd} ->
           L.progress "Capturing in buck2/clang mode...@." ;
           Buck2Clang.capture build_cmd
-      | Buck2Java {build_cmd} ->
-          L.progress "Capturing in buck2/java mode...@." ;
-          Buck2Java.capture build_cmd
       | BuckClangFlavor {build_cmd} ->
           L.progress "Capturing in buck mode...@." ;
           BuckFlavors.capture build_cmd
@@ -173,16 +175,19 @@ let capture ~changed_files mode =
           Erlang.capture_buck ~command:prog ~args
       | BuckGenrule {prog} ->
           L.progress "Capturing for Buck genrule compatibility...@." ;
-          JMain.from_arguments prog
+          JMain.from_arguments prog ~sources:Config.sources
       | BuckJavaFlavor {build_cmd} ->
           L.progress "Capturing for BuckJavaFlavor integration...@." ;
           BuckJavaFlavor.capture build_cmd
       | BxlClang {build_cmd} ->
           L.progress "Capturing in bxl/clang mode...@." ;
-          BxlClang.capture build_cmd
+          BxlCapture.capture build_cmd
       | BxlClangFile ->
           L.progress "Capturing in bxl/clang file mode...@." ;
-          BxlClang.file_capture ()
+          BxlCapture.file_capture ()
+      | BxlJava {build_cmd} ->
+          L.progress "Capturing in bxl/java mode...@." ;
+          BxlCapture.capture build_cmd
       | Clang {compiler; prog; args} ->
           if Config.is_originator then L.progress "Capturing in make/cc mode...@." ;
           Clang.capture compiler ~prog ~args
@@ -195,6 +200,9 @@ let capture ~changed_files mode =
       | Javac {compiler; prog; args} ->
           if Config.is_originator then L.progress "Capturing in javac mode...@." ;
           Javac.capture compiler ~prog ~args
+      | Kotlinc {prog; args} ->
+          if Config.is_originator then L.progress "Capturing in kotlinc mode...@." ;
+          Kotlinc.capture ~prog ~args
       | JsonSIL {cfg_json; tenv_json} ->
           L.progress "Capturing using JSON mode...@." ;
           CaptureSILJson.capture ~cfg_json ~tenv_json
@@ -204,6 +212,12 @@ let capture ~changed_files mode =
       | NdkBuild {build_cmd} ->
           L.progress "Capturing in ndk-build mode...@." ;
           NdkBuild.capture ~build_cmd
+      | Python {prog; args} ->
+          L.progress "Capturing in python mode...@." ;
+          Python.capture (Python.Files {prog; args})
+      | PythonBytecode {files} ->
+          L.progress "Capturing in python byte-code mode...@." ;
+          Python.capture (Python.Bytecode {files})
       | Rebar3 {args} ->
           L.progress "Capturing in rebar3 mode...@." ;
           Erlang.capture ~command:"rebar3" ~args
@@ -214,10 +228,8 @@ let capture ~changed_files mode =
           L.progress "Capturing in hackc mode...@." ;
           Hack.capture ~prog ~args
       | Textual {textualfiles} ->
-          let tfiles =
-            List.map textualfiles ~f:(fun x -> TextualParser.TextualFile.StandaloneFile x)
-          in
-          TextualParser.capture ~capture:TextualCapture tfiles
+          List.map textualfiles ~f:(fun x -> TextualParser.TextualFile.StandaloneFile x)
+          |> TextualParser.capture
       | XcodeBuild {prog; args} ->
           L.progress "Capturing in xcodebuild mode...@." ;
           XcodeBuild.capture ~prog ~args
@@ -231,11 +243,11 @@ let capture ~changed_files mode =
   let should_merge =
     match mode with
     | Buck2Clang _
-    | Buck2Java _
     | BuckClangFlavor _
     | BuckJavaFlavor _
     | BxlClang _
     | BxlClangFile
+    | BxlJava _
     | Gradle _ ->
         true
     | _ ->
@@ -245,12 +257,23 @@ let capture ~changed_files mode =
     if Config.export_changed_functions then MergeCapture.merge_changed_functions () ;
     let root =
       match mode with
-      | Buck2Clang _ | BxlClang _ | BxlClangFile ->
+      | Buck2Clang _ | BxlClang _ | BxlClangFile | BxlJava _ ->
           Config.buck2_root
       | _ ->
           Config.project_root
     in
     MergeCapture.merge_captured_targets ~root )
+
+
+let log_db_size_mb db db_entry debug_mode label =
+  if Config.developer_mode then (
+    Database.get_database db
+    |> SqliteUtils.exec ~log:"checkpointing" ~stmt:"PRAGMA wal_checkpoint(TRUNCATE)" ;
+    let lstat = ResultsDir.get_path db_entry |> Unix.lstat in
+    let size = Int64.to_int lstat.st_size |> Option.value_exn in
+    let value = size / 1024 / 1024 in
+    L.debug debug_mode Quiet "Database size %s: %d@\n" label value ;
+    ScubaLogging.log_count ~label ~value )
 
 
 (* shadowed for tracing *)
@@ -261,6 +284,7 @@ let capture ~changed_files mode =
   @@ fun () ->
   PerfEvent.(log (fun logger -> log_begin_event logger ~name:"capture" ())) ;
   capture ~changed_files mode ;
+  log_db_size_mb CaptureDatabase CaptureDB Capture "capture_db_size_mb" ;
   PerfEvent.(log (fun logger -> log_end_event logger ()))
 
 
@@ -269,6 +293,7 @@ let execute_analyze ~changed_files =
   @@ fun () ->
   PerfEvent.(log (fun logger -> log_begin_event logger ~name:"analyze" ())) ;
   InferAnalyze.main ~changed_files ;
+  log_db_size_mb AnalysisDatabase AnalysisDB Analysis "analysis_db_size_mb" ;
   PerfEvent.(log (fun logger -> log_end_event logger ()))
 
 
@@ -336,12 +361,11 @@ let analyze_and_report ~changed_files mode =
   | (Analyze | Run), _ when Config.invalidate_only ->
       ()
   | (Analyze | Run), _ ->
-      if Config.capture then
-        if SourceFiles.is_empty () then error_nothing_to_analyze mode
-        else (
-          execute_analyze ~changed_files ;
-          if Config.starvation_whole_program then StarvationGlobalAnalysis.whole_program_analysis () ;
-          if Config.shrink_analysis_db then DBWriter.shrink_analysis_db () ) ;
+      if SourceFiles.is_empty () then error_nothing_to_analyze mode
+      else (
+        execute_analyze ~changed_files ;
+        if Config.starvation_whole_program then StarvationGlobalAnalysis.whole_program_analysis () ;
+        if Config.shrink_analysis_db then DBWriter.shrink_analysis_db () ) ;
       if Config.report then report ()
 
 
@@ -375,6 +399,8 @@ let assert_supported_mode required_analyzer requested_mode_string =
         Version.erlang_enabled
     | `Hack ->
         Version.hack_enabled
+    | `Python ->
+        Version.python_enabled
     | `Xcode ->
         Version.clang_enabled && Version.xcode_enabled
   in
@@ -391,6 +417,8 @@ let assert_supported_mode required_analyzer requested_mode_string =
           "erlang"
       | `Hack ->
           "hack"
+      | `Python ->
+          "python"
       | `Xcode ->
           "clang and xcode"
     in
@@ -409,7 +437,7 @@ let error_no_buck_mode_specified () =
 
 let assert_supported_build_system build_system =
   match (build_system : Config.build_system) with
-  | BAnt | BGradle | BJava | BJavac | BMvn ->
+  | BAnt | BGradle | BJava | BJavac | BKotlinc | BMvn ->
       Config.string_of_build_system build_system |> assert_supported_mode `Java
   | BClang | BMake | BNdk ->
       Config.string_of_build_system build_system |> assert_supported_mode `Clang
@@ -419,6 +447,8 @@ let assert_supported_build_system build_system =
       Config.string_of_build_system build_system |> assert_supported_mode `Erlang
   | BHackc ->
       Config.string_of_build_system build_system |> assert_supported_mode `Hack
+  | BPython ->
+      Config.string_of_build_system build_system |> assert_supported_mode `Python
   | BXcode ->
       Config.string_of_build_system build_system |> assert_supported_mode `Xcode
   | BBuck ->
@@ -457,6 +487,8 @@ let mode_of_build_command build_cmd (buck_mode : BuckMode.t option) =
   match build_cmd with
   | [] when Config.bxl_file_capture ->
       BxlClangFile
+  | [] when not (List.is_empty Config.pyc_file) ->
+      PythonBytecode {files= Config.pyc_file}
   | [] -> (
       let textualfiles = Config.capture_textual in
       match (Config.clang_compilation_dbs, textualfiles) with
@@ -506,14 +538,14 @@ let mode_of_build_command build_cmd (buck_mode : BuckMode.t option) =
         match buck_mode with
         | None ->
             error_no_buck_mode_specified ()
-        | Some Erlang ->
-            BuckErlang {prog; args}
         | Some Clang when Config.buck2_use_bxl ->
             BxlClang {build_cmd}
         | Some Clang ->
             Buck2Clang {build_cmd}
-        | Some Java ->
-            Buck2Java {build_cmd}
+        | Some Erlang ->
+            BuckErlang {prog; args}
+        | Some Java when Config.buck2_use_bxl ->
+            BxlJava {build_cmd}
         | Some buck_mode ->
             L.die UserError "%a is not supported with buck2.@." BuckMode.pp buck_mode )
       | BClang ->
@@ -524,6 +556,8 @@ let mode_of_build_command build_cmd (buck_mode : BuckMode.t option) =
           Javac {compiler= Javac.Java; prog; args}
       | BJavac ->
           Javac {compiler= Javac.Javac; prog; args}
+      | BKotlinc ->
+          Kotlinc {prog; args}
       | BMake ->
           Clang {compiler= Clang.Make; prog; args}
       | BMvn ->
@@ -536,6 +570,8 @@ let mode_of_build_command build_cmd (buck_mode : BuckMode.t option) =
           Erlc {args}
       | BHackc ->
           Hackc {prog; args}
+      | BPython ->
+          Python {prog; args}
       | BXcode when Config.xcpretty ->
           XcodeXcpretty {prog; args}
       | BXcode ->

@@ -400,7 +400,14 @@ let parse_proc_attributes_locals (json : Safe.t) : ProcAttributes.var_data =
   let n, t, _ = parse_proc_attributes_var json in
   let mib = to_bool (member "modify_in_block" json) in
   let ice = to_bool (member "is_const_expr" json) in
-  {name= n; typ= t; modify_in_block= mib; is_constexpr= ice; is_declared_unused= false}
+  { name= n
+  ; typ= t
+  ; modify_in_block= mib
+  ; is_constexpr= ice
+  ; is_declared_unused= false
+  ; is_structured_binding= false
+  ; has_cleanup_attribute= false
+  ; tmp_id= None }
 
 
 let parse_proc_attributes (json : Safe.t) =
@@ -717,6 +724,6 @@ let parse_tenv (json : Safe.t) =
 let capture ~cfg_json ~tenv_json =
   let tenv = parse_tenv (Yojson.Safe.from_file tenv_json) in
   let cfg = parse_cfg (Yojson.Safe.from_file cfg_json) in
-  Tenv.store_global tenv ;
+  Tenv.store_global ~normalize:true tenv ;
   store cfg ;
   ()

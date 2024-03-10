@@ -18,13 +18,18 @@ val log_many : LogEntry.t list -> unit
 val log_count : label:string -> value:int -> unit
 (** Log anything that can be counted. Events will be prefixed with ["count."] *)
 
+val log_duration : label:string -> duration_us:int -> unit
+(** Log elapsed time. Events will be prefixed with ["time."] *)
+
 val log_message : label:string -> message:string -> unit
 (** Log a [string]. Event is prefixed with ["msg."] *)
+
+val log_message_with_location : label:string -> loc:string -> message:string -> unit
 
 val cost_log_message : label:string -> message:string -> unit
 (** Similar to [log_message], but log only when [--cost-scuba-logging] option is given. *)
 
-val pulse_log_message : label:string -> message:string -> unit
+val pulse_log_message : label:string -> loc:string -> message:string -> unit
 (** Similar to [log_message], but log only when [--pulse-scuba-logging] option is given. *)
 
 val execute_with_time_logging : string -> (unit -> 'a) -> 'a

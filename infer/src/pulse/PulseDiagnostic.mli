@@ -12,8 +12,9 @@ module CallEvent = PulseCallEvent
 module ConfigName = FbPulseConfigName
 module DecompilerExpr = PulseDecompilerExpr
 module Invalidation = PulseInvalidation
-module Taint = PulseTaint
+module TaintItem = PulseTaintItem
 module Trace = PulseTrace
+module TransitiveInfo = PulseTransitiveInfo
 module ValueHistory = PulseValueHistory
 
 type calling_context = (CallEvent.t * Location.t) list [@@deriving compare, equal]
@@ -49,14 +50,17 @@ module ErlangError : sig
   [@@deriving compare, equal, yojson_of]
 end
 
-type read_uninitialized_value =
-  { calling_context: calling_context
-        (** the list of function calls leading to the issue being realised, which is an additional
-            common prefix to the traces in the record *)
-  ; trace: Trace.t
-        (** assuming we are in the calling context, the trace leads to read of the uninitialized
-            value *) }
-[@@deriving compare, equal, yojson_of]
+module ReadUninitialized : sig
+  type t =
+    { typ: Attribute.UninitializedTyp.t
+    ; calling_context: calling_context
+          (** the list of function calls leading to the issue being realised, which is an additional
+              common prefix to the traces in the record *)
+    ; trace: Trace.t
+          (** assuming we are in the calling context, the trace leads to read of the uninitialized
+              value *) }
+  [@@deriving compare, equal, yojson_of]
+end
 
 type flow_kind = TaintedFlow | FlowToSink | FlowFromSource [@@deriving equal]
 
@@ -73,25 +77,32 @@ type t =
   | CSharpResourceLeak of
       {class_name: CSharpClassName.t; allocation_trace: Trace.t; location: Location.t}
   | ErlangError of ErlangError.t
+  | TransitiveAccess of
+      { tag: string
+      ; description: string
+      ; call_trace: Trace.t
+      ; transitive_callees: TransitiveInfo.Callees.t
+      ; transitive_missed_captures: Typ.Name.Set.t }
   | JavaResourceLeak of
       {class_name: JavaClassName.t; allocation_trace: Trace.t; location: Location.t}
+  | HackUnawaitedAwaitable of {allocation_trace: Trace.t; location: Location.t}
   | MemoryLeak of {allocator: Attribute.allocator; allocation_trace: Trace.t; location: Location.t}
   | ReadonlySharedPtrParameter of
       {param: Var.t; typ: Typ.t; location: Location.t; used_locations: Location.t list}
-  | ReadUninitializedValue of read_uninitialized_value
+  | ReadUninitialized of ReadUninitialized.t
   | RetainCycle of
       { assignment_traces: Trace.t list
-      ; value: DecompilerExpr.t
-      ; path: DecompilerExpr.t
+      ; values: (DecompilerExpr.t * Location.t option) list
       ; location: Location.t }
   | StackVariableAddressEscape of {variable: Var.t; history: ValueHistory.t; location: Location.t}
   | TaintFlow of
       { expr: DecompilerExpr.t
-      ; source: Taint.t * ValueHistory.t
-      ; sink: Taint.t * Trace.t
+      ; source: TaintItem.t * ValueHistory.t
+      ; sink: TaintItem.t * Trace.t
       ; location: Location.t
       ; flow_kind: flow_kind
       ; policy_description: string
+      ; policy_id: int
       ; policy_privacy_effect: string option }
   | UnnecessaryCopy of
       { copied_into: PulseAttribute.CopiedInto.t
@@ -110,7 +121,7 @@ val pp : F.formatter -> t -> unit
 val aborts_execution : t -> bool
 (** whether the presence of an error should abort the execution *)
 
-val get_message : t -> string
+val get_message_and_suggestion : t -> string * string option
 
 val get_location : t -> Location.t
 

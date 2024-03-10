@@ -42,7 +42,7 @@ and t =
       (** A field offset, the type is the surrounding struct type *)
   | Lindex of t * t  (** An array index offset: [exp1\[exp2\]] *)
   | Sizeof of sizeof_data
-[@@deriving compare]
+[@@deriving compare, hash, normalize]
 
 val equal : t -> t -> bool
 (** Equality for expressions. *)
@@ -158,7 +158,7 @@ val d_texp_full : t -> unit
 val d_list : t list -> unit
 (** Dump a list of expressions. *)
 
-val is_objc_block_closure : t -> bool
+val is_cpp_closure : t -> bool
 
 val zero_of_type : Typ.t -> t option
 (** Returns the zero value of a type, for int, float and ptr types *)

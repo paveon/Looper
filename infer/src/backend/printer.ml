@@ -83,7 +83,7 @@ end = struct
         line ;
       F.fprintf fmt "PROC: %a LINE: %a@\n"
         (Io_infer.Html.pp_proc_link [".."] proc_name)
-        (Escape.escape_xml (Procname.to_string proc_name))
+        (Escape.escape_xml (Procname.to_string ~verbosity:Verbose proc_name))
         (Io_infer.Html.pp_line_link source [".."])
         line ;
       F.fprintf fmt "<br>PREDS:@\n" ;
@@ -93,9 +93,18 @@ end = struct
       F.fprintf fmt "<br>EXN:@\n" ;
       pp_node_link_seq fmt (Procdesc.Node.get_exn node) ;
       F.fprintf fmt "<br>@\n" ;
-      F.fprintf fmt "<LISTING class='%s'>%a</LISTING>" (Pp.color_string Green)
+      (* Instruction listing + buttons to control stickiness/visibility *)
+      F.fprintf fmt "<DIV id='node_listing'>@\n" ;
+      F.fprintf fmt
+        "<BUTTON type='button' onclick='toggleListingOnTop()'>Listing on top</BUTTON>@\n" ;
+      F.fprintf fmt
+        "<BUTTON type='button' onclick='toggleListingVisibility()'>Listing visibility</BUTTON>@\n" ;
+      F.fprintf fmt "<LISTING class='%s'>%a</LISTING>@\n" (Pp.color_string Green)
         (Instrs.pp ~indent:false (Pp.html Green))
-        (Procdesc.Node.get_instrs node) ) ;
+        (Procdesc.Node.get_instrs node) ;
+      F.fprintf fmt "</DIV>@\n" ;
+      (* Listing end *)
+      F.fprintf fmt "<BUTTON type='button' onclick='toggleDetailsBlock()'>Toggle details</BUTTON>" ) ;
     F.fprintf fmt "%a%a %t" Io_infer.Html.pp_hline ()
       (Io_infer.Html.pp_session_link source ~with_name:true [".."] ~proc_name)
       (nodeid, session, line) pp_name ;
@@ -129,7 +138,7 @@ end = struct
     let fd, fmt = Io_infer.Html.create source [Procname.to_filename pname] in
     F.fprintf fmt "<center><h1>Procedure %a</h1></center>@\n"
       (Io_infer.Html.pp_line_link source
-         ~text:(Some (Escape.escape_xml (Procname.to_string pname)))
+         ~text:(Some (Escape.escape_xml (Procname.to_string ~verbosity:Verbose pname)))
          [] )
       linenum ;
     pp_node_link_seq [] ~description:true fmt nodes ;
@@ -211,7 +220,9 @@ end = struct
               match Procdesc.Node.get_kind n with
               | Procdesc.Node.Start_node ->
                   let proc_name = Procdesc.Node.get_proc_name n in
-                  let proc_name_escaped = Escape.escape_xml (Procname.to_string proc_name) in
+                  let proc_name_escaped =
+                    Escape.escape_xml (Procname.to_string ~verbosity:Verbose proc_name)
+                  in
                   if Summary.OnDisk.get ~lazy_payloads:true proc_name |> Option.is_some then (
                     F.pp_print_char fmt ' ' ;
                     let label = F.asprintf "summary for %s" proc_name_escaped in

@@ -62,15 +62,16 @@ let sub_list : 'a substitutor -> 'a list substitutor =
   (sub, List.rev xs)
 
 
-type pulse_state = {pulse_post: BaseDomain.t; pulse_pre: BaseDomain.t; path_condition: Formula.t}
+type pulse_state =
+  { pulse_post: BaseDomain.t
+  ; pulse_pre: BaseDomain.t
+  ; path_condition: Formula.t
+  ; get_reachable: unit -> AbstractValue.Set.t }
 
-let get_reachable {pulse_post; pulse_pre} =
-  let post_keep = BaseDomain.reachable_addresses pulse_post in
-  let pre_keep = BaseDomain.reachable_addresses pulse_pre in
-  AbstractValue.Set.union post_keep pre_keep
+let get_dynamic_type {pulse_post} value =
+  BaseAddressAttributes.get_dynamic_type pulse_post.attrs value
+  |> Option.map ~f:(fun dynamic_type_data -> dynamic_type_data.Attribute.typ)
 
-
-let get_dynamic_type {pulse_post} = BaseAddressAttributes.get_dynamic_type pulse_post.attrs
 
 module Constraint : sig
   type predicate
@@ -261,7 +262,8 @@ end = struct
        Next, we iterate through disequality path predicates. If the predicate is implied by the path
        condition *or* by the heap, we drop it. Otherwise, we conjoin it to the path condition (and
        detect if it leads to unsatisfiability). We assert that no new_eqs are produced (which is
-       what Formula.and_normalized_atom currently does).
+       what Formula.and_normalized_atom currently does). (TODO: This assumption does not hold
+       anymore T171889331.)
 
        Next, we iterate through LeadsTo predicates. If they are implied by the heap, we drop them;
        otherwise, we keep them and we add them to the heap. (For implementation, we do not actually
@@ -340,7 +342,7 @@ end = struct
           let incorporate_eq heap (eq : Formula.new_eq) =
             match eq with
             | Equal (v1, v2) ->
-                Memory.subst_var (v1, v2) heap
+                Memory.subst_var ~for_summary:true (v1, v2) heap
             | EqZero _ ->
                 (* TODO: Detect more contradictions here. *)
                 Sat heap
@@ -350,8 +352,8 @@ end = struct
         (path_condition, heap)
       in
       (* Handle disequalities. *)
-      let _path_condition =
-        let f path_condition (l, r) =
+      let* _path_condition, out_constr =
+        let f (path_condition, out_constr) (l, r) =
           let l, r = (rep path_condition l, rep path_condition r) in
           if Formula.equal_operand l r then Unsat
           else
@@ -369,16 +371,17 @@ end = struct
               | _ ->
                   false
             in
-            if implied_by_heap () || implied_by_pathcondition () then Sat path_condition
+            if implied_by_heap () || implied_by_pathcondition () then
+              Sat (path_condition, out_constr)
             else
               let+ path_condition, new_eqs =
                 Formula.prune_binop ~negated:false Ne l r path_condition
               in
               if not (RevList.is_empty new_eqs) then
                 L.die InternalError "Oh, no: I expected disequalities to not introduce equalities" ;
-              path_condition
+              (path_condition, C.{out_constr with neq_constr= (l, r) :: out_constr.neq_constr})
         in
-        SatUnsat.list_fold in_constr.C.neq_constr ~init:path_condition ~f
+        SatUnsat.list_fold in_constr.C.neq_constr ~init:(path_condition, out_constr) ~f
       in
       (* Digresion: heap (and fake-heap) traversal. *)
       let leadsto fake_heap heap source target =
@@ -505,8 +508,10 @@ let pp_simple_state f {pre; post; pruned} =
 
 
 let pp_state f state =
-  F.fprintf f "@[<v2>{len=%d;content=@;@[<2>[ %a ]@]}@]" (List.length state)
-    (pp_comma_seq pp_simple_state) state
+  if List.is_empty state then F.pp_print_string f "{empty}"
+  else
+    F.fprintf f "@[<v2>{len=%d;content=@;@[<2>[ %a ]@]}@]" (List.length state)
+      (pp_comma_seq pp_simple_state) state
 
 
 let start () =
@@ -550,7 +555,7 @@ let make_field class_name field_name : Fieldname.t =
         (Language.to_string !Language.curr_language)
 
 
-let deref_field_access pulse_state value class_name field_name : value option =
+let deref_field_access pulse_state value class_name field_name : Formula.operand option =
   (* Dereferencing is done in 2 steps: (v) --f-> (v1) --*-> (v2) *)
   let heap = pulse_state.pulse_post.heap in
   let* edges = Memory.find_opt value heap in
@@ -558,7 +563,11 @@ let deref_field_access pulse_state value class_name field_name : value option =
   let* v1, _hist = Memory.Edges.find_opt (FieldAccess field) edges in
   let* edges = Memory.find_opt v1 heap in
   let* v2, _hist = Memory.Edges.find_opt Dereference edges in
-  Some v2
+  match BaseAddressAttributes.get_const_string v2 pulse_state.pulse_post.attrs with
+  | Some r ->
+      Some (Formula.ConstOperand (Const.Cstr r))
+  | _ ->
+      Some (Formula.AbstractValueOperand v2)
 
 
 let binop_to : ToplAst.binop -> Constraint.operator = function
@@ -583,6 +592,8 @@ let eval_guard pulse_state memory tcontext guard : Constraint.t =
     match value with
     | Constant (LiteralInt x) ->
         Some (ConstOperand (Cint (IntLit.of_int x)))
+    | Constant (LiteralStr s) ->
+        Some (ConstOperand (Cstr s))
     | Register reg ->
         Some (AbstractValueOperand (get memory reg))
     | Binding v ->
@@ -591,8 +602,7 @@ let eval_guard pulse_state memory tcontext guard : Constraint.t =
         let* value_op = operand_of_value value in
         match value_op with
         | Formula.AbstractValueOperand v ->
-            let* f = deref_field_access pulse_state v class_name field_name in
-            Some (Formula.AbstractValueOperand f)
+            deref_field_access pulse_state v class_name field_name
         | _ ->
             (* TODO: enforce in parser and make this an internal error. *)
             L.die UserError "Unsupported value for accessing field %s" field_name )
@@ -680,6 +690,8 @@ let static_match_call return arguments procname label : tcontext option =
 
 
 module Debug = struct
+  let dropped_disjuncts_count = ref 0
+
   let rec matched_transitions =
     lazy
       ( Epilogues.register ~f:log_unseen
@@ -704,8 +716,6 @@ module Debug = struct
       L.user_warning "@[<v>@[<v2>The following Topl transitions never match:@;%a@]@;@]"
         (F.pp_print_list pp) unseen
 
-
-  let dropped_disjuncts_count = ref 0
 
   let () = AnalysisGlobalState.register_ref dropped_disjuncts_count ~init:(fun () -> 0)
 
@@ -765,7 +775,6 @@ let normalize_state state = List.map ~f:normalize_simple_state state
       empirically rare, we just under-approximate by dropping always when a register has garbage.
     - We never drop simple-states corresponding to "error" vertices. *)
 let drop_garbage ~keep state =
-  L.d_printfln "@[<v>@[DBG drop_garbage keep = %a@]@;@]" AbstractValue.Set.pp keep ;
   let should_keep {pre; post} =
     ToplAutomaton.is_error (Topl.automaton ()) post.vertex
     ||
@@ -780,13 +789,17 @@ let drop_garbage ~keep state =
 let simplify pulse_state state =
   (* NOTE: For dropping garbage, we do not consider registers live. If the Topl monitor has a hold
      of something that is garbage for the program, then that something is still garbage. *)
+  let reachable =
+    Stats.incr_topl_reachable_calls () ;
+    pulse_state.get_reachable ()
+  in
   let eliminate_exists {pre; post; pruned; last_step} =
     L.d_printfln "@[<v>@[DBG eliminate_exists pulse_state.path_condition %a@]@;@]" Formula.pp
       pulse_state.path_condition ;
     let collect memory keep =
       List.fold ~init:keep ~f:(fun keep (_reg, value) -> AbstractValue.Set.add value keep) memory
     in
-    let keep = get_reachable pulse_state |> collect pre.memory |> collect post.memory in
+    let keep = reachable |> collect pre.memory |> collect post.memory in
     L.d_printfln "@[<v>@[DBG eliminate_exists keep = %a@]@;@]" AbstractValue.Set.pp keep ;
     let keep v = AbstractValue.Set.mem v keep in
     let keep v =
@@ -807,7 +820,7 @@ let simplify pulse_state state =
     (* T147875161 *)
     if false then List.map ~f:eliminate_exists state else state
   in
-  let state = drop_garbage ~keep:(get_reachable pulse_state) state in
+  let state = drop_garbage ~keep:reachable state in
   let state = List.map ~f:simplify_pruned state in
   let state = drop_infeasible pulse_state state in
   List.dedup_and_sort ~compare:compare_simple_state state
@@ -1030,8 +1043,9 @@ let report_errors proc_desc err_log ~pulse_is_manifest state =
   let report_simple_state q =
     (* We assume simplifications happened before calling report_errors. *)
     let topl_is_manifest = Constraint.(equal true_ q.pruned) in
-    if is_issue q then
+    if is_issue q then (
       let q = first_error_ss q in
+      L.d_printfln ~color:Red "found TOPL error %a" pp_simple_state q ;
       (* Only report at the innermost level where error appears. *)
       if
         not
@@ -1054,6 +1068,29 @@ let report_errors proc_desc err_log ~pulse_is_manifest state =
         in
         if (not latent) || Config.topl_report_latent_issues then
           Reporting.log_issue proc_desc err_log ~loc ~ltr Topl (IssueType.topl_error ~latent)
-            message
+            message )
   in
   List.iter ~f:report_simple_state state
+
+
+(* {1 Fast path} *)
+
+let small_step location pulse_state event state =
+  match state with [] -> state | _ -> small_step location pulse_state event state
+
+
+let large_step ~call_location ~callee_proc_name ~substitution pulse_state ~callee_summary
+    ~callee_is_manifest state =
+  match state with
+  | [] ->
+      state
+  | _ ->
+      large_step ~call_location ~callee_proc_name ~substitution pulse_state ~callee_summary
+        ~callee_is_manifest state
+
+
+let filter_for_summary pulse_state state =
+  match state with [] -> state | _ -> filter_for_summary pulse_state state
+
+
+let simplify pulse_state state = match state with [] -> state | _ -> simplify pulse_state state

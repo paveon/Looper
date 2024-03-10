@@ -25,11 +25,9 @@ type t =
   ; racerd: RacerDDomain.summary option Lazy.t
   ; scope_leakage: ScopeLeakage.Summary.t option Lazy.t
   ; siof: SiofDomain.Summary.t option Lazy.t
-  ; simple_lineage: SimpleLineage.Summary.t option Lazy.t
-  ; simple_shape: SimpleShape.Summary.t option Lazy.t
-  ; starvation: StarvationDomain.summary option Lazy.t
-  ; nullsafe: NullsafeSummary.t option Lazy.t
-  ; uninit: UninitDomain.Summary.t option Lazy.t }
+  ; lineage: Lineage.Summary.t option Lazy.t
+  ; lineage_shape: LineageShape.Summary.t option Lazy.t
+  ; starvation: StarvationDomain.summary option Lazy.t }
 [@@deriving fields]
 
 let yojson_of_t {pulse} =
@@ -61,11 +59,9 @@ let all_fields =
     ~lab_resource_leaks:(fun f -> mk f LabResourceLeaks ResourceLeakDomain.pp)
     ~scope_leakage:(fun f -> mk f ScopeLeakage ScopeLeakage.Summary.pp)
     ~siof:(fun f -> mk f SIOF SiofDomain.Summary.pp)
-    ~simple_lineage:(fun f -> mk f SimpleLineage SimpleLineage.Summary.pp)
-    ~simple_shape:(fun f -> mk f SimpleShape SimpleShape.Summary.pp)
+    ~lineage:(fun f -> mk f Lineage Lineage.Summary.pp)
+    ~lineage_shape:(fun f -> mk f LineageShape LineageShape.Summary.pp)
     ~starvation:(fun f -> mk f Starvation StarvationDomain.pp_summary)
-    ~nullsafe:(fun f -> mk f Nullsafe NullsafeSummary.pp)
-    ~uninit:(fun f -> mk f Uninit UninitDomain.Summary.pp)
   (* sorted to help serialization, see {!SQLite.serialize} below *)
   |> List.sort ~compare:(fun (F {payload_id= payload_id1}) (F {payload_id= payload_id2}) ->
          Int.compare
@@ -99,11 +95,9 @@ let empty =
   ; racerd= no_payload
   ; scope_leakage= no_payload
   ; siof= no_payload
-  ; simple_lineage= no_payload
-  ; simple_shape= no_payload
-  ; starvation= no_payload
-  ; nullsafe= no_payload
-  ; uninit= no_payload }
+  ; lineage= no_payload
+  ; lineage_shape= no_payload
+  ; starvation= no_payload }
 
 
 module SQLite = struct
@@ -127,7 +121,7 @@ module SQLite = struct
     | None ->
         Sqlite3.Data.NULL
     | Some payload ->
-        Sqlite3.Data.BLOB (Marshal.to_string payload [])
+        Sqlite3.Data.BLOB (Marshal.to_string payload [Closures])
 
 
   let serialize payloads =
@@ -150,10 +144,9 @@ module SQLite = struct
       ~pulse:data_of_sqlite_column ~purity:data_of_sqlite_column ~quandary:data_of_sqlite_column
       ~racerd:data_of_sqlite_column ~lab_resource_leaks:data_of_sqlite_column
       ~scope_leakage:data_of_sqlite_column ~siof:data_of_sqlite_column
-      ~simple_lineage:data_of_sqlite_column ~simple_shape:data_of_sqlite_column
-      ~starvation:data_of_sqlite_column ~nullsafe:data_of_sqlite_column
+      ~lineage:data_of_sqlite_column ~lineage_shape:data_of_sqlite_column
       ~looper:data_of_sqlite_column
-      ~uninit:data_of_sqlite_column
+      ~starvation:data_of_sqlite_column
 
 
   let eager_load stmt ~first_column = (make_eager first_column |> fst) stmt
@@ -168,7 +161,8 @@ module SQLite = struct
   let all_load_statements =
     let mk_load_statements payload_id =
       let for_table table =
-        Database.register_statement AnalysisDatabase "SELECT %s FROM %s WHERE rowid = :k" payload_id
+        Database.register_statement AnalysisDatabase "SELECT %s FROM %s WHERE proc_uid = :k"
+          payload_id
           (Database.string_of_analysis_table table)
       in
       {specs= for_table Specs; model_specs= for_table BiabductionModelsSpecs; name= payload_id}
@@ -181,36 +175,34 @@ module SQLite = struct
     match table with Specs -> specs | BiabductionModelsSpecs -> model_specs
 
 
-  let load table ~rowid payload_id =
+  let load table ~proc_uid payload_id =
     let load_statement = get_load_statement table payload_id in
     Database.with_registered_statement load_statement ~f:(fun db load_stmt ->
-        Sqlite3.bind_int64 load_stmt 1 rowid
-        |> SqliteUtils.check_result_code db ~log:"load payloads bind rowid" ;
+        Sqlite3.bind_text load_stmt 1 proc_uid
+        |> SqliteUtils.check_result_code db ~log:"load payloads bind proc_uid" ;
         SqliteUtils.result_option ~finalize:false db ~log:"load payloads exec" load_stmt
           ~read_row:(fun stmt -> Sqlite3.column stmt 0 |> deserialize_payload_opt |> Lazy.force) )
     |> Option.join
 
 
-  let lazy_load table ~rowid =
-    { annot_map= lazy (load table ~rowid AnnotMap)
-    ; biabduction= lazy (load table ~rowid Biabduction)
-    ; buffer_overrun_analysis= lazy (load table ~rowid BufferOverrunAnalysis)
-    ; buffer_overrun_checker= lazy (load table ~rowid BufferOverrunChecker)
-    ; config_impact_analysis= lazy (load table ~rowid ConfigImpactAnalysis)
-    ; cost= lazy (load table ~rowid Cost)
+  let lazy_load table ~proc_uid =
+    { annot_map= lazy (load table ~proc_uid AnnotMap)
+    ; biabduction= lazy (load table ~proc_uid Biabduction)
+    ; buffer_overrun_analysis= lazy (load table ~proc_uid BufferOverrunAnalysis)
+    ; buffer_overrun_checker= lazy (load table ~proc_uid BufferOverrunChecker)
+    ; config_impact_analysis= lazy (load table ~proc_uid ConfigImpactAnalysis)
+    ; cost= lazy (load table ~proc_uid Cost)
     ; looper= lazy (load table ~rowid Looper)
-    ; disjunctive_demo= lazy (load table ~rowid DisjunctiveDemo)
-    ; lab_resource_leaks= lazy (load table ~rowid LabResourceLeaks)
-    ; litho_required_props= lazy (load table ~rowid LithoRequiredProps)
-    ; pulse= lazy (load table ~rowid Pulse)
-    ; purity= lazy (load table ~rowid Purity)
-    ; quandary= lazy (load table ~rowid Quandary)
-    ; racerd= lazy (load table ~rowid RacerD)
-    ; scope_leakage= lazy (load table ~rowid ScopeLeakage)
-    ; siof= lazy (load table ~rowid SIOF)
-    ; simple_lineage= lazy (load table ~rowid SimpleLineage)
-    ; simple_shape= lazy (load table ~rowid SimpleShape)
-    ; starvation= lazy (load table ~rowid Starvation)
-    ; nullsafe= lazy (load table ~rowid Nullsafe)
-    ; uninit= lazy (load table ~rowid Uninit) }
+    ; disjunctive_demo= lazy (load table ~proc_uid DisjunctiveDemo)
+    ; lab_resource_leaks= lazy (load table ~proc_uid LabResourceLeaks)
+    ; litho_required_props= lazy (load table ~proc_uid LithoRequiredProps)
+    ; pulse= lazy (load table ~proc_uid Pulse)
+    ; purity= lazy (load table ~proc_uid Purity)
+    ; quandary= lazy (load table ~proc_uid Quandary)
+    ; racerd= lazy (load table ~proc_uid RacerD)
+    ; scope_leakage= lazy (load table ~proc_uid ScopeLeakage)
+    ; siof= lazy (load table ~proc_uid SIOF)
+    ; lineage= lazy (load table ~proc_uid Lineage)
+    ; lineage_shape= lazy (load table ~proc_uid LineageShape)
+    ; starvation= lazy (load table ~proc_uid Starvation) }
 end

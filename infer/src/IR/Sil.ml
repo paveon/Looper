@@ -19,7 +19,7 @@ type if_kind =
   | Ik_land_lor
   | Ik_while
   | Ik_switch
-[@@deriving compare, equal]
+[@@deriving compare, equal, hash, normalize]
 
 let pp_if_kind fmt = function
   | Ik_bexp {terminated} ->
@@ -58,16 +58,21 @@ type instr_metadata =
   | Skip
   | TryEntry of {try_id: int; loc: Location.t}
   | TryExit of {try_id: int; loc: Location.t}
-  | VariableLifetimeBegins of Pvar.t * Typ.t * Location.t
-[@@deriving compare, equal]
+  | VariableLifetimeBegins of
+      {pvar: Pvar.t; typ: Typ.t; loc: Location.t; is_cpp_structured_binding: bool}
+[@@deriving compare, equal, hash, normalize]
+
+type ret_var = Ident.t * Typ.t [@@deriving compare, equal, hash, normalize]
+
+type param = Exp.t * Typ.t [@@deriving compare, equal, hash, normalize]
 
 type instr =
   | Load of {id: Ident.t; e: Exp.t; typ: Typ.t; loc: Location.t}
   | Store of {e1: Exp.t; typ: Typ.t; e2: Exp.t; loc: Location.t}
   | Prune of Exp.t * Location.t * bool * if_kind
-  | Call of (Ident.t * Typ.t) * Exp.t * (Exp.t * Typ.t) list * Location.t * CallFlags.t
+  | Call of ret_var * Exp.t * param list * Location.t * CallFlags.t
   | Metadata of instr_metadata
-[@@deriving compare, equal]
+[@@deriving compare, equal, hash, normalize]
 
 let skip_instr = Metadata Skip
 
@@ -80,7 +85,9 @@ let instr_is_auxiliary = function
 
 let color_wrapper ~f = if Config.print_using_diff then Pp.color_wrapper ~f else f
 
-let pp_exp_typ pe pp_typ f (e, t) = F.fprintf f "%a:%a" (Exp.pp_diff pe) e (pp_typ pe) t
+let pp_exp_typ ~print_types pe pp_typ f (e, t) =
+  F.fprintf f "%a:%a" (Exp.pp_diff ~print_types pe) e (pp_typ pe) t
+
 
 let location_of_instr_metadata = function
   | Abstract loc
@@ -89,7 +96,7 @@ let location_of_instr_metadata = function
   | Nullify (_, loc)
   | TryEntry {loc}
   | TryExit {loc}
-  | VariableLifetimeBegins (_, _, loc) ->
+  | VariableLifetimeBegins {loc} ->
       loc
   | EndBranches | Skip ->
       Location.dummy
@@ -111,7 +118,7 @@ let exps_of_instr_metadata = function
       [Exp.Lvar pvar]
   | Skip | TryEntry _ | TryExit _ ->
       []
-  | VariableLifetimeBegins (pvar, _, _) ->
+  | VariableLifetimeBegins {pvar} ->
       [Exp.Lvar pvar]
 
 
@@ -146,8 +153,9 @@ let pp_instr_metadata pe f = function
       F.fprintf f "TRY_ENTRY; [%a]" Location.pp loc
   | TryExit {loc} ->
       F.fprintf f "TRY_EXIT; [%a]" Location.pp loc
-  | VariableLifetimeBegins (pvar, typ, loc) ->
-      F.fprintf f "VARIABLE_DECLARED(%a:%a); [%a]" Pvar.pp_value pvar (Typ.pp_full pe) typ
+  | VariableLifetimeBegins {pvar; typ; loc; is_cpp_structured_binding} ->
+      F.fprintf f "VARIABLE_DECLARED(%a:%a%t); [%a]" Pvar.pp_value pvar (Typ.pp_full pe) typ
+        (fun f -> if is_cpp_structured_binding then F.pp_print_string f ", cpp_structured_binding")
         Location.pp loc
 
 
@@ -167,7 +175,7 @@ let pp_instr ~print_types pe0 f instr =
       | Call ((id, _), e, arg_ts, loc, cf) ->
           F.fprintf f "%a=" Ident.pp id ;
           F.fprintf f "%a(%a)%a [%a]" (Exp.pp_diff ~print_types pe) e
-            (Pp.comma_seq (pp_exp_typ pe pp_typ))
+            (Pp.comma_seq (pp_exp_typ ~print_types pe pp_typ))
             arg_ts CallFlags.pp cf Location.pp loc
       | Metadata metadata ->
           pp_instr_metadata pe0 f metadata )
@@ -257,7 +265,8 @@ let equal_structural_instr instr instr' exp_map =
       (true, exp_map)
   | Metadata (ExitScope (temps, _)), Metadata (ExitScope (temps', _)) ->
       var_list_equal_structural temps temps' exp_map
-  | Metadata (VariableLifetimeBegins (pv, t, _)), Metadata (VariableLifetimeBegins (pv', t', _)) ->
+  | ( Metadata (VariableLifetimeBegins {pvar= pv; typ= t})
+    , Metadata (VariableLifetimeBegins {pvar= pv'; typ= t'}) ) ->
       exp_equal_structural (Lvar pv) (Lvar pv') exp_map &&+ Typ.equal t t'
   | Metadata (CatchEntry _), Metadata (CatchEntry _)
   | Metadata (TryEntry _), Metadata (TryEntry _)

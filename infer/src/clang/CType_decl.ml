@@ -20,22 +20,22 @@ module BuildMethodSignature = struct
         None
 
 
-  let param_type_of_qual_type ?(is_const_member_function = false) qual_type_to_sil_type tenv name
-      qual_type =
+  let param_type_of_qual_type ?(is_cpp_const_member_function = false) qual_type_to_sil_type tenv
+      name qual_type =
     let typ = qual_type_to_sil_type tenv qual_type in
     let is_pointer_to_const = CType.is_pointer_to_const qual_type in
     (* non-static member functions declared as const cannot modify their this*
        object parameter, hence should have pointer to const type
        https://en.cppreference.com/w/cpp/language/member_functions *)
     let typ =
-      if Mangled.is_this name && is_const_member_function then Typ.set_ptr_to_const typ else typ
+      if Mangled.is_this name && is_cpp_const_member_function then Typ.set_ptr_to_const typ else typ
     in
     let annot = CAst_utils.sil_annot_of_type qual_type in
     CMethodSignature.mk_param_type ~is_pointer_to_const ~annot name typ
 
 
   let get_class_param qual_type_to_sil_type tenv method_decl =
-    let aux ~is_const_member_function parent_pointer =
+    let aux ~is_cpp_const_member_function parent_pointer =
       let method_kind = CMethodProperties.get_method_kind method_decl in
       match method_kind with
       | ClangMethodKind.CPP_INSTANCE | ClangMethodKind.OBJC_INSTANCE -> (
@@ -44,7 +44,7 @@ module BuildMethodSignature = struct
             let qual_type = CAst_utils.qual_type_of_decl_ptr parent_pointer in
             let pointer_qual_type = Ast_expressions.create_pointer_qual_type qual_type in
             Some
-              (param_type_of_qual_type ~is_const_member_function qual_type_to_sil_type tenv name
+              (param_type_of_qual_type ~is_cpp_const_member_function qual_type_to_sil_type tenv name
                  pointer_qual_type )
         | _ ->
             None )
@@ -56,12 +56,12 @@ module BuildMethodSignature = struct
     | FunctionDecl _ | BlockDecl _ ->
         None
     | CXXMethodDecl (decl_info, _, _, _, cmdi) ->
-        aux ~is_const_member_function:cmdi.Clang_ast_t.xmdi_is_const decl_info.di_parent_pointer
+        aux ~is_cpp_const_member_function:cmdi.Clang_ast_t.xmdi_is_const decl_info.di_parent_pointer
     | CXXConstructorDecl (decl_info, _, _, _, _)
     | CXXConversionDecl (decl_info, _, _, _, _)
     | CXXDestructorDecl (decl_info, _, _, _, _)
     | ObjCMethodDecl (decl_info, _, _) ->
-        aux ~is_const_member_function:false decl_info.di_parent_pointer
+        aux ~is_cpp_const_member_function:false decl_info.di_parent_pointer
     | _ ->
         raise CFrontend_errors.Invalid_declaration
 
@@ -187,6 +187,7 @@ module BuildMethodSignature = struct
     let class_param = get_class_param qual_type_to_sil_type tenv method_decl in
     let params = get_parameters qual_type_to_sil_type tenv ~block_return_type method_decl in
     let attributes = decl_info.Clang_ast_t.di_attributes in
+    let is_cpp_const_member_fun = CMethodProperties.is_cpp_const_member_fun method_decl in
     let is_cpp_virtual = CMethodProperties.is_cpp_virtual method_decl in
     let is_cpp_copy_assignment = CMethodProperties.is_cpp_copy_assignment method_decl in
     let is_cpp_copy_ctor = CMethodProperties.is_cpp_copy_ctor method_decl in
@@ -201,6 +202,7 @@ module BuildMethodSignature = struct
     ; access
     ; class_param
     ; params
+    ; is_cpp_const_member_fun
     ; is_cpp_copy_assignment
     ; is_cpp_copy_ctor
     ; is_cpp_move_ctor
@@ -356,23 +358,24 @@ let rec get_mangled_method_name function_decl_info method_decl_info =
           assert false )
 
 
-let rec get_struct_fields tenv decl =
+let rec get_struct_fields tenv ?cxx_record_decl_info decl =
   let open Clang_ast_t in
   let decl_list = get_struct_decls decl in
   let class_tname = get_record_typename ~tenv decl in
   let do_one_decl decl =
     match decl with
     | FieldDecl (_, {ni_name}, qt, _) ->
-        let id = CGeneral_utils.mk_class_field_name class_tname ni_name in
         let typ = qual_type_to_sil_type tenv qt in
         let annotation_items = CAst_utils.sil_annot_of_type qt in
-        [(id, typ, annotation_items)]
+        let name = CGeneral_utils.mk_class_field_name ?cxx_record_decl_info class_tname ni_name in
+        [(name, typ, annotation_items)]
     | _ ->
         []
   in
   let base_decls = get_superclass_decls decl in
-  let base_class_fields = List.map ~f:(get_struct_fields tenv) base_decls in
-  List.concat (base_class_fields @ List.map ~f:do_one_decl decl_list)
+  let base_class_fields = List.map ~f:(get_struct_fields tenv ?cxx_record_decl_info) base_decls in
+  let fields = List.map ~f:do_one_decl decl_list in
+  List.concat (base_class_fields @ fields)
 
 
 (** For a record declaration it returns/constructs the type *)
@@ -504,7 +507,7 @@ and get_template_info tenv (fdi : Clang_ast_t.function_decl_info) =
       Typ.NoTemplate
 
 
-and mk_c_function ?tenv name function_decl_info_opt parameters =
+and mk_c_function ?tenv name function_decl_info_opt =
   let file =
     match function_decl_info_opt with
     (* when we model static functions, we cannot take the file into account to
@@ -540,7 +543,7 @@ and mk_c_function ?tenv name function_decl_info_opt parameters =
   in
   let mangled = file ^ mangled_name in
   if String.is_empty mangled then Procname.from_string_c_fun (QualifiedCppName.to_qual_string name)
-  else Procname.C (Procname.C.c name ~mangled parameters template_info)
+  else Procname.C (Procname.C.c name ~mangled template_info)
 
 
 and mk_cpp_method ?tenv class_name method_name ?meth_decl mangled parameters =
@@ -586,16 +589,6 @@ and objc_method_procname ?tenv decl_info method_name parameters mdi =
   mk_objc_method class_typename method_name method_kind parameters
 
 
-and objc_block_procname outer_proc_opt parameters =
-  let block_type =
-    Option.value_map ~f:Procname.get_block_type outer_proc_opt
-      ~default:(Procname.Block.SurroundingProc {class_name= None; name= ""})
-  in
-  let block_index = CFrontend_config.get_fresh_block_index () in
-  let block = Procname.Block.make_in_outer_scope block_type block_index parameters in
-  Procname.Block block
-
-
 and procname_from_decl ?tenv ?block_return_type ?outer_proc meth_decl =
   let open Clang_ast_t in
   let parameters =
@@ -624,7 +617,7 @@ and procname_from_decl ?tenv ?block_return_type ?outer_proc meth_decl =
   match meth_decl with
   | FunctionDecl (decl_info, name_info, _, fdi) ->
       let name = CAst_utils.get_qualified_name name_info in
-      mk_c_function ?tenv name (Some (decl_info, fdi)) parameters
+      mk_c_function ?tenv name (Some (decl_info, fdi))
   | CXXConstructorDecl (decl_info, {ni_name= ""; ni_qual_name= "" :: qual_names}, _, fdi, mdi) ->
       (* For some constructors of non-class objects in C++, the clang frontend gives empty method
          name, e.g. struct, lambda, and union.  For better readability, we replace them to a
@@ -641,8 +634,12 @@ and procname_from_decl ?tenv ?block_return_type ?outer_proc meth_decl =
       mk_cpp_method decl_info name_info fdi mdi
   | ObjCMethodDecl (decl_info, name_info, mdi) ->
       objc_method_procname ?tenv decl_info name_info.Clang_ast_t.ni_name parameters mdi
-  | BlockDecl _ ->
-      objc_block_procname outer_proc parameters
+  | BlockDecl (decl_info, block_decl_info) ->
+      let outer_proc_class_name =
+        Option.value_map ~default:None ~f:Procname.get_class_type_name outer_proc
+      in
+      let name, mangled = CAst_utils.create_objc_block_name decl_info block_decl_info in
+      Procname.Block {Typ.class_name= outer_proc_class_name; name; mangled}
   | _ ->
       Logging.die InternalError "Expected method decl, but got %s."
         (Clang_ast_proj.get_decl_kind_string meth_decl)
@@ -663,56 +660,70 @@ and get_struct_methods struct_decl tenv =
           None )
 
 
+and add_record tenv decl_info definition_decl record_decl_info ?cxx_record_decl_info type_ptr =
+  let sil_typename = get_record_typename ~tenv definition_decl in
+  let sil_desc = Typ.Tstruct sil_typename in
+  match Tenv.lookup tenv sil_typename with
+  | Some _ ->
+      sil_desc (* just reuse what is already in tenv *)
+  | None ->
+      let is_translatable_definition =
+        let open Clang_ast_t in
+        record_decl_info.rdi_is_complete_definition && not record_decl_info.rdi_is_dependent_type
+      in
+      if is_translatable_definition then (
+        CAst_utils.update_sil_types_map type_ptr sil_desc ;
+        let fields = get_struct_fields tenv ?cxx_record_decl_info definition_decl in
+        (* Note: We treat static field same as global variables *)
+        let statics = [] in
+        let methods = get_struct_methods definition_decl tenv in
+        let supers =
+          get_superclass_list_cpp tenv definition_decl
+          (* Mitigation: Sometimes the list of super classes includes the root type. *)
+          |> List.filter ~f:(fun super ->
+                 let is_sil_typename = Typ.Name.equal sil_typename super in
+                 if is_sil_typename then
+                   Logging.internal_error "The type %a has a super class of itself.@\n" Typ.Name.pp
+                     sil_typename ;
+                 not is_sil_typename )
+        in
+        let annots =
+          if Typ.Name.Cpp.is_class sil_typename then Annot.Class.cpp
+          else (* No annotations for structs *) Annot.Item.empty
+        in
+        let class_info =
+          let is_trivially_copyable =
+            Option.exists cxx_record_decl_info ~f:(fun {Clang_ast_t.xrdi_is_trivially_copyable} ->
+                xrdi_is_trivially_copyable )
+          in
+          Struct.ClassInfo.CppClassInfo {is_trivially_copyable}
+        in
+        let source_file =
+          (fst decl_info.Clang_ast_t.di_source_range).sl_file
+          |> Option.map ~f:SourceFile.from_abs_path
+        in
+        Tenv.mk_struct tenv ~fields ~statics ~methods ~supers ~annots ~class_info ?source_file
+          sil_typename
+        |> ignore ;
+        CAst_utils.update_sil_types_map type_ptr sil_desc ;
+        sil_desc )
+      else (
+        (* There is no definition for that struct in whole translation unit.
+           Put empty struct into tenv to prevent backend problems *)
+        ignore (Tenv.mk_struct tenv ~dummy:true sil_typename) ;
+        CAst_utils.update_sil_types_map type_ptr sil_desc ;
+        sil_desc )
+
+
 and get_record_struct_type tenv definition_decl : Typ.desc =
   let open Clang_ast_t in
   match definition_decl with
-  | ClassTemplateSpecializationDecl (decl_info, _, type_ptr, _, _, _, record_decl_info, _, _, _, _)
-  | CXXRecordDecl (decl_info, _, type_ptr, _, _, _, record_decl_info, _)
-  | RecordDecl (decl_info, _, type_ptr, _, _, _, record_decl_info) -> (
-      let sil_typename = get_record_typename ~tenv definition_decl in
-      let sil_desc = Typ.Tstruct sil_typename in
-      match Tenv.lookup tenv sil_typename with
-      | Some _ ->
-          sil_desc (* just reuse what is already in tenv *)
-      | None ->
-          let is_translatable_definition =
-            let open Clang_ast_t in
-            record_decl_info.rdi_is_complete_definition
-            && not record_decl_info.rdi_is_dependent_type
-          in
-          if is_translatable_definition then (
-            CAst_utils.update_sil_types_map type_ptr sil_desc ;
-            let fields = get_struct_fields tenv definition_decl in
-            (* Note: We treat static field same as global variables *)
-            let statics = [] in
-            let methods = get_struct_methods definition_decl tenv in
-            let supers =
-              get_superclass_list_cpp tenv definition_decl
-              (* Mitigation: Sometimes the list of super classes includes the root type. *)
-              |> List.filter ~f:(fun super ->
-                     let is_sil_typename = Typ.Name.equal sil_typename super in
-                     if is_sil_typename then
-                       Logging.internal_error "The type %a has a super class of itself.@\n"
-                         Typ.Name.pp sil_typename ;
-                     not is_sil_typename )
-            in
-            let annots =
-              if Typ.Name.Cpp.is_class sil_typename then Annot.Class.cpp
-              else (* No annotations for structs *) Annot.Item.empty
-            in
-            let source_file =
-              (fst decl_info.di_source_range).sl_file |> Option.map ~f:SourceFile.from_abs_path
-            in
-            Tenv.mk_struct tenv ~fields ~statics ~methods ~supers ~annots ?source_file sil_typename
-            |> ignore ;
-            CAst_utils.update_sil_types_map type_ptr sil_desc ;
-            sil_desc )
-          else (
-            (* There is no definition for that struct in whole translation unit.
-               Put empty struct into tenv to prevent backend problems *)
-            ignore (Tenv.mk_struct tenv ~dummy:true sil_typename) ;
-            CAst_utils.update_sil_types_map type_ptr sil_desc ;
-            sil_desc ) )
+  | RecordDecl (decl_info, _, type_ptr, _, _, _, record_decl_info) ->
+      add_record tenv decl_info definition_decl record_decl_info type_ptr
+  | CXXRecordDecl (decl_info, _, type_ptr, _, _, _, record_decl_info, cxx_record_decl_info)
+  | ClassTemplateSpecializationDecl
+      (decl_info, _, type_ptr, _, _, _, record_decl_info, cxx_record_decl_info, _, _, _) ->
+      add_record tenv decl_info definition_decl record_decl_info ~cxx_record_decl_info type_ptr
   | _ ->
       assert false
 
@@ -733,7 +744,7 @@ module CProcname = struct
   module NoAstDecl = struct
     let c_function_of_string tenv name =
       let qual_name = QualifiedCppName.of_qual_string name in
-      mk_c_function ~tenv qual_name None []
+      mk_c_function ~tenv qual_name None
 
 
     let cpp_method_of_string tenv class_name method_name =

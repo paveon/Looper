@@ -15,13 +15,14 @@ module F = Format
 module L = Logging
 
 (** per-file data: type environment and integer widths *)
-type file_data = {tenv: Tenv.t option Lazy.t; integer_type_widths: Typ.IntegerWidths.t option Lazy.t}
+type file_data = {tenv: Tenv.t option Lazy.t; integer_type_widths: IntegerWidths.t option Lazy.t}
 
 (** create a new file_data *)
-let new_file_data source =
+let[@alert "-tenv"] new_file_data source =
+  (* exceptionally allow [Tenv.load] as it goes through a cache *)
   { tenv= lazy (Tenv.load source)
   ; integer_type_widths=
-      lazy (Option.first_some (Typ.IntegerWidths.load source) (Some Typ.IntegerWidths.java)) }
+      lazy (Option.first_some (IntegerWidths.load source) (Some IntegerWidths.java)) }
 
 
 type t = {proc_map: SourceFile.t Procname.Hash.t; file_map: file_data SourceFile.Hash.t}
@@ -90,10 +91,14 @@ let get_column_value ~value_on_java ~file_data_to_value ~column_name exe_env pro
       match file_data_to_value file_data with
       | Some v ->
           v
+      | None when Config.log_missing_deps ->
+          raise MissingDependencyException.MissingDependencyException
       | None ->
           let loc_opt = AnalysisState.get_loc () in
           L.die InternalError "get_column_value: %s not found for %a%a" column_name Procname.pp
             proc_name pp_loc_opt loc_opt )
+    | None when Config.log_missing_deps ->
+        raise MissingDependencyException.MissingDependencyException
     | None ->
         let loc_opt = AnalysisState.get_loc () in
         L.die InternalError "get_column_value: file_data not found for %a%a" Procname.pp proc_name
@@ -106,10 +111,15 @@ let get_proc_tenv =
     ~column_name:"tenv"
 
 
+let get_source_tenv exe_env source =
+  let file_data = file_data_of_source exe_env source in
+  Lazy.force file_data.tenv
+
+
 (** return the integer type widths associated to the procedure *)
 let get_integer_type_widths =
   get_column_value
-    ~value_on_java:(lazy Typ.IntegerWidths.java)
+    ~value_on_java:(lazy IntegerWidths.java)
     ~file_data_to_value:file_data_to_integer_type_widths ~column_name:"integer type widths"
 
 

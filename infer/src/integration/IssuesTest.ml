@@ -47,6 +47,16 @@ let pp_nullsafe_extra fmt
         annotation_graph )
 
 
+let pp_taint_extra fmt
+    Jsonbug_t.{taint_source; taint_sink; taint_policy_privacy_effect; tainted_expression} =
+  (* taint_source is expected to be always present *)
+  Option.iter taint_source ~f:(fun source -> F.fprintf fmt "source: %s" source) ;
+  Option.iter taint_sink ~f:(fun sink -> F.fprintf fmt ", sink: %s" sink) ;
+  Option.iter tainted_expression ~f:(fun expr -> F.fprintf fmt ", tainted expression: %s" expr) ;
+  Option.iter taint_policy_privacy_effect ~f:(fun effect ->
+      F.fprintf fmt ", privacy effect: %s" effect )
+
+
 let pp_trace fmt trace comma =
   let pp_trace_elem fmt Jsonbug_t.{description} = F.pp_print_string fmt description in
   let trace_without_empty_descs =
@@ -78,6 +88,8 @@ let pp_custom_of_report fmt report fields =
           F.fprintf fmt "%s%s" (comma_separator index) bucket
       | Qualifier ->
           F.fprintf fmt "%s%s" (comma_separator index) issue.qualifier
+      | Suggestion ->
+          F.fprintf fmt "%s%s" (comma_separator index) (Option.value ~default:"" issue.suggestion)
       | Severity ->
           F.fprintf fmt "%s%s" (comma_separator index) issue.severity
       | Line ->
@@ -105,6 +117,30 @@ let pp_custom_of_report fmt report fields =
           let nullsafe_extra = Option.bind issue.extras ~f:(fun extras -> extras.nullsafe_extra) in
           Option.iter nullsafe_extra ~f:(fun nullsafe_extra ->
               F.fprintf fmt "%s%a" (comma_separator index) pp_nullsafe_extra nullsafe_extra )
+      | TaintExtra ->
+          let taint_extra = Option.bind issue.extras ~f:(fun extras -> extras.taint_extra) in
+          Option.iter taint_extra ~f:(fun taint_extra ->
+              F.fprintf fmt "%s%a" (comma_separator index) pp_taint_extra taint_extra )
+      | TransitiveCalleesExtra ->
+          let pp_item fmt
+              {Jsonbug_t.caller_name; callsite_relative_position_in_caller; kind; resolution} =
+            F.fprintf fmt "%s:%d:%a:%a" caller_name callsite_relative_position_in_caller
+              (Pp.of_string ~f:Jsonbug_j.string_of_transitive_callee_kind)
+              kind
+              (Pp.of_string ~f:Jsonbug_j.string_of_transitive_callee_resolution)
+              resolution
+          in
+          let pp_missed_capture fmt {Jsonbug_t.class_name} = F.pp_print_string fmt class_name in
+          Option.iter issue.extras ~f:(fun extras ->
+              let transitive_callees = extras.transitive_callees in
+              if not (List.is_empty transitive_callees) then
+                F.fprintf fmt "%s{%a}" (comma_separator index) (Pp.seq ~sep:"," pp_item)
+                  transitive_callees ;
+              let transitive_missed_captures = extras.transitive_missed_captures in
+              if not (List.is_empty transitive_missed_captures) then
+                F.fprintf fmt "%s{%a}" (comma_separator index)
+                  (Pp.seq ~sep:"," pp_missed_capture)
+                  transitive_missed_captures )
     in
     List.iteri ~f:pp_field fields ;
     F.fprintf fmt "@."

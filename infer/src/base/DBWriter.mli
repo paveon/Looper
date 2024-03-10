@@ -8,6 +8,9 @@
 
 open! IStd
 
+val override_use_daemon : bool -> unit
+(** override the default of whether the process should use DB daemon [true] or not [false] *)
+
 val add_source_file :
      source_file:Sqlite3.Data.t
   -> tenv:Sqlite3.Data.t
@@ -16,7 +19,7 @@ val add_source_file :
   -> unit
 
 val canonicalize : unit -> unit
-(** put the database on disk in deterministic form *)
+(** put the **capture** database on disk in deterministic form *)
 
 val delete_all_specs : unit -> unit
 
@@ -24,13 +27,13 @@ val delete_attributes : proc_uid:string -> unit
 
 val delete_issue_logs : source_file:Sqlite3.Data.t -> unit
 
-val delete_spec : proc_uid:string -> unit
+val delete_specs : proc_uids:string list -> unit
 
 val mark_all_source_files_stale : unit -> unit
 
 val merge_captures : root:string -> infer_deps_file:string -> unit
 
-val merge_report_summaries : infer_outs:string list -> unit
+val merge_summaries : infer_outs:string list -> unit
 
 val replace_attributes :
      proc_uid:string

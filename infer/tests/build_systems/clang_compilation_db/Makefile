@@ -8,10 +8,9 @@ TESTS_DIR = ../..
 CMAKE_DIR = ../codetoanalyze/clang_compilation_database
 CMAKE_BUILD_DIR = $(CMAKE_DIR)/_build_infer
 
-CLEAN_EXTRA = $(CMAKE_BUILD_DIR)
+CLEAN_EXTRA = $(CMAKE_BUILD_DIR) infer-out-with-index infer-out-no-index issues.exp.test.no-index issues.exp.test.with-index
 INFER_OPTIONS = --report-custom-error --developer-mode --project-root $(CMAKE_DIR)
 SOURCES = $(CMAKE_DIR)/hello.cpp
-OBJECTS = $(CMAKE_BUILD_DIR)/compile_commands.json
 INFERPRINT_OPTIONS = --issues-tests
 
 include $(TESTS_DIR)/infer.make

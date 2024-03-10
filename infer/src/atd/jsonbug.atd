@@ -106,6 +106,24 @@ type taint_extra = {
   ?taint_source : string option;
   ?taint_sink : string option;
   ?taint_policy_privacy_effect : string option;
+  ?tainted_expression : string option;
+}
+
+type transitive_callee_kind = [Static | Virtual | Closure]
+
+type transitive_callee_resolution = [ResolvedUsingDynamicType | ResolvedUsingStaticType | Unresolved]
+
+type transitive_callee = {
+  callsite_filename: string;
+  callsite_absolute_position_in_file: int;
+  caller_name: string;
+  callsite_relative_position_in_caller: int;
+  kind: transitive_callee_kind;
+  resolution: transitive_callee_resolution
+}           
+  
+type missed_capture = {
+  class_name: string;
 }
 
 type extra = {
@@ -115,11 +133,14 @@ type extra = {
   ?copy_type : string option;
   ?config_usage_extra : config_usage_extra option;
   ?taint_extra : taint_extra option;
+  ~transitive_callees: transitive_callee list;
+  ~transitive_missed_captures: missed_capture list;    
 }
 
 type jsonbug = {
   bug_type : string;
   qualifier : string;
+  ?suggestion : string option;
   severity : string;
   line: int;
   column: int;

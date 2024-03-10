@@ -11,69 +11,7 @@ open PulseBasicInterface
 
 (* {3 Heap domain } *)
 
-module Access = struct
-  type t = AbstractValue.t HilExp.Access.t [@@deriving yojson_of]
-
-  let compare = HilExp.Access.loose_compare AbstractValue.compare
-
-  let equal = [%compare.equal: t]
-
-  let pp = HilExp.Access.pp AbstractValue.pp
-
-  let canonicalize ~get_var_repr (access : t) =
-    match access with
-    | ArrayAccess (typ, addr) ->
-        let addr' = get_var_repr addr in
-        if AbstractValue.equal addr addr' then access else HilExp.Access.ArrayAccess (typ, addr')
-    | FieldAccess _ | TakeAddress | Dereference ->
-        access
-
-
-  let is_strong_access tenv (access : t) =
-    let has_weak_or_unretained_or_assign annotations =
-      List.exists annotations ~f:(fun (ann : Annot.t) ->
-          ( String.equal ann.class_name Config.property_attributes
-          || String.equal ann.class_name Config.ivar_attributes )
-          && List.exists
-               ~f:(fun Annot.{value} ->
-                 Annot.has_matching_str_value value ~pred:(fun att ->
-                     String.equal Config.unsafe_unret att
-                     || String.equal Config.weak att || String.equal Config.assign att ) )
-               ann.parameters )
-    in
-    match access with
-    | FieldAccess fieldname -> (
-        let classname = Fieldname.get_class_name fieldname in
-        let is_fake_capture_field_strong fieldname =
-          (* a strongly referencing capture field is a capture field that is not weak *)
-          Fieldname.is_fake_capture_field fieldname
-          && not (Fieldname.is_fake_capture_field_weak fieldname)
-        in
-        match Tenv.lookup tenv classname with
-        | None when is_fake_capture_field_strong fieldname ->
-            (* Strongly referencing captures *)
-            true
-        | None ->
-            (* Can't tell if we have a strong reference. To avoid FP on retain cycles,
-               assume weak reference by default *)
-            false
-        | Some {fields} -> (
-          match List.find fields ~f:(fun (name, _, _) -> Fieldname.equal name fieldname) with
-          | None ->
-              (* Can't tell if we have a strong reference. To avoid FP on retain cycles,
-                 assume weak reference by default *)
-              false
-          | Some (_, typ, anns) -> (
-            match typ.Typ.desc with
-            | Tptr (_, (Pk_objc_weak | Pk_objc_unsafe_unretained)) ->
-                false
-            | _ ->
-                not (has_weak_or_unretained_or_assign anns) ) ) )
-    | _ ->
-        true
-end
-
-module AccessSet = Caml.Set.Make (Access)
+module Access = PulseAccess
 
 module AddrTrace = struct
   type t = AbstractValue.t * ValueHistory.t [@@deriving compare, yojson_of]
@@ -136,7 +74,7 @@ let find_edge_opt ?get_var_repr addr access memory =
       res
   | None -> (
     match (access, get_var_repr) with
-    | HilExp.Access.ArrayAccess _, Some get_var_repr ->
+    | MemoryAccess.ArrayAccess _, Some get_var_repr ->
         let access = Access.canonicalize ~get_var_repr access in
         let edges = Edges.canonicalize ~get_var_repr edges in
         Edges.find_opt access edges
@@ -177,15 +115,19 @@ let canonicalize ~get_var_repr memory =
   with AliasingContradiction -> Unsat
 
 
-let subst_var (v, v') memory =
-  (* subst in edges *)
+let subst_var ~for_summary (v, v') memory =
+  (* subst in edges only if we are computing the summary; otherwise avoid this expensive rewriting
+     as values are normalized when going out of the edges (on reads) on the fly which is
+     functionally equivalent *)
   let memory =
-    let v_appears_in_edges =
-      Graph.exists
-        (fun _ edges -> Edges.exists ~f:(fun (_, (dest, _)) -> AbstractValue.equal v dest) edges)
-        memory
-    in
-    if v_appears_in_edges then Graph.map (Edges.subst_var (v, v')) memory else memory
+    if for_summary then
+      let v_appears_in_edges =
+        Graph.exists
+          (fun _ edges -> Edges.exists ~f:(fun (_, (dest, _)) -> AbstractValue.equal v dest) edges)
+          memory
+      in
+      if v_appears_in_edges then Graph.map (Edges.subst_var (v, v')) memory else memory
+    else memory
   in
   (* subst in the domain of the graph, already substituted in edges above *)
   match Graph.find_opt v memory with
@@ -212,3 +154,42 @@ include Graph
 let compare = Graph.compare Edges.compare
 
 let equal = Graph.equal Edges.equal
+
+module type S = sig
+  type key
+
+  type in_map_t
+
+  type out_of_map_t
+
+  module Access : Access.S with type key := key
+
+  module Edges : sig
+    include RecencyMap.S with type key = Access.t and type value = out_of_map_t
+
+    val mapi : t -> f:(key -> out_of_map_t -> in_map_t) -> t
+
+    val canonicalize : get_var_repr:(AbstractValue.t -> AbstractValue.t) -> t -> t
+  end
+
+  include PrettyPrintable.PPMonoMap with type key := key and type value = Edges.t
+
+  val compare : t -> t -> int
+
+  val equal : t -> t -> bool
+
+  val register_address : key -> t -> t
+
+  val add_edge : key -> Access.t -> in_map_t -> t -> t
+
+  val find_edge_opt :
+       ?get_var_repr:(AbstractValue.t -> AbstractValue.t)
+    -> key
+    -> Access.t
+    -> t
+    -> out_of_map_t option
+
+  val has_edge : key -> Access.t -> t -> bool
+
+  val is_allocated : t -> key -> bool
+end

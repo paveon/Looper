@@ -94,6 +94,10 @@ let prune_ne_zero v astate =
   prune_binop ~negated:false Ne (AbstractValueOperand v) literal_zero astate
 
 
+let prune_nonnegative v astate =
+  prune_binop ~negated:false Ge (AbstractValueOperand v) literal_zero astate
+
+
 let prune_positive v astate =
   prune_binop ~negated:false Gt (AbstractValueOperand v) literal_zero astate
 
@@ -112,9 +116,21 @@ let is_manifest summary =
   Formula.is_manifest (AbductiveDomain.Summary.get_path_condition summary) ~is_allocated:(fun v ->
       AbductiveDomain.Summary.is_heap_allocated summary v
       || AbductiveDomain.Summary.get_must_be_valid v summary |> Option.is_some )
+  && not (AbductiveDomain.Summary.pre_heap_has_assumptions summary)
 
 
 let and_is_int v astate = map_path_condition astate ~f:(fun phi -> Formula.and_is_int v phi)
 
-let and_equal_instanceof v1 v2 t astate =
-  map_path_condition astate ~f:(fun phi -> Formula.and_equal_instanceof v1 v2 t phi)
+let and_equal_instanceof v1 v2 t ~tenv astate =
+  let get_dynamic_type v =
+    AbductiveDomain.AddressAttributes.get_dynamic_type v astate
+    |> Option.map ~f:(fun dynamic_type_data -> dynamic_type_data.Attribute.typ)
+  in
+  map_path_condition astate ~f:(fun phi ->
+      Formula.and_equal_instanceof v1 v2 t ~get_dynamic_type ~tenv phi )
+
+
+let absval_of_int astate i =
+  let phi, v = Formula.absval_of_int astate.AbductiveDomain.path_condition i in
+  let astate = AbductiveDomain.set_path_condition phi astate in
+  (astate, v)

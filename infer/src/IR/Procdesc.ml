@@ -23,7 +23,7 @@ end
 
 (* =============== START of module Node =============== *)
 module Node = struct
-  type id = int [@@deriving compare, equal]
+  type id = int [@@deriving compare, equal, hash]
 
   type destruction_kind =
     | DestrBreakStmt
@@ -164,7 +164,9 @@ module Node = struct
 
   let compare node1 node2 = Int.compare node1.id node2.id
 
-  let hash node = Hashtbl.hash node.id
+  let hash node = hash_id node.id
+
+  let hash_fold_t state node = hash_fold_id state node.id
 
   let equal = [%compare.equal: t]
 
@@ -252,6 +254,10 @@ module Node = struct
   (** Append the instructions to the list of instructions to execute *)
   let append_instrs node instrs =
     if not (List.is_empty instrs) then node.instrs <- Instrs.append_list node.instrs instrs
+
+
+  let prepend_instrs node instrs =
+    if not (List.is_empty instrs) then node.instrs <- Instrs.prepend_list node.instrs instrs
 
 
   (** Map and replace the instructions to be executed *)
@@ -449,8 +455,6 @@ module Node = struct
 
   let set_code_block_exit node ~code_block_exit = node.code_block_exit <- Some code_block_exit
 
-  let get_code_block_exit node = node.code_block_exit
-
   (** simple key for a node: just look at the instructions *)
   let simple_key node =
     let add_instr instr =
@@ -546,14 +550,23 @@ let get_passed_by_value_formals pdesc = ProcAttributes.get_passed_by_value_forma
 
 let get_passed_by_ref_formals pdesc = ProcAttributes.get_passed_by_ref_formals pdesc.attributes
 
+let get_pointer_formals pdesc = ProcAttributes.get_pointer_formals pdesc.attributes
+
 let get_loc pdesc = pdesc.attributes.loc
 
 (** Return name and type of local variables *)
 let get_locals pdesc = pdesc.attributes.locals
 
 let is_local pdesc pvar =
-  List.exists (get_locals pdesc) ~f:(fun {ProcAttributes.name} ->
-      Mangled.equal name (Pvar.get_name pvar) )
+  let mangled = Pvar.get_name pvar in
+  List.exists (get_locals pdesc) ~f:(fun {ProcAttributes.name} -> Mangled.equal name mangled)
+
+
+let is_non_structured_binding_local_or_formal pdesc pvar =
+  let mangled = Pvar.get_name pvar in
+  List.exists (get_locals pdesc) ~f:(fun {ProcAttributes.name; is_structured_binding} ->
+      (not is_structured_binding) && Mangled.equal name mangled )
+  || List.exists (get_formals pdesc) ~f:(fun (formal, _, _) -> Mangled.equal mangled formal)
 
 
 (** Return name and type of captured variables *)
@@ -589,8 +602,6 @@ let is_java_synchronized pdesc = pdesc.attributes.is_java_synchronized_method
 
 let is_csharp_synchronized pdesc = pdesc.attributes.is_csharp_synchronized_method
 
-let is_objc_arc_on pdesc = pdesc.attributes.is_objc_arc_on
-
 let iter_nodes f pdesc = List.iter ~f (get_nodes pdesc)
 
 let iter_instrs f pdesc =
@@ -611,9 +622,9 @@ let get_static_callees pdesc =
   let callees =
     fold_instrs pdesc ~init:Procname.Set.empty ~f:(fun acc _node instr ->
         match instr with
-        | Sil.Call (_, Exp.Const (Const.Cfun callee_pn), _, _, _) ->
-            Procname.Set.add callee_pn acc
-        | Sil.Call (_, Exp.Closure {name}, _, _, _) ->
+        | Sil.Call (_, Exp.Const (Const.Cfun name), _, _, _)
+        | Sil.Call (_, Exp.Closure {name}, _, _, _)
+          when not (BuiltinDecl.is_declared name) ->
             Procname.Set.add name acc
         | _ ->
             acc )
@@ -653,20 +664,6 @@ let replace_instrs_by_using_context pdesc ~f ~update_context ~context_at_node =
       node
   in
   update_nodes pdesc ~update
-
-
-(** fold between two nodes or until we reach a branching structure *)
-let fold_slope_range =
-  let rec aux node visited acc ~f =
-    let visited = NodeSet.add node visited in
-    let acc = f acc node in
-    match Node.get_succs node with
-    | [n] when not (NodeSet.mem n visited) ->
-        aux n visited acc ~f
-    | _ ->
-        acc
-  in
-  fun src_node dst_node ~init ~f -> aux src_node (NodeSet.singleton dst_node) init ~f
 
 
 (** Set the exit node of the proc desc *)
@@ -713,44 +710,6 @@ let create_node_from_not_reversed pdesc loc kind instrs =
 
 let create_node pdesc loc kind instrs =
   create_node_from_not_reversed pdesc loc kind (Instrs.of_list instrs)
-
-
-let deep_copy_code_from_pdesc ~orig_pdesc ~dest_pdesc =
-  let pname = dest_pdesc.start_node.pname in
-  let memoized = Hashtbl.create (List.length orig_pdesc.nodes) in
-  let rec copy_node node =
-    let node' =
-      match Hashtbl.find_opt memoized node with
-      | Some node' ->
-          node'
-      | None ->
-          let node' =
-            {node with Node.pname; preds= []; succs= []; instrs= Instrs.copy node.Node.instrs}
-          in
-          Hashtbl.add memoized node node' ;
-          node'.Node.succs <- List.map node.Node.succs ~f:copy_node ;
-          node'.Node.preds <- List.map node.Node.preds ~f:copy_node ;
-          node'
-    in
-    node'
-  in
-  dest_pdesc.nodes <- List.map orig_pdesc.nodes ~f:copy_node ;
-  let find_or_die node =
-    match Hashtbl.find_opt memoized node with
-    | None ->
-        L.die InternalError
-          "Trying to deep copy pdesc from %a to %a. Node %a is not part of origin pdesc's nodes. \
-           Origin pdesc might be empty or misconstructed"
-          Procname.pp node.Node.pname Procname.pp pname Node.pp node
-    | Some node' ->
-        node'
-  in
-  dest_pdesc.exit_node <- find_or_die orig_pdesc.exit_node ;
-  dest_pdesc.start_node <- find_or_die orig_pdesc.start_node ;
-  dest_pdesc.loop_heads <-
-    Option.map orig_pdesc.loop_heads ~f:(fun loop_heads ->
-        NodeSet.map (fun loop_head -> find_or_die loop_head) loop_heads ) ;
-  dest_pdesc.nodes_num <- orig_pdesc.nodes_num
 
 
 (** Set the successor and exception nodes. If this is a join node right before the exit node, add an
@@ -905,12 +864,6 @@ let is_specialized pdesc =
   attributes.ProcAttributes.is_specialized
 
 
-let is_kotlin pdesc =
-  let attributes = get_attributes pdesc in
-  let source = attributes.ProcAttributes.translation_unit in
-  SourceFile.has_extension ~ext:Config.kotlin_source_extension source
-
-
 (* true if pvar is a captured variable of a cpp lambda or objc block *)
 let is_captured_pvar procdesc pvar =
   let procname = get_proc_name procdesc in
@@ -965,32 +918,55 @@ let is_too_big checker ~max_cfg_size pdesc =
   else false
 
 
-module SQLite = SqliteUtils.MarshalledNullableDataNOTForComparison (struct
-  type nonrec t = t
-end)
+module SQLite = struct
+  include SqliteUtils.MarshalledNullableDataNOTForComparison (struct
+    type nonrec t = t
+  end)
 
-let load =
+  let serialize t_opt =
+    Option.iter t_opt ~f:(fun t ->
+        let _changed = replace_instrs t ~f:(fun _node instr -> Sil.hash_normalize_instr instr) in
+        (* cfg is now normalized and significant repetition of instructions across cfgs is
+           unlikely, so clear hashtables to avoid memory leaks *)
+        HashNormalizer.reset_all_normalizers () ) ;
+    serialize t_opt
+end
+
+let load_uid_ =
   let load_statement db =
     Database.register_statement db "SELECT cfg FROM procedures WHERE proc_uid = :k"
   in
   let load_statement_adb = load_statement AnalysisDatabase in
   let load_statement_cdb = load_statement CaptureDatabase in
-  fun pname ->
+  fun ?(capture_only = false) proc_uid ->
     let run_query stmt =
       Database.with_registered_statement stmt ~f:(fun db stmt ->
-          Sqlite3.bind stmt 1 (Sqlite3.Data.TEXT (Procname.to_unique_id pname))
+          Sqlite3.bind stmt 1 (Sqlite3.Data.TEXT proc_uid)
           |> SqliteUtils.check_result_code db ~log:"load bind proc_uid" ;
           SqliteUtils.result_single_column_option ~finalize:false ~log:"Procdesc.load" db stmt
-          |> Option.bind ~f:SQLite.deserialize )
+          |> Option.map ~f:SQLite.deserialize )
     in
-    (* Since the procedure table can be updated in the analysis phase,
-       we need to query both databases, analysisdb first *)
-    IOption.if_none_evalopt
-      ~f:(fun () -> run_query load_statement_cdb)
-      (run_query load_statement_adb)
+    (* Since the procedure table can be updated in the analysis phase, we need to query both
+       databases, analysisdb first *)
+    match if capture_only then None else run_query load_statement_adb with
+    | Some (Some _) as procdesc_opt_opt ->
+        procdesc_opt_opt
+    | _ ->
+        run_query load_statement_cdb
 
 
-let load_exn procname = load procname |> Option.value_exn
+let load proc_name =
+  match load_uid_ (Procname.to_unique_id proc_name) with
+  | Some proc_desc_opt ->
+      proc_desc_opt
+  | None ->
+      MissingDependencies.record_procname proc_name ;
+      None
+
+
+let load_uid ?capture_only proc_uid = load_uid_ ?capture_only proc_uid |> Option.join
+
+let load_exn proc_name = load proc_name |> Option.value_exn
 
 let mark_if_unchanged ~old_pdesc ~new_pdesc =
   (* map from exp names in [old_pdesc] to exp names in [new_pdesc] *)

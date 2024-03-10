@@ -23,7 +23,7 @@ end
 
 type cost_args =
   { tenv: Tenv.t
-  ; integer_type_widths: Typ.IntegerWidths.t
+  ; integer_type_widths: IntegerWidths.t
   ; get_callee_cost_summary_and_formals:
       Procname.t -> (CostDomain.summary * (Pvar.t * Typ.t) list) option
   ; inferbo_invariant_map: BufferOverrunAnalysis.invariant_map
@@ -74,10 +74,9 @@ let get_instantiated_cost
 
 
 let prepare_call_args
-    ({InterproceduralAnalysis.proc_desc; exe_env; analyze_dependency} as analysis_data) call =
+    ({InterproceduralAnalysis.proc_desc; exe_env; analyze_dependency; tenv} as analysis_data) call =
   let open IOption.Let_syntax in
   let proc_name = Procdesc.get_proc_name proc_desc in
-  let tenv = Exe_env.get_proc_tenv exe_env proc_name in
   let integer_type_widths = Exe_env.get_integer_type_widths exe_env proc_name in
   let+ inferbo_invariant_map =
     BufferOverrunAnalysis.cached_compute_invariant_map
@@ -105,9 +104,3 @@ let get_cost_if_expensive analysis_data call =
   let open IOption.Let_syntax in
   let* call_args = prepare_call_args analysis_data call in
   match get_instantiated_cost call_args with Symbolic cost -> Some cost | Cheap | NoModel -> None
-
-
-let get_instantiated_cost analysis_data call =
-  let open IOption.Let_syntax in
-  let+ call_args = prepare_call_args analysis_data call in
-  get_instantiated_cost call_args

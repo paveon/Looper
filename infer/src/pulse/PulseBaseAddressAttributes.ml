@@ -61,7 +61,7 @@ let mk_transitive_taint_from_subst f_keep memory =
         match Attributes.get_propagate_taint_from attrs with
         | None ->
             taint_from_map
-        | Some taints_in ->
+        | Some (_, taints_in) ->
             List.fold ~init:taint_from_map
               ~f:(fun acc {Attribute.v= from} ->
                 match AbstractValue.Map.find_opt addr acc with
@@ -147,6 +147,8 @@ let allocate allocator address location memory =
 
 let java_resource_release address memory = add_one address Attribute.JavaResourceReleased memory
 
+let hack_async_await address memory = add_one address Attribute.HackAsyncAwaited memory
+
 let csharp_resource_release address memory = add_one address Attribute.CSharpResourceReleased memory
 
 let mark_as_end_of_collection address memory = add_one address Attribute.EndOfCollection memory
@@ -163,10 +165,12 @@ let check_valid address attrs =
 
 let check_initialized address attrs =
   L.d_printfln "Checking if %a is initialized" AbstractValue.pp address ;
-  if Graph.find_opt address attrs |> Option.exists ~f:Attributes.is_uninitialized then (
-    L.d_printfln ~color:Red "UNINITIALIZED" ;
-    Error () )
-  else Ok ()
+  match Graph.find_opt address attrs |> Option.bind ~f:Attributes.get_uninitialized with
+  | Some typ ->
+      L.d_printfln ~color:Red "UNINITIALIZED" ;
+      Error typ
+  | None ->
+      Ok ()
 
 
 let get_attribute getter address attrs =
@@ -193,6 +197,8 @@ let remove_taint_sanitizer = remove_attribute Attributes.remove_taint_sanitized
 
 let remove_propagate_taint_from = remove_attribute Attributes.remove_propagate_taint_from
 
+let remove_all_must_not_be_tainted ?kinds = Graph.map (Attributes.remove_must_not_be_tainted ?kinds)
+
 let remove_taint_attrs address memory =
   remove_tainted address memory |> remove_taint_sanitizer address
   |> remove_propagate_taint_from address
@@ -210,7 +216,9 @@ let make_suitable_for_pre_summary = map_attributes ~f:Attributes.make_suitable_f
 
 let make_suitable_for_post_summary = map_attributes ~f:Attributes.make_suitable_for_post_summary
 
-let initialize = remove_attribute Attributes.remove_uninitialized
+let initialize address memory =
+  add_one address Initialized memory |> remove_attribute Attributes.remove_uninitialized address
+
 
 let get_allocation = get_attribute Attributes.get_allocation
 
@@ -236,7 +244,7 @@ let get_must_be_valid = get_attribute Attributes.get_must_be_valid
 let get_must_not_be_tainted address memory =
   match Graph.find_opt address memory with
   | None ->
-      Attribute.TaintSinkSet.empty
+      Attribute.TaintSinkMap.empty
   | Some attrs ->
       Attributes.get_must_not_be_tainted attrs
 
@@ -247,29 +255,29 @@ let get_written_to = get_attribute Attributes.get_written_to
 
 let get_returned_from_unknown = get_attribute Attributes.get_returned_from_unknown
 
-let add_dynamic_type typ address memory = add_one address (Attribute.DynamicType (typ, None)) memory
+let add_dict_contain_const_keys address memory = add_one address DictContainConstKeys memory
 
-let add_dynamic_type_source_file typ source_file address memory =
-  add_one address (Attribute.DynamicType (typ, Some source_file)) memory
+let remove_dict_contain_const_keys = remove_attribute Attributes.remove_dict_contain_const_keys
 
-
-let get_dynamic_type_source_file attrs v =
-  get_attribute Attributes.get_dynamic_type_source_file v attrs
+let is_dict_contain_const_keys address attrs =
+  Graph.find_opt address attrs |> Option.exists ~f:Attributes.is_dict_contain_const_keys
 
 
-let get_dynamic_type attrs v =
-  match get_dynamic_type_source_file attrs v with Some (typ, _) -> Some typ | None -> None
+let add_dict_read_const_key timestamp trace address key attrs =
+  add_one address (DictReadConstKeys (Attribute.ConstKeys.singleton key (timestamp, trace))) attrs
 
+
+let get_dict_read_const_keys = get_attribute Attributes.get_dict_read_const_keys
+
+let add_dynamic_type {Attribute.typ; source_file} address memory =
+  add_one address (Attribute.DynamicType {Attribute.typ; source_file}) memory
+
+
+let get_dynamic_type attrs v = get_attribute Attributes.get_dynamic_type v attrs
 
 let add_static_type typ address memory = add_one address (Attribute.StaticType typ) memory
 
 let get_static_type attrs v = get_attribute Attributes.get_static_type v attrs
-
-let add_ref_counted address memory = add_one address Attribute.RefCounted memory
-
-let is_ref_counted address attrs =
-  Graph.find_opt address attrs |> Option.exists ~f:Attributes.is_ref_counted
-
 
 let std_vector_reserve address memory = add_one address Attribute.StdVectorReserve memory
 
@@ -307,35 +315,160 @@ let is_std_vector_reserved address attrs =
   Graph.find_opt address attrs |> Option.exists ~f:Attributes.is_std_vector_reserved
 
 
-let canonicalize_common ~for_post ~get_var_repr attrs_map =
-  (* TODO: merging attributes together can produce contradictory attributes, eg [MustBeValid] +
-     [Invalid]. We could detect these and abort execution. This is not really restricted to merging
-     as it might be possible to get a contradiction by accident too so maybe here is not the best
-     place to detect these. *)
+let get_last_lookup address attrs = get_attribute Attributes.get_last_lookup address attrs
+
+let get_address_of_stack_variable address attrs =
+  get_attribute Attributes.get_address_of_stack_variable address attrs
+
+
+let merge attrs attrs' =
+  (* "merge" attributes if two different values ([addr] and [addr']) are found to be
+     equal after attributes of the same kind were recorded for them. This arbitrarily
+     keeps one of them, with unclear but likely benign consequences. *)
+  Attributes.union_prefer_left attrs' attrs
+
+
+let canonicalize_post ~get_var_repr attrs_map =
   Graph.fold
     (fun addr attrs g ->
       if Attributes.is_empty attrs then g
       else
         let addr' = get_var_repr addr in
-        let attrs' =
-          Graph.find_opt addr' g
-          |> Option.fold ~init:attrs ~f:(fun attrs attrs' ->
-                 (* "merge" attributes if two different values ([addr] and [addr']) are found to be
-                    equal after attributes of the same kind were recorded for them. This arbitrarily
-                    keeps one of them, with unclear but likely benign consequences. *)
-                 Attributes.union_prefer_left attrs' attrs )
-        in
+        let attrs' = Graph.find_opt addr' g |> Option.fold ~init:attrs ~f:merge in
         add addr' attrs' g )
-    (if for_post then make_suitable_for_post_summary attrs_map else attrs_map)
+    (make_suitable_for_post_summary attrs_map)
     Graph.empty
 
 
-let canonicalize_post ~get_var_repr attrs_map =
-  canonicalize_common ~for_post:true ~get_var_repr attrs_map
-
-
 let subst_var (v, v') attrs_map =
-  if Graph.mem v attrs_map then
-    canonicalize_common ~for_post:false attrs_map ~get_var_repr:(fun addr ->
-        if AbstractValue.equal addr v then v' else addr )
-  else attrs_map
+  match Graph.find_opt v attrs_map with
+  | None ->
+      attrs_map
+  | Some attrs ->
+      let attrs_to_add =
+        match Graph.find_opt v' attrs_map with None -> attrs | Some attrs' -> merge attrs attrs'
+      in
+      add v' attrs_to_add attrs_map
+
+
+(* copied verbatim from .mli, has to be kept in sync because ocaml *)
+module type S = sig
+  type t [@@deriving compare, equal, yojson_of]
+
+  type key
+
+  val pp : F.formatter -> t -> unit
+
+  val empty : t
+
+  val filter : (key -> Attributes.t -> bool) -> t -> t
+
+  val filter_with_discarded_addrs : (key -> bool) -> t -> t * AbstractValue.t list
+
+  val find_opt : key -> t -> Attributes.t option
+
+  val add_one : key -> Attribute.t -> t -> t
+
+  val add : key -> Attributes.t -> t -> t
+
+  val allocate : Attribute.allocator -> key -> Location.t -> t -> t
+
+  val always_reachable : key -> t -> t
+
+  val java_resource_release : key -> t -> t
+
+  val hack_async_await : key -> t -> t
+
+  val csharp_resource_release : key -> t -> t
+
+  val fold : (key -> Attributes.t -> 'a -> 'a) -> t -> 'a -> 'a
+
+  val check_valid : key -> t -> (unit, Invalidation.t * Trace.t) result
+
+  val check_initialized : key -> t -> (unit, Attribute.UninitializedTyp.t) result
+
+  val invalidate : key * ValueHistory.t -> Invalidation.t -> Location.t -> t -> t
+
+  val get_allocation : key -> t -> (Attribute.allocator * Trace.t) option
+
+  val get_closure_proc_name : key -> t -> Procname.t option
+
+  val get_copied_into : key -> t -> Attribute.CopiedInto.t option
+
+  val get_copied_return :
+    key -> t -> (AbstractValue.t * bool * Attribute.CopyOrigin.t * Location.t) option
+
+  val remove_copied_return : key -> t -> t
+
+  val get_source_origin_of_copy : key -> t -> AbstractValue.t option
+
+  val is_copied_from_const_ref : key -> t -> bool
+
+  val get_must_be_valid :
+    key -> t -> (Timestamp.t * Trace.t * Invalidation.must_be_valid_reason option) option
+
+  val get_must_not_be_tainted : key -> t -> Attribute.TaintSink.t Attribute.TaintSinkMap.t
+
+  val get_returned_from_unknown : key -> t -> AbstractValue.t list option
+
+  val get_must_be_initialized : key -> t -> (Timestamp.t * Trace.t) option
+
+  val add_dict_contain_const_keys : key -> t -> t
+
+  val remove_dict_contain_const_keys : key -> t -> t
+
+  val is_dict_contain_const_keys : key -> t -> bool
+
+  val add_dict_read_const_key : Timestamp.t -> Trace.t -> key -> Fieldname.t -> t -> t
+
+  val get_dict_read_const_keys : key -> t -> Attribute.ConstKeys.t option
+
+  val add_dynamic_type : Attribute.dynamic_type_data -> key -> t -> t
+
+  val get_dynamic_type : t -> key -> Attribute.dynamic_type_data option
+
+  val add_static_type : Typ.Name.t -> key -> t -> t
+
+  val get_static_type : t -> key -> Typ.Name.t option
+
+  val get_written_to : key -> t -> (Timestamp.t * Trace.t) option
+
+  val std_vector_reserve : key -> t -> t
+
+  val is_java_resource_released : key -> t -> bool
+
+  val is_csharp_resource_released : key -> t -> bool
+
+  val is_std_moved : key -> t -> bool
+
+  val is_std_vector_reserved : key -> t -> bool
+
+  val get_last_lookup : key -> t -> AbstractValue.t option
+
+  val mark_as_end_of_collection : key -> t -> t
+
+  val is_end_of_collection : key -> t -> bool
+
+  val add_unreachable_at : key -> Location.t -> t -> t
+
+  val add_copied_return :
+    key -> source:key -> is_const_ref:bool -> Attribute.CopyOrigin.t -> Location.t -> t -> t
+
+  val get_config_usage : key -> t -> Attribute.ConfigUsage.t option
+
+  val get_const_string : key -> t -> string option
+
+  val get_used_as_branch_cond : key -> t -> (Procname.t * Location.t * Trace.t) option
+
+  val remove_allocation_attr : key -> t -> t
+
+  val remove_taint_attrs : key -> t -> t
+
+  val remove_all_must_not_be_tainted : ?kinds:TaintConfig.Kind.Set.t -> t -> t
+
+  val remove_must_be_valid_attr : key -> t -> t
+
+  val initialize : key -> t -> t
+
+  val get_address_of_stack_variable : key -> t -> (Var.t * Location.t * ValueHistory.t) option
+end

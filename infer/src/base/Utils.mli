@@ -30,7 +30,12 @@ val normalize_path_from : root:string -> string -> string * string
     represent the same file) *)
 
 val normalize_path : string -> string
+  [@@warning "-unused-value-declaration"]
 (** Normalize a path without a root *)
+
+val flatten_path : ?sep:string -> string -> string
+(** Flatten a/b/c as a-b-c. Special dirs .. and . are abbreviated. The separator [-] can be
+    customized. *)
 
 val filename_to_absolute : root:string -> string -> string
 (** Convert a filename to an absolute one if it is relative, and normalize "." and ".." *)
@@ -59,9 +64,6 @@ val directory_fold : ('a -> string -> 'a) -> 'a -> string -> 'a
 val directory_iter : (string -> unit) -> string -> unit
 (** Functional iter function over all the files of a directory *)
 
-val directory_is_empty : string -> bool
-(** Returns true if a given directory is empty. The directory is assumed to exist. *)
-
 val read_json_file : string -> (Yojson.Basic.t, string) Result.t
 
 val read_safe_json_file : string -> (Yojson.Safe.t, string) Result.t
@@ -70,7 +72,7 @@ val with_file_in : string -> f:(In_channel.t -> 'a) -> 'a
 
 val with_file_out : ?append:bool -> string -> f:(Out_channel.t -> 'a) -> 'a
 
-val with_intermediate_temp_file_out : string -> f:(Out_channel.t -> 'a) -> 'a
+val with_intermediate_temp_file_out : ?retry:bool -> string -> f:(Out_channel.t -> 'a) -> 'a
 (** like [with_file_out] but uses a fresh intermediate temporary file and rename to avoid
     write-write races *)
 
@@ -101,8 +103,18 @@ val suppress_stderr2 : ('a -> 'b -> 'c) -> 'a -> 'b -> 'c
 (** wraps a function expecting 2 arguments in another that temporarily redirects stderr to /dev/null
     for the duration of the function call *)
 
-val rmtree : string -> unit
-(** [rmtree path] removes [path] and, if [path] is a directory, recursively removes its contents *)
+val rmtree : ?except:string list -> string -> unit
+(** [rmtree path] removes [path] and, if [path] is a directory, recursively removes its contents.
+    Files whose name matches the absolute paths in [except] are not removed. If [except] is
+    specified then [path] will only be spared if [path] appears literally in [except] (whereas files
+    that are deeper will match if their absolute path is in [except]). *)
+
+val rm_all_in_dir : ?except:string list -> string -> unit
+(** [rm_all_in_dir ?except path] removes all entries in [path]/* except for the (absolute) paths in
+    [except] *)
+
+val iter_dir : string -> f:(string -> unit) -> unit
+(** iterate on each entry in the directory except for "." and ".." *)
 
 val better_hash : 'a -> Caml.Digest.t
 (** Hashtbl.hash only hashes the first 10 meaningful values, [better_hash] uses everything. *)
@@ -138,8 +150,8 @@ val yojson_lookup :
     json_value ~src) where src has element name appended. f is typically one of the above _of_yojson
     functions. *)
 
-val timeit : f:(unit -> 'a) -> 'a * int
-(** Returns the execution time of [f] in milliseconds together with its result *)
+val timeit : f:(unit -> 'a) -> 'a * Mtime.Span.t
+(** Returns the execution time of [f] together with its result *)
 
 val do_in_dir : dir:string -> f:(unit -> 'a) -> 'a
 (** executes [f] after cding into [dir] and then restores original cwd *)
@@ -148,7 +160,9 @@ val get_available_memory_MB : unit -> int option
 (** On Linux systems, return [Some x] where [MemAvailable x] is in [/proc/meminfo]. Returns [None]
     in all other cases. *)
 
-val iter_infer_deps : root:string -> f:(string -> unit) -> string -> unit
+val fold_infer_deps : root:string -> string -> init:'a -> f:('a -> string -> 'a) -> 'a
+
+val iter_infer_deps : root:string -> string -> f:(string -> unit) -> unit
 (** Parse each line of the given [infer_deps.txt] file (split on tabs, assume 3 elements per line)
     and run [f] on the third element. [root] is used to interpret relative paths in the file. *)
 
@@ -156,13 +170,11 @@ val inline_argument_files : string list -> string list
 (** Given a list of arguments return the extended list of arguments where the args in a file have
     been extracted *)
 
-val numcores : int
-(** - On Linux return the number of physical cores (sockets * cores per socket).
-    - On Darwin and Windows returns half of the number of CPUs since most processors have 2 hardware
-      threads per core. *)
+val cpus : int
+(** Number of CPUs as computed by [Setcore.numcores]. *)
 
-val zip_fold_filenames : init:'a -> f:('a -> string -> 'a) -> zip_filename:string -> 'a
-(** fold over each filename in the given [zip_filename]. *)
+val zip_fold : init:'a -> f:('a -> Zip.in_file -> Zip.entry -> 'a) -> zip_filename:string -> 'a
+(** fold over each file in the given [zip_filename]. *)
 
 val is_term_dumb : unit -> bool
 (** Check if the terminal is "dumb" or otherwise has very limited functionality. For example, Emacs'

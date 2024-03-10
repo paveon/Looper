@@ -12,17 +12,15 @@ open PulseDomainInterface
 
 let debug fmt = L.debug Analysis Verbose fmt
 
-let get_matching_dest_addr_opt ~edges_pre ~edges_post :
-    (BaseMemory.Access.t * AbstractValue.t) list option =
+let get_matching_dest_addr_opt ~edges_pre ~edges_post : (Access.t * AbstractValue.t) list option =
   match
     List.fold2 ~init:(Some [])
       ~f:(fun acc (access, (addr_dest_pre, _)) (_, (addr_dest_post, _)) ->
         if AbstractValue.equal addr_dest_pre addr_dest_post then
           Option.map acc ~f:(fun acc -> (access, addr_dest_pre) :: acc)
         else None )
-      (BaseMemory.Edges.bindings edges_pre |> List.sort ~compare:[%compare: BaseMemory.Access.t * _])
-      ( BaseMemory.Edges.bindings edges_post
-      |> List.sort ~compare:[%compare: BaseMemory.Access.t * _] )
+      (UnsafeMemory.Edges.bindings edges_pre |> List.sort ~compare:[%compare: Access.t * _])
+      (UnsafeMemory.Edges.bindings edges_post |> List.sort ~compare:[%compare: Access.t * _])
   with
   | Unequal_lengths ->
       debug "Mismatch in pre and post.\n" ;
@@ -31,7 +29,7 @@ let get_matching_dest_addr_opt ~edges_pre ~edges_post :
       x
 
 
-let ignore_array_index (access : BaseMemory.Access.t) : unit HilExp.Access.t =
+let ignore_array_index (access : Access.t) : unit MemoryAccess.t =
   match access with
   | ArrayAccess (typ, _) ->
       ArrayAccess (typ, ())
@@ -77,56 +75,60 @@ let add_to_modified pname ~pvar ~access ~addr pre_heap post modified_vars =
         if AbstractValue.Set.mem addr visited then
           aux (access_list, modified_vars) ~addr_to_explore ~visited
         else
-          let edges_pre_opt = BaseMemory.find_opt addr pre_heap in
-          let cell_post_opt = BaseDomain.find_cell_opt addr post in
+          let edges_pre_opt = UnsafeMemory.find_opt addr pre_heap in
+          let edges_post_opt = UnsafeMemory.find_opt addr post.BaseDomain.heap in
+          let attrs_post_opt = UnsafeAttributes.find_opt addr post.BaseDomain.attrs in
           let visited = AbstractValue.Set.add addr visited in
-          match (edges_pre_opt, cell_post_opt) with
-          | None, None ->
+          match (edges_pre_opt, edges_post_opt, attrs_post_opt) with
+          | None, None, None ->
               aux (access_list, modified_vars) ~addr_to_explore ~visited
-          | Some _, None ->
+          | Some _, None, None ->
               L.debug Analysis Verbose
                 "%a is in the pre but not the post of the call to %a@\n\
                  callee heap pre: @[%a@]@\n\
                  callee post: @[%a@]@\n"
-                AbstractValue.pp addr Procname.pp pname BaseMemory.pp pre_heap BaseDomain.pp post ;
+                AbstractValue.pp addr Procname.pp pname UnsafeMemory.pp pre_heap BaseDomain.pp post ;
               aux (access_list, modified_vars) ~addr_to_explore ~visited
-          | None, Some (_, attrs_post) ->
+          | None, _, attrs_post_opt ->
+              let attrs_post = Option.value ~default:Attributes.empty attrs_post_opt in
               aux
                 (add_invalid_and_modified ~pvar ~access ~check_empty:false attrs_post access_list
                    modified_vars )
                 ~addr_to_explore ~visited
-          | Some edges_pre, Some (edges_post, attrs_post) -> (
-            match get_matching_dest_addr_opt ~edges_pre ~edges_post with
-            | Some addr_list ->
-                (* we have multiple accesses to check here up to
-                   currently accumulated point. We need to check them
-                   one by one rather than all at once to ensure that
-                   accesses are not collapsed together but kept
-                   separately. *)
-                List.fold ~init:modified_vars
-                  ~f:(fun acc addr ->
-                    aux
-                      (add_invalid_and_modified ~pvar ~access attrs_post ~check_empty:false
-                         access_list acc )
-                      ~addr_to_explore:(addr :: addr_to_explore) ~visited )
-                  addr_list
-            | None ->
-                aux
-                  (add_invalid_and_modified ~pvar ~access ~check_empty:false attrs_post access_list
-                     modified_vars )
-                  ~addr_to_explore ~visited ) )
+          | Some edges_pre, edges_post_opt, attrs_post_opt -> (
+              let attrs_post = Option.value ~default:Attributes.empty attrs_post_opt in
+              let edges_post = Option.value ~default:UnsafeMemory.Edges.empty edges_post_opt in
+              match get_matching_dest_addr_opt ~edges_pre ~edges_post with
+              | Some addr_list ->
+                  (* we have multiple accesses to check here up to
+                     currently accumulated point. We need to check them
+                     one by one rather than all at once to ensure that
+                     accesses are not collapsed together but kept
+                     separately. *)
+                  List.fold ~init:modified_vars
+                    ~f:(fun acc addr ->
+                      aux
+                        (add_invalid_and_modified ~pvar ~access attrs_post ~check_empty:false
+                           access_list acc )
+                        ~addr_to_explore:(addr :: addr_to_explore) ~visited )
+                    addr_list
+              | None ->
+                  aux
+                    (add_invalid_and_modified ~pvar ~access ~check_empty:false attrs_post
+                       access_list modified_vars )
+                    ~addr_to_explore ~visited ) )
   in
   aux ([], modified_vars) ~addr_to_explore:[(access, addr)] ~visited:AbstractValue.Set.empty
 
 
-let get_modified_params pname post_stack pre_heap post formals =
+let get_modified_params pname (summary : AbductiveDomain.Summary.t) post pre_heap formals =
   List.fold_left formals ~init:ImpurityDomain.ModifiedVarMap.bottom ~f:(fun acc (name, typ, _) ->
       let pvar = Pvar.mk name pname in
-      match BaseStack.find_opt (Var.of_pvar pvar) post_stack with
+      match Stack.find_opt (Var.of_pvar pvar) (summary :> AbductiveDomain.t) with
       | Some (addr, _) when Typ.is_pointer typ -> (
-        match BaseMemory.find_opt addr pre_heap with
+        match UnsafeMemory.find_opt addr pre_heap with
         | Some edges_pre ->
-            BaseMemory.Edges.fold edges_pre ~init:acc ~f:(fun acc (access, (addr, _)) ->
+            UnsafeMemory.Edges.fold edges_pre ~init:acc ~f:(fun acc (access, (addr, _)) ->
                 add_to_modified pname ~pvar ~access ~addr pre_heap post acc )
         | None ->
             debug "The address %a is not materialized in pre-heap.\n" AbstractValue.pp addr ;
@@ -135,8 +137,8 @@ let get_modified_params pname post_stack pre_heap post formals =
           acc )
 
 
-let get_modified_globals pname pre_heap post post_stack =
-  BaseStack.fold
+let get_modified_globals pname (summary : AbductiveDomain.Summary.t) pre_heap post =
+  Stack.fold
     (fun var (addr, _) modified_globals ->
       if Var.is_global var then
         (* since global vars are rooted in the stack, we don't have
@@ -144,9 +146,10 @@ let get_modified_globals pname pre_heap post post_stack =
            globals. *)
         add_to_modified pname
           ~pvar:(Option.value_exn (Var.get_pvar var))
-          ~access:HilExp.Access.Dereference ~addr pre_heap post modified_globals
+          ~access:MemoryAccess.Dereference ~addr pre_heap post modified_globals
       else modified_globals )
-    post_stack ImpurityDomain.ModifiedVarMap.bottom
+    (summary :> AbductiveDomain.t)
+    ImpurityDomain.ModifiedVarMap.bottom
 
 
 let is_modeled_pure tenv pname =
@@ -167,9 +170,8 @@ let extract_impurity tenv pname formals (exec_state : ExecutionDomain.summary) :
   in
   let pre_heap = (AbductiveDomain.Summary.get_pre astate).BaseDomain.heap in
   let post = AbductiveDomain.Summary.get_post astate in
-  let post_stack = post.BaseDomain.stack in
-  let modified_params = get_modified_params pname post_stack pre_heap post formals in
-  let modified_globals = get_modified_globals pname pre_heap post post_stack in
+  let modified_params = get_modified_params pname astate post pre_heap formals in
+  let modified_globals = get_modified_globals pname astate pre_heap post in
   let skipped_calls =
     SkippedCalls.filter
       (fun proc_name _ ->
@@ -239,13 +241,13 @@ let checker {IntraproceduralAnalysis.proc_desc; tenv; err_log}
   match pulse_summary_opt with
   | None ->
       report_impure_pulse proc_desc err_log ~desc:"no"
-  | Some [] ->
+  | Some {main= {pre_post_list= []}} ->
       report_impure_pulse proc_desc err_log ~desc:"empty"
-  | Some pre_posts ->
+  | Some {main= {pre_post_list}} ->
       let formals = Procdesc.get_formals proc_desc in
       let proc_name = Procdesc.get_proc_name proc_desc in
       let impurity_astate =
-        List.fold pre_posts ~init:ImpurityDomain.pure ~f:(fun acc exec_state ->
+        List.fold pre_post_list ~init:ImpurityDomain.pure ~f:(fun acc exec_state ->
             let impurity_astate = extract_impurity tenv proc_name formals exec_state in
             ImpurityDomain.join acc impurity_astate )
       in

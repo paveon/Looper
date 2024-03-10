@@ -20,14 +20,15 @@ let debug () =
         | Some tenv ->
             L.result "Global type environment:@\n@[<v>%a@]" Tenv.pp tenv ) ;
     ( if Config.procedures then
-        let filter = Lazy.force Filtering.procedures_filter in
+        let procedures_filter = Lazy.force Filtering.procedures_filter in
+        let summary_of proc_name = Summary.OnDisk.get ~lazy_payloads:false proc_name in
+        let filter source_file proc_name =
+          procedures_filter source_file proc_name
+          &&
+          if Config.procedures_summary_skip_empty then Option.is_some (summary_of proc_name)
+          else true
+        in
         if Config.procedures_summary || Config.procedures_summary_json then
-          let summary_of proc_name = Summary.OnDisk.get ~lazy_payloads:false proc_name in
-          let filter =
-            if Config.procedures_summary_skip_empty then fun source_file proc_name ->
-              filter source_file proc_name && Option.is_some (summary_of proc_name)
-            else filter
-          in
           let f_console_output proc_names =
             let pp_summary fmt proc_name =
               match summary_of proc_name with
@@ -63,13 +64,27 @@ let debug () =
             Config.(
               Procedures.pp_all ~filter ~proc_name:procedures_name ~defined:procedures_definedness
                 ~source_file:procedures_source_file ~proc_attributes:procedures_attributes
-                ~proc_cfg:procedures_cfg )
+                ~proc_cfg:procedures_cfg ~callees:procedures_callees )
             () ) ;
     if Config.source_files then (
       if Config.source_files_call_graph then SourceFileGraph.to_dotty "file-call-graph.dot"
       else if Option.is_some Config.source_files_call_graph_partition then
         Option.iter Config.source_files_call_graph_partition ~f:(fun n_workers ->
             SourceFileGraph.partition_source_file_call_graph ~n_workers )
+      else if Option.is_some Config.extract_capture_from then
+        match SourceFile.read_config_changed_files () with
+        | None ->
+            L.die UserError
+              "When extracting a capture database, --changed-files-index must be specified."
+        | Some files ->
+            CaptureManipulation.extract ~files
+              ~input_capture_path:(Option.value_exn Config.extract_capture_from)
+      else if Option.is_some Config.complete_capture_from then
+        let changes_made =
+          CaptureManipulation.complete
+            ~input_capture_path:(Option.value_exn Config.complete_capture_from)
+        in
+        L.result "%s" (if changes_made then "MODIFIED" else "UNMODIFIED")
       else
         let filter = Lazy.force Filtering.source_files_filter in
         L.result "%a"
@@ -223,12 +238,11 @@ let merge_reports () =
   ReportSet.store acc
 
 
-let merge_report_summaries () =
-  let (), duration_ms =
-    Utils.timeit ~f:(fun () ->
-        DBWriter.merge_report_summaries ~infer_outs:Config.merge_report_summaries )
+let merge_summaries () =
+  let (), duration =
+    Utils.timeit ~f:(fun () -> DBWriter.merge_summaries ~infer_outs:Config.merge_summaries)
   in
-  L.debug Analysis Quiet "Merging report summaries took %d ms.@\n" duration_ms
+  L.debug Analysis Quiet "Merging summaries took %a.@\n" Mtime.Span.pp duration
 
 
 let report () =
@@ -248,14 +262,14 @@ let report () =
     ( Config.issues_tests
     , Config.cost_issues_tests
     , Config.config_impact_issues_tests
-    , Config.simple_lineage_json_report
+    , Config.lineage_json_report
     , Config.merge_report
-    , Config.merge_report_summaries
+    , Config.merge_summaries
     , Config.pulse_report_flows_from_taint_source
     , Config.pulse_report_flows_to_taint_sink )
   with
   | None, None, None, false, [], _, None, None ->
-      if not (List.is_empty Config.merge_report_summaries) then merge_report_summaries () ;
+      if not (List.is_empty Config.merge_summaries) then merge_summaries () ;
       Driver.report ()
   | _, _, _, _, [], _, Some _, Some _ ->
       L.die UserError
@@ -272,7 +286,7 @@ let report () =
       Option.iter out_path ~f:write_from_json ;
       Option.iter cost_out_path ~f:write_from_cost_json ;
       Option.iter config_impact_out_path ~f:write_from_config_impact_json ;
-      if report_lineage then ReportSimpleLineage.report () ;
+      if report_lineage then ReportLineage.report () ;
       Option.iter taint_source
         ~f:(ReportDataFlows.report_data_flows_of_procname ~flow_type:FromSource) ;
       Option.iter taint_sink ~f:(ReportDataFlows.report_data_flows_of_procname ~flow_type:ToSink)
@@ -280,10 +294,10 @@ let report () =
       merge_reports ()
   | _, _, _, _, _ :: _, _, _, _ | _, _, _, _, _, _ :: _, _, _ ->
       L.die UserError
-        "Options '--merge-report' or '--merge-summaries' cannot be used with '--issues-tests', \
-         '--cost-issues-tests', '--config-impact-issues-tests', '--simple-lineage-json-report', \
-         '--pulse-report-flows-from-taint-source', '--pulse-report-flows-to-taint-sink', or each \
-         other.@\n"
+        "Options '--merge-report' or '--merge-summaries' or '--merge-report-sumamries' cannot be \
+         used with '--issues-tests', '--cost-issues-tests', '--config-impact-issues-tests', \
+         '--lineage-json-report', '--pulse-report-flows-from-taint-source', \
+         '--pulse-report-flows-to-taint-sink', or each other.@\n"
 
 
 let report_diff () =

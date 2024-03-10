@@ -12,14 +12,14 @@ AC_PREREQ([2.63])
 # - the values below
 # - opam
 AC_INIT([Infer],
-        [1.1.0],
+        [1.2.0],
         [https://github.com/facebook/infer/issues/])
 
 AC_CONFIG_SRCDIR([infer/src/istd/IStd.ml])
 
 # WARNING: keep in sync with above
 INFER_MAJOR=1
-INFER_MINOR=1
+INFER_MINOR=2
 INFER_PATCH=0
 
 AC_SUBST([INFER_MAJOR])
@@ -130,6 +130,19 @@ AC_ARG_ENABLE(java-analyzers,
 BUILD_JAVA_ANALYZERS=$enable_java_analyzers
 AC_SUBST([BUILD_JAVA_ANALYZERS])
 
+enable_python_analyzers_default=auto
+AS_IF([test "x$is_release_tree" = "xyes"], [
+  enable_python_analyzers_default=yes
+])
+
+AC_ARG_ENABLE(python-analyzers,
+  AS_HELP_STRING([--disable-python-analyzers],
+    [do not build the Python analyzers (default is to build them in release mode, otherwise auto-detect)]),
+  ,
+  enable_python_analyzers=$enable_python_analyzers_default)
+BUILD_PYTHON_ANALYZERS=$enable_python_analyzers
+AC_SUBST([BUILD_PYTHON_ANALYZERS])
+
 AC_ARG_WITH(fcp-clang,
   AS_HELP_STRING([--with-fcp-clang],
     [use $CLANG_PREFIX/bin/clang to override the default compiler (default is not to override)]),
@@ -166,6 +179,26 @@ AS_IF([test "x$enable_c_analyzers" = "xyes"], [
   AC_SUBST([ENABLE_OCAMLOPT_CUSTOM_CC])
 ])
 # end if($enable_c_analyzers)
+
+AC_CHECK_TOOL([PYTHON], [python3], [no])
+AS_IF([test "x$enable_python_analyzers" != "xno"], [
+  AC_ASSERT_PROG([python3], [$PYTHON])
+  AC_MSG_CHECKING([python version])
+  python_version=$("$PYTHON" --version)
+  AC_MSG_RESULT([$python_version])
+  case $python_version in
+    Python\ 3.8.*) BUILD_PYTHON_ANALYZERS=yes; break;;
+    *) BUILD_PYTHON_ANALYZERS=no;
+      AS_IF([test "x$enable_python_analyzers" = "xauto"], [
+        AC_MSG_WARN([python version $python_version is not supported, disabling python support])
+        ], [
+        AC_MSG_ERROR([python version $python_version is not supported, please install python version 3.8 instead or disable python support with --disable-python-analyzers])
+      ]); break;;
+  esac
+]) # end if($enable_python_analyzers)
+
+AC_ARG_VAR([PYTHONHOME], [the location of the standard Python libraries])
+AC_SUBST([PYTHONHOME])
 
 AC_CHECK_TOOL([XCODE_SELECT], [xcode-select], [no])
 AS_IF([test "x$XCODE_SELECT" != "xno"], [XCODE_SELECT_OUT=`xcode-select -p`])
@@ -264,12 +297,7 @@ AC_ASSERT_OCAML_PKG([oUnit])
 AC_CHECK_TOOL([UTOP], [utop], [no])
 AC_ASSERT_OCAML_PKG([yojson])
 
-AC_MSG_CHECKING([which ocamlformat to use])
-AS_IF([test x"$is_facebook_tree" = x"yes"],
-  [OCAMLFORMAT="$(pwd)"/facebook/dependencies/bin/ocamlformat],
-  [OCAMLFORMAT=ocamlformat])
-AC_MSG_RESULT([$OCAMLFORMAT])
-AC_SUBST([OCAMLFORMAT])
+AC_CHECK_TOOL([OCAMLFORMAT], [ocamlformat], [no])
 
 AC_ARG_VAR([CPATH], [Additional directories to search for C headers.])
 AC_ARG_VAR([LIBRARY_PATH], [Additional directories to search for C shared objects.])
@@ -281,7 +309,7 @@ AC_ARG_VAR([OPAMSWITCH], [Opam switch used for building infer.])
 AC_CHECK_TOOL([OPAM], [opam], [no])
 AS_IF([test "$OPAM" != "no"], [
   AC_MSG_CHECKING([opam version])
-  opam_version=$(opam --version)
+  opam_version=$("$OPAM" --version)
   case $opam_version in
     2.*) AC_MSG_RESULT([$opam_version]); break;;
     *) AC_MSG_ERROR([opam version $opam_version is not supported, please install opam version 2 instead]); break;;
@@ -301,19 +329,17 @@ AC_SUBST([OPAMSWITCH])
 
 if test "x$enable_erlang_analyzers" = "xyes"; then
   AC_CHECK_TOOL([ESCRIPT], [escript], [no])
+  AC_CHECK_TOOL([ERLC], [erlc], [no])
   AC_CHECK_TOOL([REBAR3], [rebar3], [no])
 fi
 # end if($enable_erlang_analyzers)
 
-if test "x$enable_hack_analyzers" = "xyes"; then
-  if test "x$is_facebook_tree" = "xyes"; then
-    # Look for hackc in $PATH first, then fallback to the bundled version
-    AC_PATH_TOOL([HACKC], [hackc], [no], [$PATH$PATH_SEPARATOR$ac_pwd/facebook/dependencies/bin])
-  else
-    AC_PATH_TOOL([HACKC], [hackc], [no])
-  fi
-fi
-# end if($enable_hack_analyzers)
+AC_PATH_TOOL([HACKC], [hackc], [no])
+AC_MSG_CHECKING([if hackc can run])
+AS_IF([$HACKC --version >/dev/null 2>/dev/null],
+  [AC_MSG_RESULT([yes])],
+  [HACKC=no
+   AC_MSG_RESULT([no])])
 
 if test "x$enable_java_analyzers" = "xyes"; then
   AC_CHECK_TOOL([JAVA], [java], [no])
@@ -333,7 +359,7 @@ if test "x$enable_java_analyzers" = "xyes"; then
     JAVA_MAJOR_VERSION=`echo $JAVA_MAJOR_VERSION | cut -d '.' -f 2`
   ], [
     # otherwise pick the first number as the major version
-    JAVA_MAJOR_VERSION=`echo $JAVA_MAJOR_VERSION | cut -d '.' -f 1`
+    JAVA_MAJOR_VERSION=`echo $JAVA_MAJOR_VERSION | $AWK -F'[[.-]]' '{print $1}'`
   ])
   AC_MSG_RESULT([$JAVA_MAJOR_VERSION])
   AC_SUBST([JAVA_MAJOR_VERSION])
@@ -411,7 +437,7 @@ AC_SUBST([NCPU])
 # optional progs and libraries that, eg build systems to be run in integration tests
 
 AC_CHECK_TOOL([ANT], [ant], [no])
-AC_CHECK_TOOL([BUCK], [buck], [no])
+AC_CHECK_TOOL([BUCK], [buck1], [no])
 AC_CHECK_TOOL([EMACS], [emacs], [no])
 AC_ARG_VAR([MVN], [command to execute Maven when running tests])
 AS_IF([test "x$MVN" = "x"], [
@@ -464,6 +490,8 @@ AC_SUBST([OTOOL])
 AC_CHECK_TOOL([PATCHELF], [patchelf], [no])
 AC_SUBST([PATCHELF])
 
+AC_CHECK_TOOL([HH_SINGLE_TYPE_CHECK], [hh_single_type_check], [no])
+
 AC_CHECK_INFER_MAN_LAST_MODIFIED()
 
 AC_CONFIG_FILES([
@@ -471,3 +499,28 @@ AC_CONFIG_FILES([
 ])
 
 AC_OUTPUT
+
+enabled_languages=""
+enabled_sequence_sep=""
+disabled_languages=""
+disabled_sequence_sep=""
+AC_DEFUN([AC_CLASSIFY_FRONTEND_SUPPORT],
+[dnl
+  AS_IF([test "$2" = "yes"],
+  [dnl
+    enabled_languages=${enabled_languages}${enabled_sequence_sep}$1;
+    enabled_sequence_sep=", "
+  ], [dnl
+    disabled_languages=${disabled_languages}${disabled_sequence_sep}$1;
+    disabled_sequence_sep=", "
+  ])
+])
+
+AC_CLASSIFY_FRONTEND_SUPPORT([clang], [$BUILD_C_ANALYZERS])
+AC_CLASSIFY_FRONTEND_SUPPORT([erlang], [$BUILD_ERLANG_ANALYZERS])
+AC_CLASSIFY_FRONTEND_SUPPORT([hack], [$BUILD_HACK_ANALYZERS])
+AC_CLASSIFY_FRONTEND_SUPPORT([java], [$BUILD_JAVA_ANALYZERS])
+AC_CLASSIFY_FRONTEND_SUPPORT([python], [$BUILD_PYTHON_ANALYZERS])
+
+AC_MSG_NOTICE([enabled language frontends:  $enabled_languages])
+AC_MSG_NOTICE([disabled language frontends: $disabled_languages])

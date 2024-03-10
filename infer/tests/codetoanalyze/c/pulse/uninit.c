@@ -5,6 +5,7 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+#include <assert.h>
 #include <stdlib.h>
 
 int dereference_bad() {
@@ -112,9 +113,7 @@ void malloc_array_good(int len) {
 
 struct uninit_s unknown_struct();
 
-struct uninit_s unknown_wrapper() {
-  return unknown_struct();
-}
+struct uninit_s unknown_wrapper() { return unknown_struct(); }
 
 void havoc_calling_unknown_struct_good() {
   struct uninit_s x = unknown_wrapper();
@@ -193,3 +192,71 @@ void uninit_interproc_manifest_bad() {
     // currently FN as uninit does in fact terminate symbolic execution
   }
 }
+
+// another interprocedural test
+
+void check_range(int range_var_valid, int* range_var) {
+  if (range_var_valid) {
+    *range_var = *range_var + 1;
+  }
+
+  assert(range_var_valid >= 0 && range_var_valid <= 1);
+}
+
+void check_range_wrapper(int range_var_valid, int* range_var) {
+  check_range(range_var_valid, range_var);
+}
+
+void uninit_var_not_read_interproc_ok() {
+  int range_var_valid = 0;
+  int range_var;
+  check_range_wrapper(range_var_valid, &range_var);
+}
+
+struct uninit_s global_uninit_s1;
+
+struct uninit_s global_uninit_s2;
+
+struct uninit_s init_by_conditional_exp(int b) {
+  return b ? global_uninit_s1 : global_uninit_s2;
+}
+
+int call_init_by_conditionaql_exp_ok(int b) {
+  struct uninit_s x = init_by_conditional_exp(b);
+  return x.f1;
+}
+
+/** testing passing structs by value */
+
+struct my_pair {
+  int x;
+  int y;
+};
+
+struct my_pair make_pair(int x, int y) {
+  struct my_pair pair;
+  pair.x = x;
+  pair.y = y;
+  return pair;
+}
+
+struct my_pair twice(int n) { return make_pair(n, n); }
+
+int FP_build_struct_after_var_init_ok() {
+  struct my_pair p;
+  p = twice(42);
+  return p.x + p.y;
+}
+
+int build_struct_during_var_init_ok() {
+  struct my_pair p = twice(42);
+  return p.x + p.y;
+}
+
+struct my_pair init_only_x_bad(int x) {
+  struct my_pair pair;
+  pair.x = x;
+  return pair;
+}
+
+/** /testing passing structs by value */

@@ -112,7 +112,13 @@ module BottomLiftedUtils : sig
 end
 
 (** Create a domain with Top element from a pre-domain *)
-module TopLifted (Domain : S) : WithTop with type t = Domain.t top_lifted
+module TopLifted (Domain : S) : sig
+  include WithTop with type t = Domain.t top_lifted
+
+  val map : (Domain.t -> Domain.t) -> t -> t
+
+  val get : default:'a -> (Domain.t -> 'a) -> t -> 'a
+end
 
 module TopLiftedUtils : sig
   val pp_top : Format.formatter -> unit
@@ -229,7 +235,8 @@ include sig
 
   (** Lift a PPSet to a powerset domain ordered by subset. The elements of the set should be drawn
       from a *finite* collection of possible values, since the widening operator here is just union. *)
-  module FiniteSetOfPPSet (PPSet : PrettyPrintable.PPSet) : FiniteSetS with type elt = PPSet.elt
+  module FiniteSetOfPPSet (PPSet : PrettyPrintable.PPSet) :
+    FiniteSetS with type t = PPSet.t with type elt = PPSet.elt
 end
 
 (** Lift a set to a powerset domain ordered by subset. The elements of the set should be drawn from
@@ -295,13 +302,18 @@ include sig
       (Value : PrettyPrintable.PrintableOrderedType) : sig
     include WithBottom
 
+    val singleton : Key.t -> Value.t -> t [@@warning "-unused-value-declaration"]
+
     val add : Key.t -> Value.t -> t -> t [@@warning "-unused-value-declaration"]
+
+    val set_to_single_value : Key.t -> Value.t -> t -> t
+    (** [set_to_single_value k v m] is equivalent (but faster) to [add k v (remove_all k m)]. *)
 
     val mem : Key.t -> t -> bool [@@warning "-unused-value-declaration"]
 
     val remove : Key.t -> Value.t -> t -> t [@@warning "-unused-value-declaration"]
 
-    val remove_all : Key.t -> t -> t
+    val remove_all : Key.t -> t -> t [@@warning "-unused-value-declaration"]
 
     val get_all : Key.t -> t -> Value.t list
 

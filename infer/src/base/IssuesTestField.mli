@@ -11,6 +11,7 @@ type t =
   | BugType
   | Qualifier
   | Severity
+  | Suggestion
   | Bucket
   | Line
   | Column
@@ -23,6 +24,8 @@ type t =
   | LineOffset
   | QualifierContainsPotentialExceptionNote
   | NullsafeExtra
+  | TaintExtra
+  | TransitiveCalleesExtra
 [@@deriving equal]
 
 val all_symbols : (string * t) list

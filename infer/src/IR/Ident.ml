@@ -14,7 +14,7 @@ module F = Format
 
 module Name = struct
   type t = Primed | Normal | Footprint | Spec | FromString of string
-  [@@deriving compare, yojson_of, equal, sexp, hash]
+  [@@deriving compare, yojson_of, equal, sexp, hash, normalize]
 
   let primed = "t"
 
@@ -39,7 +39,7 @@ module Name = struct
         s
 end
 
-type name = Name.t [@@deriving compare, equal, sexp, hash]
+type name = Name.t [@@deriving compare, equal, sexp, hash, normalize]
 
 let name_spec = Name.Spec
 
@@ -51,7 +51,7 @@ type kind =
   | KFootprint
   | KNormal
   | KPrimed
-[@@deriving compare, yojson_of, equal, sexp, hash]
+[@@deriving compare, yojson_of, equal, sexp, hash, normalize]
 
 let kfootprint = KFootprint
 
@@ -64,7 +64,8 @@ let knone = KNone
 (* timestamp for a path identifier *)
 let path_ident_stamp = -3
 
-type t = {kind: kind; name: Name.t; stamp: int} [@@deriving compare, yojson_of, sexp, hash]
+type t = {kind: kind; name: Name.t; stamp: int}
+[@@deriving compare, yojson_of, sexp, hash, equal, normalize]
 
 (* most unlikely first *)
 let equal i1 i2 =
@@ -81,20 +82,14 @@ module Map = Caml.Map.Make (struct
 end)
 
 module Hash = Hashtbl.Make (struct
-  type nonrec t = t [@@deriving equal]
-
-  let hash (id : t) = Hashtbl.hash id
+  type nonrec t = t [@@deriving equal, hash]
 end)
 
 let idlist_to_idset ids = List.fold ~f:(fun set id -> Set.add id set) ~init:Set.empty ids
 
 (** {2 Conversion between Names and Strings} *)
 module NameHash = Hashtbl.Make (struct
-  type t = name
-
-  let equal = equal_name
-
-  let hash = Hashtbl.hash
+  type t = name [@@deriving equal, hash]
 end)
 
 (** Convert a string to a name *)
@@ -125,8 +120,6 @@ module NameGenerator = struct
 
   (** Reset the name generator *)
   let reset () = name_map := create ()
-
-  let () = AnalysisGlobalState.register_ref ~init:create name_map
 
   (** Create a fresh identifier with the given kind and name. *)
   let create_fresh_ident kind name =
@@ -225,9 +218,7 @@ let to_string id = F.asprintf "%a" pp id
 let pp_name f name = F.pp_print_string f (name_to_string name)
 
 module HashQueue = Hash_queue.Make (struct
-  type nonrec t = t [@@deriving compare]
-
-  let hash = Hashtbl.hash
+  type nonrec t = t [@@deriving compare, hash]
 
   let sexp_of_t id = Sexp.of_string (to_string id)
 end)

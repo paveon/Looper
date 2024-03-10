@@ -10,13 +10,13 @@ module L = Logging
 module PulseSumCountMap = Caml.Map.Make (Int)
 
 module DurationItem = struct
-  type t = {duration_ms: int; pname: string} [@@deriving equal]
+  type t = {duration_us: int; file: string; pname: string} [@@deriving equal]
 
-  let dummy = {duration_ms= 0; pname= ""}
+  let dummy = {duration_us= 0; file= ""; pname= ""}
 
-  let compare {duration_ms= dr1} {duration_ms= dr2} = Int.compare dr1 dr2
+  let compare {duration_us= dr1} {duration_us= dr2} = Int.compare dr1 dr2
 
-  let pp f {pname; duration_ms} = F.fprintf f "%5dms: %s" duration_ms pname
+  let pp f {pname; file; duration_us} = F.fprintf f "%5dus: %s: %s" duration_us file pname
 end
 
 module LongestProcDurationHeap = struct
@@ -27,7 +27,7 @@ module LongestProcDurationHeap = struct
   let update (new_elt : DurationItem.t) heap =
     Option.iter Config.top_longest_proc_duration_size ~f:(fun heap_size ->
         if Heap.length heap < heap_size then Heap.add heap new_elt
-        else if new_elt.duration_ms > (Heap.minimum heap).duration_ms then (
+        else if new_elt.duration_us > (Heap.minimum heap).duration_us then (
           Heap.remove heap ;
           Heap.add heap new_elt ) )
 
@@ -76,17 +76,25 @@ include struct
     ; mutable pulse_aliasing_contradictions: int
     ; mutable pulse_args_length_contradictions: int
     ; mutable pulse_captured_vars_length_contradictions: int
+    ; mutable pulse_disjuncts_dropped: int
+    ; mutable pulse_interrupted_loops: int
+    ; mutable pulse_summaries_contradictions: int
     ; mutable pulse_summaries_count: int PulseSumCountMap.t
+    ; mutable topl_reachable_calls: int
     ; mutable timeouts: int
     ; mutable timings: (Timings.t, Timings.serialized) serialize_before_marshal
-    ; mutable longest_proc_duration_heap: LongestProcDurationHeap.t }
+    ; mutable longest_proc_duration_heap: LongestProcDurationHeap.t
+    ; mutable process_times: ExecutionDuration.t
+    ; mutable useful_times: ExecutionDuration.t
+    ; mutable spec_store_times: ExecutionDuration.t }
   [@@deriving fields]
 end
 
 let empty_duration_map = LongestProcDurationHeap.create ~dummy:DurationItem.dummy 10
 
 let global_stats =
-  { longest_proc_duration_heap= empty_duration_map
+  { useful_times= ExecutionDuration.zero
+  ; longest_proc_duration_heap= empty_duration_map
   ; summary_file_try_load= 0
   ; summary_read_from_disk= 0
   ; summary_cache_hits= 0
@@ -96,10 +104,16 @@ let global_stats =
   ; proc_locker_unlock_time= ExecutionDuration.zero
   ; restart_scheduler_useful_time= ExecutionDuration.zero
   ; restart_scheduler_total_time= ExecutionDuration.zero
+  ; process_times= ExecutionDuration.zero
   ; pulse_aliasing_contradictions= 0
   ; pulse_args_length_contradictions= 0
   ; pulse_captured_vars_length_contradictions= 0
+  ; pulse_disjuncts_dropped= 0
+  ; pulse_interrupted_loops= 0
+  ; pulse_summaries_contradictions= 0
   ; pulse_summaries_count= PulseSumCountMap.empty
+  ; spec_store_times= ExecutionDuration.zero
+  ; topl_reachable_calls= 0
   ; timeouts= 0
   ; timings= T Timings.init }
 
@@ -112,9 +126,11 @@ let update_with field ~f =
       set global_stats (f (Field.get field global_stats))
 
 
-let incr field = update_with field ~f:(( + ) 1)
+let add field n = update_with field ~f:(( + ) n)
 
-let add field exe_duration = update_with field ~f:(ExecutionDuration.add exe_duration)
+let incr field = add field 1
+
+let add_exe_duration field exe_duration = update_with field ~f:(ExecutionDuration.add exe_duration)
 
 let incr_summary_file_try_load () = incr Fields.summary_file_try_load
 
@@ -127,19 +143,19 @@ let incr_summary_cache_misses () = incr Fields.summary_cache_misses
 let incr_ondemand_procs_analyzed () = incr Fields.ondemand_procs_analyzed
 
 let add_to_proc_locker_lock_time execution_duration =
-  add Fields.proc_locker_lock_time execution_duration
+  add_exe_duration Fields.proc_locker_lock_time execution_duration
 
 
 let add_to_proc_locker_unlock_time execution_duration =
-  add Fields.proc_locker_unlock_time execution_duration
+  add_exe_duration Fields.proc_locker_unlock_time execution_duration
 
 
 let add_to_restart_scheduler_useful_time execution_duration =
-  add Fields.restart_scheduler_useful_time execution_duration
+  add_exe_duration Fields.restart_scheduler_useful_time execution_duration
 
 
 let add_to_restart_scheduler_total_time execution_duration =
-  add Fields.restart_scheduler_total_time execution_duration
+  add_exe_duration Fields.restart_scheduler_total_time execution_duration
 
 
 let incr_pulse_aliasing_contradictions () = incr Fields.pulse_aliasing_contradictions
@@ -150,17 +166,25 @@ let incr_pulse_captured_vars_length_contradictions () =
   incr Fields.pulse_captured_vars_length_contradictions
 
 
+let add_pulse_disjuncts_dropped n = add Fields.pulse_disjuncts_dropped n
+
+let add_pulse_interrupted_loops n = add Fields.pulse_interrupted_loops n
+
+let incr_pulse_summaries_contradictions () = incr Fields.pulse_summaries_contradictions
+
 let add_pulse_summaries_count n =
   update_with Fields.pulse_summaries_count ~f:(fun counters ->
       PulseSumCountMap.update n (fun i -> Some (1 + Option.value ~default:0 i)) counters )
 
 
-let add_proc_duration pname duration_ms =
+let add_proc_duration_us file pname duration_us =
   update_with Fields.longest_proc_duration_heap ~f:(fun heap ->
-      let new_elt = DurationItem.{pname; duration_ms} in
+      let new_elt = DurationItem.{pname; file; duration_us} in
       LongestProcDurationHeap.update new_elt heap ;
       heap )
 
+
+let incr_topl_reachable_calls () = incr Fields.topl_reachable_calls
 
 let incr_timeouts () = incr Fields.timeouts
 
@@ -169,8 +193,21 @@ let add_timing timeable t =
       T (Timings.add timeable t (deserialize Timings.deserialize timings)) )
 
 
+let set_process_times execution_duration =
+  update_with Fields.process_times ~f:(fun _ -> execution_duration)
+
+
+let set_useful_times execution_duration =
+  update_with Fields.useful_times ~f:(fun _ -> execution_duration)
+
+
+let incr_spec_store_times counter =
+  update_with Fields.spec_store_times ~f:(fun t -> ExecutionDuration.add_duration_since t counter)
+
+
 let copy from ~into : unit =
-  let ({ longest_proc_duration_heap
+  let ({ useful_times
+       ; longest_proc_duration_heap
        ; summary_file_try_load
        ; summary_read_from_disk
        ; summary_cache_hits
@@ -180,23 +217,33 @@ let copy from ~into : unit =
        ; proc_locker_unlock_time
        ; restart_scheduler_useful_time
        ; restart_scheduler_total_time
+       ; process_times
        ; pulse_aliasing_contradictions
        ; pulse_args_length_contradictions
        ; pulse_captured_vars_length_contradictions
+       ; pulse_disjuncts_dropped
+       ; pulse_interrupted_loops
+       ; pulse_summaries_contradictions
        ; pulse_summaries_count
+       ; spec_store_times
+       ; topl_reachable_calls
        ; timeouts
        ; timings } [@warning "+9"] ) =
     from
   in
-  Fields.Direct.set_all_mutable_fields into ~longest_proc_duration_heap ~summary_file_try_load
-    ~summary_read_from_disk ~summary_cache_hits ~summary_cache_misses ~ondemand_procs_analyzed
-    ~proc_locker_lock_time ~proc_locker_unlock_time ~restart_scheduler_useful_time
-    ~restart_scheduler_total_time ~pulse_aliasing_contradictions ~pulse_args_length_contradictions
-    ~pulse_captured_vars_length_contradictions ~pulse_summaries_count ~timeouts ~timings
+  Fields.Direct.set_all_mutable_fields into ~useful_times ~longest_proc_duration_heap
+    ~summary_file_try_load ~summary_read_from_disk ~summary_cache_hits ~summary_cache_misses
+    ~ondemand_procs_analyzed ~proc_locker_lock_time ~proc_locker_unlock_time
+    ~restart_scheduler_useful_time ~restart_scheduler_total_time ~process_times
+    ~pulse_aliasing_contradictions ~pulse_args_length_contradictions
+    ~pulse_captured_vars_length_contradictions ~pulse_disjuncts_dropped ~pulse_interrupted_loops
+    ~pulse_summaries_contradictions ~pulse_summaries_count ~topl_reachable_calls ~timeouts ~timings
+    ~spec_store_times
 
 
 let merge stats1 stats2 =
-  { longest_proc_duration_heap=
+  { useful_times= ExecutionDuration.add stats1.useful_times stats2.useful_times
+  ; longest_proc_duration_heap=
       LongestProcDurationHeap.merge stats1.longest_proc_duration_heap
         stats2.longest_proc_duration_heap
   ; summary_file_try_load= stats1.summary_file_try_load + stats2.summary_file_try_load
@@ -208,11 +255,7 @@ let merge stats1 stats2 =
       ExecutionDuration.add stats1.proc_locker_lock_time stats2.proc_locker_lock_time
   ; proc_locker_unlock_time=
       ExecutionDuration.add stats1.proc_locker_unlock_time stats2.proc_locker_unlock_time
-  ; restart_scheduler_useful_time=
-      ExecutionDuration.add stats1.restart_scheduler_useful_time
-        stats2.restart_scheduler_useful_time
-  ; restart_scheduler_total_time=
-      ExecutionDuration.add stats1.restart_scheduler_total_time stats2.restart_scheduler_total_time
+  ; process_times= ExecutionDuration.add stats1.process_times stats2.process_times
   ; pulse_aliasing_contradictions=
       stats1.pulse_aliasing_contradictions + stats2.pulse_aliasing_contradictions
   ; pulse_args_length_contradictions=
@@ -220,10 +263,21 @@ let merge stats1 stats2 =
   ; pulse_captured_vars_length_contradictions=
       stats1.pulse_captured_vars_length_contradictions
       + stats2.pulse_captured_vars_length_contradictions
+  ; pulse_disjuncts_dropped= stats1.pulse_disjuncts_dropped + stats2.pulse_disjuncts_dropped
+  ; pulse_interrupted_loops= stats1.pulse_interrupted_loops + stats2.pulse_interrupted_loops
+  ; pulse_summaries_contradictions=
+      stats1.pulse_summaries_contradictions + stats2.pulse_summaries_contradictions
   ; pulse_summaries_count=
       PulseSumCountMap.merge
         (fun _ i j -> Some (Option.value ~default:0 i + Option.value ~default:0 j))
         stats1.pulse_summaries_count stats2.pulse_summaries_count
+  ; restart_scheduler_useful_time=
+      ExecutionDuration.add stats1.restart_scheduler_useful_time
+        stats2.restart_scheduler_useful_time
+  ; restart_scheduler_total_time=
+      ExecutionDuration.add stats1.restart_scheduler_total_time stats2.restart_scheduler_total_time
+  ; spec_store_times= ExecutionDuration.add stats1.spec_store_times stats2.spec_store_times
+  ; topl_reachable_calls= stats1.topl_reachable_calls + stats2.topl_reachable_calls
   ; timeouts= stats1.timeouts + stats2.timeouts
   ; timings=
       T
@@ -233,7 +287,8 @@ let merge stats1 stats2 =
 
 
 let initial =
-  { longest_proc_duration_heap= empty_duration_map
+  { useful_times= ExecutionDuration.zero
+  ; longest_proc_duration_heap= empty_duration_map
   ; summary_file_try_load= 0
   ; summary_read_from_disk= 0
   ; summary_cache_hits= 0
@@ -241,12 +296,18 @@ let initial =
   ; ondemand_procs_analyzed= 0
   ; proc_locker_lock_time= ExecutionDuration.zero
   ; proc_locker_unlock_time= ExecutionDuration.zero
-  ; restart_scheduler_useful_time= ExecutionDuration.zero
-  ; restart_scheduler_total_time= ExecutionDuration.zero
+  ; process_times= ExecutionDuration.zero
   ; pulse_aliasing_contradictions= 0
   ; pulse_args_length_contradictions= 0
   ; pulse_captured_vars_length_contradictions= 0
+  ; pulse_disjuncts_dropped= 0
+  ; pulse_interrupted_loops= 0
+  ; pulse_summaries_contradictions= 0
   ; pulse_summaries_count= PulseSumCountMap.empty
+  ; restart_scheduler_useful_time= ExecutionDuration.zero
+  ; restart_scheduler_total_time= ExecutionDuration.zero
+  ; spec_store_times= ExecutionDuration.zero
+  ; topl_reachable_calls= 0
   ; timeouts= 0
   ; timings= T Timings.init }
 
@@ -286,22 +347,32 @@ let pp fmt stats =
     let pp_binding fmt (n, count) = Format.fprintf fmt "%d -> %d" n count in
     F.fprintf fmt "%s= [%a]@;" (Field.name field)
       (F.pp_print_list ~pp_sep:(fun fmt () -> F.fprintf fmt ", ") pp_binding)
-      (PulseSumCountMap.bindings sumcounters)
+      (PulseSumCountMap.bindings sumcounters) ;
+    let total =
+      PulseSumCountMap.bindings sumcounters
+      |> List.fold ~init:0 ~f:(fun total (n, count) -> total + (n * count))
+    in
+    F.fprintf fmt "pulse_summaries_total_disjuncts= %d@;" total
   in
   let pp_stats fmt =
     Fields.iter ~summary_file_try_load:(pp_int_field fmt)
+      ~useful_times:(pp_execution_duration_field fmt)
       ~longest_proc_duration_heap:(pp_longest_proc_duration_heap fmt)
       ~summary_read_from_disk:(pp_int_field fmt)
       ~summary_cache_hits:(pp_cache_hits stats stats.summary_cache_misses fmt)
       ~summary_cache_misses:(pp_int_field fmt) ~ondemand_procs_analyzed:(pp_int_field fmt)
       ~proc_locker_lock_time:(pp_execution_duration_field fmt)
       ~proc_locker_unlock_time:(pp_execution_duration_field fmt)
-      ~restart_scheduler_useful_time:(pp_execution_duration_field fmt)
-      ~restart_scheduler_total_time:(pp_execution_duration_field fmt)
+      ~process_times:(pp_execution_duration_field fmt)
       ~pulse_aliasing_contradictions:(pp_int_field fmt)
       ~pulse_args_length_contradictions:(pp_int_field fmt)
       ~pulse_captured_vars_length_contradictions:(pp_int_field fmt)
+      ~pulse_disjuncts_dropped:(pp_int_field fmt) ~pulse_interrupted_loops:(pp_int_field fmt)
+      ~pulse_summaries_contradictions:(pp_int_field fmt)
       ~pulse_summaries_count:(pp_pulse_summaries_count fmt) ~timeouts:(pp_int_field fmt)
+      ~restart_scheduler_useful_time:(pp_execution_duration_field fmt)
+      ~restart_scheduler_total_time:(pp_execution_duration_field fmt)
+      ~spec_store_times:(pp_execution_duration_field fmt) ~topl_reachable_calls:(pp_int_field fmt)
       ~timings:(pp_serialized_field Timings.deserialize Timings.pp fmt)
   in
   F.fprintf fmt "@[Backend stats:@\n@[<v2>  %t@]@]@." pp_stats
@@ -313,10 +384,14 @@ let log_to_scuba stats =
   in
   let create_longest_proc_duration_heap field =
     Field.get field stats |> LongestProcDurationHeap.to_list
-    |> List.mapi ~f:(fun i DurationItem.{duration_ms} ->
+    |> List.foldi ~init:[] ~f:(fun i acc DurationItem.{duration_us; file; pname} ->
            LogEntry.mk_time
              ~label:(F.sprintf "backend_stats.longest_proc_duration_heap_%d" i)
-             ~duration_ms )
+             ~duration_us
+           :: LogEntry.mk_string
+                ~label:(F.sprintf "backend_stats.longest_proc_duration_heap_name_%d" i)
+                ~message:(F.sprintf "%s:%s" file pname)
+           :: acc )
   in
   let create_time_entry field =
     Field.get field stats
@@ -324,26 +399,33 @@ let log_to_scuba stats =
   in
   let create_pulse_summaries_count_entry field =
     let counters : int PulseSumCountMap.t = Field.get field stats in
-    List.map
-      ~f:(fun (n, count) ->
-        LogEntry.mk_count ~label:(F.sprintf "backend_stats.pulse_summaries_count_%d" n) ~value:count
-        )
-      (PulseSumCountMap.bindings counters)
+    let total, counts =
+      List.fold_map (PulseSumCountMap.bindings counters) ~init:0 ~f:(fun total (n, count) ->
+          ( total + (n * count)
+          , LogEntry.mk_count
+              ~label:(F.sprintf "backend_stats.pulse_summaries_count_%d" n)
+              ~value:count ) )
+    in
+    LogEntry.mk_count ~label:"backend_stats.pulse_summaries_total" ~value:total :: counts
   in
   let create_timings_entry field =
     Field.get field stats |> deserialize Timings.deserialize |> Timings.to_scuba
   in
   let entries =
-    Fields.to_list ~longest_proc_duration_heap:create_longest_proc_duration_heap
+    Fields.to_list ~useful_times:create_time_entry
+      ~longest_proc_duration_heap:create_longest_proc_duration_heap
       ~summary_file_try_load:create_counter ~summary_read_from_disk:create_counter
       ~summary_cache_hits:create_counter ~summary_cache_misses:create_counter
       ~ondemand_procs_analyzed:create_counter ~proc_locker_lock_time:create_time_entry
-      ~proc_locker_unlock_time:create_time_entry ~restart_scheduler_useful_time:create_time_entry
-      ~restart_scheduler_total_time:create_time_entry ~pulse_aliasing_contradictions:create_counter
-      ~pulse_args_length_contradictions:create_counter
+      ~proc_locker_unlock_time:create_time_entry ~process_times:create_time_entry
+      ~pulse_aliasing_contradictions:create_counter ~pulse_args_length_contradictions:create_counter
       ~pulse_captured_vars_length_contradictions:create_counter
-      ~pulse_summaries_count:create_pulse_summaries_count_entry ~timeouts:create_counter
-      ~timings:create_timings_entry
+      ~pulse_disjuncts_dropped:create_counter ~pulse_interrupted_loops:create_counter
+      ~pulse_summaries_contradictions:create_counter
+      ~pulse_summaries_count:create_pulse_summaries_count_entry
+      ~restart_scheduler_useful_time:create_time_entry
+      ~restart_scheduler_total_time:create_time_entry ~spec_store_times:create_time_entry
+      ~timeouts:create_counter ~topl_reachable_calls:create_counter ~timings:create_timings_entry
     |> List.concat
   in
   ScubaLogging.log_many entries

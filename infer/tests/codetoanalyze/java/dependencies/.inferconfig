@@ -4,7 +4,6 @@
     "inefficient-keyset-iterator": false,
     "starvation": false,
     "racerd": false,
-    "eradicate": false,
     "pulse": true,
     "report-block-list-path-regex": [
         ".*\\.class$"
@@ -31,12 +30,12 @@
         {
             "class_names": ["lib.MyStream"],
             "method_names": ["<init>"],
-            "taint_target": ["ArgumentPositions", [1]]
+            "taint_target": ["ArgumentPositions", [0]]
         },
         {
             "class_names": ["my.Application"],
             "method_names": ["sink"],
-            "taint_target": ["ArgumentPositions", [1]]
+            "taint_target": ["ArgumentPositions", [0]]
         }
     ]
 }

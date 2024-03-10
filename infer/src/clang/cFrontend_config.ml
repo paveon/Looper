@@ -14,7 +14,7 @@ type clang_lang = C | CPP | ObjC | ObjCPP [@@deriving compare, equal]
 type translation_unit_context =
   { lang: clang_lang
   ; source_file: SourceFile.t
-  ; integer_type_widths: Typ.IntegerWidths.t
+  ; integer_type_widths: IntegerWidths.t
   ; is_objc_arc_on: bool }
 
 type decl_trans_context = [`DeclTraversal | `Translation | `CppLambdaExprTranslation]
@@ -28,6 +28,8 @@ type instr_type =
 let alloc = "alloc"
 
 let allocWithZone = "allocWithZone:"
+
+let anon_field = "__anon_field"
 
 let arrayWithObjects_count = "arrayWithObjects:count:"
 
@@ -119,16 +121,6 @@ let sil_types_map = ref Clang_ast_extend.TypePointerMap.empty
 let procedures_attempted = ref 0
 
 let procedures_failed = ref 0
-
-(** Global counter for anonymous block*)
-let block_counter = ref 0
-
-let get_fresh_block_index () =
-  block_counter := !block_counter + 1 ;
-  !block_counter
-
-
-let reset_block_counter () = block_counter := 0
 
 let reset_global_state () =
   enum_map := ClangPointers.Map.empty ;

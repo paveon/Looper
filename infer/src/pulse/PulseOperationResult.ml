@@ -9,9 +9,7 @@ open! IStd
 open PulseBasicInterface
 open PulseDomainInterface
 
-type ('ok, 'err) t = ('ok, 'err) PulseResult.t SatUnsat.t
-
-type 'a access_t = 'a AccessResult.t SatUnsat.t
+type 'ok t = 'ok AccessResult.t SatUnsat.t
 
 module Import = struct
   include PulseResult.Let_syntax
@@ -67,6 +65,12 @@ module Import = struct
 
   let ( >>>= ) result f = bind_result result ~f
 
+  let map_result result ~f = bind_result result ~f:(fun x -> Sat (f x))
+
+  let ( let=+ ) result f = map_result result ~f
+
+  let ( >>>| ) result f = map_result result ~f
+
   let ( let<*> ) x f =
     match (x : _ PulseResult.t) with
     | FatalError _ as err ->
@@ -87,6 +91,19 @@ module Import = struct
         f y
     | Sat (Recoverable (y, errors)) ->
         List.map (f y) ~f:(fun result -> PulseResult.append_errors errors result)
+
+
+  let bind_sat_result non_disj x f =
+    match x with
+    | Unsat ->
+        ([], non_disj)
+    | Sat (FatalError _ as err) ->
+        ([err], non_disj)
+    | Sat (Ok y) ->
+        f y
+    | Sat (Recoverable (y, errors)) ->
+        let execs, non_disj = f y in
+        (List.map execs ~f:(fun result -> PulseResult.append_errors errors result), non_disj)
 
 
   let ( let<+> ) x f : _ PulseResult.t list =
@@ -136,7 +153,7 @@ end
 
 open Import
 
-let sat_ok : ('ok, _) t -> _ = function
+let sat_ok : 'ok t -> _ = function
   | Sat (Ok x) ->
       Some x
   | Unsat | Sat (FatalError _ | Recoverable _) ->

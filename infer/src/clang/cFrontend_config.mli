@@ -16,7 +16,7 @@ val equal_clang_lang : clang_lang -> clang_lang -> bool
 type translation_unit_context =
   { lang: clang_lang
   ; source_file: SourceFile.t
-  ; integer_type_widths: Typ.IntegerWidths.t
+  ; integer_type_widths: IntegerWidths.t
   ; is_objc_arc_on: bool }
 
 type decl_trans_context = [`DeclTraversal | `Translation | `CppLambdaExprTranslation]
@@ -30,6 +30,8 @@ type instr_type =
 val alloc : string
 
 val allocWithZone : string
+
+val anon_field : string
 
 val arrayWithObjects_count : string
 
@@ -116,9 +118,5 @@ val sil_types_map : Typ.desc Clang_ast_extend.TypePointerMap.t ref
 val procedures_attempted : int ref
 
 val procedures_failed : int ref
-
-val get_fresh_block_index : unit -> int
-
-val reset_block_counter : unit -> unit
 
 val reset_global_state : unit -> unit

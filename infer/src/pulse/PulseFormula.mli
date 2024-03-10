@@ -12,7 +12,11 @@ module ValueHistory = PulseValueHistory
 
 (* NOTE: using [Var] for [AbstractValue] here since this is how "abstract values" are interpreted,
    in particular as far as arithmetic is concerned *)
-module Var = PulseAbstractValue
+module Var :
+  module type of PulseAbstractValue
+    with type t = PulseAbstractValue.t
+     and module Set = PulseAbstractValue.Set
+     and module Map = PulseAbstractValue.Map
 
 (** {2 Arithmetic solver}
 
@@ -40,7 +44,9 @@ val pp_operand : F.formatter -> operand -> unit
 
 (** some operations will return a set of new facts discovered that are relevant to communicate to
     the memory domain *)
-type new_eq = EqZero of Var.t | Equal of Var.t * Var.t
+type new_eq =
+  | EqZero of Var.t  (** [v=0] *)
+  | Equal of Var.t * Var.t  (** [v_old = v_new]: [v_old] is to be replaced with [v_new] *)
 
 val pp_new_eq : F.formatter -> new_eq -> unit
 
@@ -56,7 +62,14 @@ val and_equal_vars : Var.t -> Var.t -> t -> (t * new_eqs) SatUnsat.t
 
 val and_not_equal : operand -> operand -> t -> (t * new_eqs) SatUnsat.t
 
-val and_equal_instanceof : Var.t -> Var.t -> Typ.t -> t -> (t * new_eqs) SatUnsat.t
+val and_equal_instanceof :
+     Var.t
+  -> Var.t
+  -> Typ.t
+  -> get_dynamic_type:(Var.t -> Typ.t option)
+  -> tenv:Tenv.t
+  -> t
+  -> (t * new_eqs) SatUnsat.t
 
 val and_less_equal : operand -> operand -> t -> (t * new_eqs) SatUnsat.t
 
@@ -85,6 +98,8 @@ val simplify :
 
 val is_known_zero : t -> Var.t -> bool
 
+val get_known_constant_opt : t -> Var.t -> Q.t option
+
 val is_known_non_pointer : t -> Var.t -> bool
 
 val is_manifest : is_allocated:(Var.t -> bool) -> t -> bool
@@ -97,23 +112,31 @@ val is_manifest : is_allocated:(Var.t -> bool) -> t -> bool
     is either a) empty or b) comprised only of facts of the form [p>0] or [p≠0] where [p] is known
     to be allocated. The latter condition captures the idea that addresses being valid pointers in
     memory should not deter us from reporting any error that we find on that program path as it is
-    somewhat the happy/expected case. The unhappy/unexpected case here would be to report errors
-    that require a pointer to be invalid or null in the precondition; we do not want to report such
-    errors until we see that there exists a calling context in which the pointer is indeed invalid
-    or null! But, to reiterate, we do want to report errors that only have valid pointers in their
-    precondition. *)
+    somewhat the happy/expected case (also, the fact [p] is allocated already implies [p≠0]). The
+    unhappy/unexpected case here would be to report errors that require a pointer to be invalid or
+    null in the precondition; we do not want to report such errors until we see that there exists a
+    calling context in which the pointer is indeed invalid or null! But, to reiterate, we do want to
+    report errors that only have valid pointers in their precondition. Similarly, ignore conditions
+    of the form [x≠y] where [x] and [y] are already different according to the heap (because they
+    are separate memory allocations).
+
+    Some equalities might be represented implicitly in the precondition, see the documentation of
+    {!PulseArithmetic.is_manifest}. *)
 
 val get_var_repr : t -> Var.t -> Var.t
 (** get the canonical representative for the variable according to the equality relation *)
 
-val and_callee_pre :
+val and_callee_formula :
      (Var.t * ValueHistory.t) Var.Map.t
   -> t
   -> callee:t
   -> ((Var.t * ValueHistory.t) Var.Map.t * t * new_eqs) SatUnsat.t
 
-val and_callee_post :
-     (Var.t * ValueHistory.t) Var.Map.t
-  -> t
-  -> callee:t
-  -> ((Var.t * ValueHistory.t) Var.Map.t * t * new_eqs) SatUnsat.t
+val fold_variables : (t, Var.t, 'acc) Container.fold
+(** note: each variable mentioned in the formula is visited at least once, possibly more *)
+
+val absval_of_int : t -> IntLit.t -> t * Var.t
+(** Get or create an abstract value ([Var.t] is [AbstractValue.t]) associated with a constant
+    {!IR.IntLit.t}. The idea is that clients will record in the abstract state that the returned [t]
+    is equal to the given integer. If the same integer is queried later on then this module will
+    return the same abstract variable. *)

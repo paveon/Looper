@@ -9,9 +9,27 @@ open! IStd
 open PulseBasicInterface
 open PulseDomainInterface
 
-type t = ExecutionDomain.summary list [@@deriving yojson_of]
+type pre_post_list = ExecutionDomain.summary list [@@deriving yojson_of]
 
-val of_posts : Tenv.t -> Procdesc.t -> Errlog.t -> Location.t -> ExecutionDomain.t list -> t
+type summary = {pre_post_list: pre_post_list; non_disj: NonDisjDomain.Summary.t}
+[@@deriving yojson_of]
+
+type t = {main: summary; specialized: summary Specialization.Pulse.Map.t} [@@deriving yojson_of]
+
+val of_posts :
+     Tenv.t
+  -> Procdesc.t
+  -> Errlog.t
+  -> Location.t
+  -> ExecutionDomain.t list
+  -> NonDisjDomain.t
+  -> summary
+
+val add_disjunctive_pre_post : ExecutionDomain.summary -> summary -> summary
+
+val empty : summary
+
+val join : summary -> summary -> summary
 
 val force_exit_program :
      Tenv.t
@@ -30,10 +48,8 @@ val append_objc_actual_self_positive :
   -> AbductiveDomain.t
   -> AbductiveDomain.t AccessResult.t SatUnsat.t
 
-val initial_with_positive_self :
-  Procname.t -> ProcAttributes.t -> AbductiveDomain.t -> AbductiveDomain.t
+val initial_with_positive_self : ProcAttributes.t -> AbductiveDomain.t -> AbductiveDomain.t
 (** The initial state of the analysis, with the additional path condition [self > 0] for Objective-C
     and [this>0] for C++ instance methods. *)
 
-val mk_objc_nil_messaging_summary :
-  Tenv.t -> Procname.t -> ProcAttributes.t -> ExecutionDomain.summary option
+val mk_objc_nil_messaging_summary : Tenv.t -> ProcAttributes.t -> ExecutionDomain.summary option

@@ -15,7 +15,7 @@ module Cmd = InferCommandImplementation
 let run driver_mode =
   let open Driver in
   if Config.dump_textual && not (is_compatible_with_textual_generation driver_mode) then
-    L.die UserError "ERROR: Textual generation is only allowed in Java mode currently" ;
+    L.die UserError "ERROR: Textual generation is only allowed in Java and Python mode currently" ;
   run_prologue driver_mode ;
   let changed_files = SourceFile.read_config_files_to_analyze () in
   capture driver_mode ~changed_files ;
@@ -44,8 +44,11 @@ let setup () =
              ( Driver.is_analyze_mode driver_mode
              || Config.(
                   continue_capture || infer_is_clang || infer_is_javac || reactive_mode
-                  || incremental_analysis || mark_unchanged_procs ) )
-      then ResultsDir.remove_results_dir () ;
+                  || incremental_analysis || mark_unchanged_procs || Option.is_some run_as_child )
+             )
+      then (
+        AnalysisDependencyGraph.store_previous_schedule_if_needed () ;
+        ResultsDir.remove_results_dir () ) ;
       ResultsDir.create_results_dir () ;
       if
         Config.is_originator && (not Config.continue_capture)
@@ -55,6 +58,10 @@ let setup () =
         SourceFiles.mark_all_stale () )
   | Explore ->
       ResultsDir.assert_results_dir "please run an infer analysis first"
+  | Debug when Option.is_some Config.extract_capture_from ->
+      AnalysisDependencyGraph.store_previous_schedule_if_needed () ;
+      ResultsDir.remove_results_dir () ;
+      ResultsDir.create_results_dir ()
   | Debug ->
       ResultsDir.assert_results_dir "please run an infer analysis or capture first"
   | Help ->
@@ -81,14 +88,7 @@ let print_active_checkers () =
 
 
 let print_scheduler () =
-  L.environment_info "Scheduler: %s@\n"
-    ( match Config.scheduler with
-    | File ->
-        "file"
-    | Restart ->
-        "restart"
-    | SyntacticCallGraph ->
-        "callgraph" )
+  L.environment_info "Scheduler: %s@\n" (Config.string_of_scheduler Config.scheduler)
 
 
 let print_cores_used () = L.environment_info "Cores used: %d@\n" Config.jobs
@@ -126,7 +126,7 @@ let log_environment_info () =
 let () =
   (* We specifically want to collect samples only from the main process until
      we figure out what other entries and how we want to collect *)
-  if CommandLineOption.is_originator then ScubaLogging.register_global_log_flushing_at_exit () ;
+  if Config.is_originator then ScubaLogging.register_global_log_flushing_at_exit () ;
   ( match Config.check_version with
   | Some check_version ->
       if not (String.equal check_version Version.versionString) then
@@ -137,19 +137,20 @@ let () =
       () ) ;
   if Config.print_builtins then Builtin.print_and_exit () ;
   let has_results_dir = setup () in
-  if has_results_dir then log_environment_info () ;
+  if has_results_dir && Config.is_originator then log_environment_info () ;
   if has_results_dir && Config.debug_mode && Config.is_originator then (
     L.progress "Logs in %s@." (ResultsDir.get_path Logs) ;
     Option.iter Config.scuba_execution_id ~f:(fun id -> L.progress "Execution ID %Ld@." id) ) ;
   ( match Config.command with
+  | _ when Option.is_some Config.run_as_child ->
+      InferAnalyze.register_active_checkers () ;
+      never_returns (ProcessPool.run_as_child ())
   | _ when Config.test_determinator && not Config.process_clang_ast ->
       TestDeterminator.compute_and_emit_test_to_run ()
   | _ when Option.is_some Config.java_debug_source_file_info ->
       if Config.java_source_parser_experimental then
         JSourceLocations.debug_on_file (Option.value_exn Config.java_debug_source_file_info)
       else JSourceFileInfo.debug_on_file (Option.value_exn Config.java_debug_source_file_info)
-  | _ when Option.is_some Config.parse_doli ->
-      DoliParser.just_parse (Option.value_exn Config.parse_doli)
   | Analyze ->
       run Driver.Analyze
   | Capture | Compile | Run ->

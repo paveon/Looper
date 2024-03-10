@@ -9,13 +9,13 @@ open! IStd
 
 type t
 
+val pp : Format.formatter -> t -> unit [@@warning "-unused-value-declaration"]
+
 module ProcEntry : sig
   type t = Decl of Textual.ProcDecl.t | Desc of Textual.ProcDesc.t
-
-  val decl : t -> Textual.ProcDecl.t
 end
 
-val init : Textual.SourceFile.t -> t
+val init : Textual.SourceFile.t -> Textual.Lang.t option -> t
 
 val declare_global : t -> Textual.Global.t -> unit
 
@@ -33,7 +33,16 @@ val get_fielddecl : t -> Textual.qualified_fieldname -> Textual.FieldDecl.t opti
 
 val get_global : t -> Textual.VarName.t -> Textual.Global.t option
 
-val get_procdecl : t -> Textual.qualified_procname -> Textual.ProcDecl.t option
+type variadic_status =
+  | NotVariadic
+  | Variadic of Textual.Typ.t (* type of the variadic parameter *)
+
+type generics_status = Reified | NotReified
+
+val get_procdecl :
+  t -> Textual.ProcSig.t -> int -> (variadic_status * generics_status * Textual.ProcDecl.t) option
+
+val get_procdesc : t -> Textual.ProcSig.t -> Textual.ProcDesc.t option
 
 val get_proc_entries_by_enclosing_class :
   t -> ProcEntry.t list Textual.TypeName.Map.t * Textual.TypeName.Set.t
@@ -44,7 +53,13 @@ val get_struct : t -> Textual.TypeName.t -> Textual.Struct.t option
 
 val is_field_declared : t -> Textual.qualified_fieldname -> bool
 
+val is_defined_in_a_trait : t -> Textual.QualifiedProcName.t -> bool
+
+val is_trait_method : t -> Textual.ProcSig.t -> bool
+
 val source_file : t -> Textual.SourceFile.t
+
+val lang : t -> Textual.Lang.t option
 
 val get_undefined_types : t -> Textual.TypeName.t Seq.t
 

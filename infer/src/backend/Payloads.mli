@@ -35,11 +35,9 @@ include sig
     ; racerd: RacerDDomain.summary option Lazy.t
     ; scope_leakage: ScopeLeakage.Summary.t option Lazy.t
     ; siof: SiofDomain.Summary.t option Lazy.t
-    ; simple_lineage: SimpleLineage.Summary.t option Lazy.t
-    ; simple_shape: SimpleShape.Summary.t option Lazy.t
-    ; starvation: StarvationDomain.summary option Lazy.t
-    ; nullsafe: NullsafeSummary.t option Lazy.t
-    ; uninit: UninitDomain.Summary.t option Lazy.t }
+    ; lineage: Lineage.Summary.t option Lazy.t
+    ; lineage_shape: LineageShape.Summary.t option Lazy.t
+    ; starvation: StarvationDomain.summary option Lazy.t }
   [@@deriving fields, yojson_of]
 end
 
@@ -50,10 +48,8 @@ val empty : t
 module SQLite : sig
   val serialize : t -> Sqlite3.Data.t list
 
-  val lazy_load : Database.analysis_table -> rowid:int64 -> t
-  (** the [rowid] corresponds to the procedure whose payloads should be lazily loaded. We pass the
-      SQLite rowid directly to save a lookup in the index of procedure names given that this
-      function is only called after the procedure has already been located in the table *)
+  val lazy_load : Database.analysis_table -> proc_uid:string -> t
+  (** load each payload lazily *)
 
   val eager_load : Sqlite3.stmt -> first_column:int -> t
   (** load all payload columns from the statement starting at [first_column] *)

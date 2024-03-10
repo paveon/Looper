@@ -29,7 +29,7 @@ DESCRIPTION
 OPTIONS
        --capture-block-list json
            Matcher or list of matchers for names of files that should not be
-           captured, hence not analyzed either. Clang and Java only.
+           captured, hence not analyzed either. Clang, Java, and Hack only.
 
        --cfg-json file
            Path to CFG json file
@@ -67,9 +67,10 @@ OPTIONS
 
        --force-integration command
            Proceed as if the first argument after -- was command. Possible
-           values: ant, buck, buck1, buck2, gradle, gradlew, java, javac, cc,
-           clang, gcc, clang++, c++, g++, hackc, make, configure, cmake, waf,
-           mvn, mvnw, ndk-build, rebar3, erlc, xcodebuild.
+           values: ant, buck1, buck, buck2, gradle, gradlew, java, javac,
+           kotlinc, cc, clang, gcc, clang++, c++, g++, hackc, make,
+           configure, cmake, waf, mvn, mvnw, ndk-build, python3, rebar3,
+           erlc, xcodebuild.
 
        --help
            Show this manual
@@ -135,6 +136,13 @@ OPTIONS
        --sqlite-lock-timeout int
            Timeout for SQLite results database operations, in milliseconds.
 
+       --sqlite-max-blob-size int
+           Maximum blob/string size for data written in SQLite.
+
+       --sqlite-mmap-size int
+           Size of memory map for mmaped SQLite databases, zero value
+           disables memory mapping.
+
        --sqlite-page-size int
            SQLite page size in bytes, must be a power of two between 512 and
            65536.
@@ -189,19 +197,17 @@ BUCK OPTIONS
            Activates: Buck integration for Erlang. (Conversely:
            --no-buck-erlang)
 
-       --buck-java-flavor
-           Activates: Buck integration for Java which uses the buck flavor
-           #infer-java-capture instead of genrules like buck-java.
-           (Conversely: --no-buck-java-flavor)
-
-       --buck-java-flavor-suppress-config
-           Activates: Suppress setting buck config values for the infer
-           binary and its version in the buck-java-flavor integration.
-           (Conversely: --no-buck-java-flavor-suppress-config)
+       --buck-java
+           Activates: Buck integration for Java. (Conversely: --no-buck-java)
 
        --buck-java-heap-size-gb int
            Explicitly set the size of the Java heap of Buck processes, in
            gigabytes.
+
+       --buck-java-suppress-config
+           Activates: Suppress setting buck config values for the infer
+           binary and its version in the buck-java integration. (Conversely:
+           --no-buck-java-suppress-config)
 
        --buck-merge-all-deps
            Activates: Find and merge all infer dependencies produced by buck.
@@ -216,6 +222,19 @@ BUCK OPTIONS
        --buck2-bxl-target string
            Buck2 BXL script (as a buck target) to run when capturing with
            buck2/clang integration.
+
+       --buck2-inferconfig-target string
+           Buck2 target representing the inferconfig file; used in BXL
+           capture.
+
+       --buck2-isolation-dir string
+           Run buck bxl capture with the given isolation directory as
+           parameter.
+
+       --no-buck2-query-deps
+           Deactivates: Query deps of given targets and run capture on the
+           result (alternatively run capture on given targets) (Conversely:
+           --buck2-query-deps)
 
        --buck2-root dir
            Specify the parent directory of buck-out (used only for buck2).
@@ -322,6 +341,12 @@ ERLANG OPTIONS
            Activates: Check whether the values returned by functions
            correspond to what the function's spec promises. This check is
            introduced at capture time. (Conversely: --no-erlang-check-return)
+
+       --no-erlang-reliability
+           Deactivates: Analyze crashing executions. This flag affects both
+           capture and analysis. At capture time, it encodes Erlang specs; at
+           (Pulse) analysis time, it models Erlang exceptions (builtin or OTP
+           ones). (Conversely: --erlang-reliability)
 
        --erlang-skip-compile
            Activates: Skip running compiler (erlc/rebar3), to save time. The

@@ -9,8 +9,8 @@ module F = Format
 module L = Logging
 
 let time_and_run ~f ~msg =
-  let result, duration_ms = Utils.timeit ~f in
-  L.debug Capture Medium "%s took %d ms.@\n" msg duration_ms ;
+  let result, duration = Utils.timeit ~f in
+  L.debug Capture Medium "%s took %a.@\n" msg Mtime.Span.pp duration ;
   result
 
 
@@ -49,11 +49,7 @@ module Loader = struct
 end
 
 module G = struct
-  module Vertex = struct
-    include SourceFile
-
-    let hash = Caml.Hashtbl.hash
-  end
+  module Vertex = SourceFile
 
   module Edge = struct
     (** An edge labelled by the number of calls from procedures in the source file to procedures in

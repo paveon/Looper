@@ -141,9 +141,9 @@ let load_from_verbose_output =
 
 
 let collect_classnames init jar_filename =
-  let f acc filename_with_extension =
-    match Filename.split_extension filename_with_extension with
-    | class_filename, Some extension when String.equal extension "class" ->
+  let f acc _ zip_entry =
+    match Filename.split_extension zip_entry.Zip.filename with
+    | class_filename, Some "class" ->
         let classname =
           JBasics.make_cn (String.map ~f:(function '/' -> '.' | c -> c) class_filename)
         in
@@ -151,7 +151,7 @@ let collect_classnames init jar_filename =
     | _ ->
         acc
   in
-  Utils.zip_fold_filenames ~init ~f ~zip_filename:jar_filename
+  Utils.zip_fold ~init ~f ~zip_filename:jar_filename
 
 
 let search_classes path =
@@ -173,25 +173,30 @@ let search_classes path =
     path
 
 
-let search_sources () =
+let is_valid_source_file path =
+  ( Filename.check_suffix path ".java"
+  || (Config.kotlin_capture && Filename.check_suffix path Config.kotlin_source_extension) )
+  && PolyVariantEqual.(Sys.is_file path <> `No)
+
+
+let search_sources sources =
   let initial_map =
-    List.fold ~f:(fun map path -> add_source_file path map) ~init:String.Map.empty Config.sources
+    List.fold sources ~init:String.Map.empty ~f:(fun map path ->
+        if is_valid_source_file path then add_source_file path map
+        else (
+          L.external_warning "'%s' does not appear to be a valid source file, skipping@\n" path ;
+          map ) )
   in
   match Config.sourcepath with
   | None ->
       initial_map
   | Some sourcepath ->
       Utils.directory_fold
-        (fun map p ->
-          if
-            Filename.check_suffix p "java"
-            || (Config.kotlin_capture && Filename.check_suffix p Config.kotlin_source_extension)
-          then add_source_file p map
-          else map )
+        (fun map path -> if is_valid_source_file path then add_source_file path map else map)
         initial_map sourcepath
 
 
-let load_from_arguments classes_out_path =
+let load_from_arguments classes_out_path sources =
   let roots, classes = search_classes classes_out_path in
   let split cp_option = Option.value_map ~f:split_classpath ~default:[] cp_option in
   let classpath =
@@ -199,21 +204,25 @@ let load_from_arguments classes_out_path =
     split Config.bootclasspath @ split Config.classpath @ String.Set.elements roots
     |> classpath_of_paths
   in
-  {classpath_channel= Javalib.class_path classpath; sources= search_sources (); classes}
+  {classpath_channel= Javalib.class_path classpath; sources= search_sources sources; classes}
 
 
-type source = FromVerboseOut of {verbose_out_file: string} | FromArguments of {path: string}
+type source =
+  | FromVerboseOut of {verbose_out_file: string}
+  | FromArguments of {path: string; sources: string list}
 
 let with_classpath ~f source =
   let classpath =
     match source with
     | FromVerboseOut {verbose_out_file} ->
         load_from_verbose_output verbose_out_file
-    | FromArguments {path} ->
-        load_from_arguments path
+    | FromArguments {path; sources} ->
+        load_from_arguments path sources
   in
   if String.Map.is_empty classpath.sources then
-    L.(die InternalError) "Failed to load any Java source code" ;
+    L.user_warning "No Java source code loaded. Analyzing JAR/WAR files directly" ;
+  if String.Map.is_empty classpath.sources && JBasics.ClassSet.is_empty classpath.classes then
+    L.(die InternalError) "Failed to load any Java source or class files" ;
   L.(debug Capture Quiet)
     "Translating %d source files (%d classes)@."
     (String.Map.length classpath.sources)
