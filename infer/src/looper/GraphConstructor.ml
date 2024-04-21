@@ -382,7 +382,7 @@ let exec_instr :
                   (fun ptr_arg (lb, ub) acc ->
                     debug_log "Side-effect: %a  --->  [%a, %a]@," EdgeExp.pp ptr_arg EdgeExp.pp lb
                       EdgeExp.pp ub ;
-                    let arg_access = HilExp.AccessExpression.dereference (extract_access ptr_arg) in
+                    let arg_access = HilExp.AccessExpression.dereference_2 (extract_access ptr_arg) in
                     let output_bound = EdgeExp.ValuePair.P (lb, ub) in
                     LTS.EdgeData.add_assignment acc arg_access output_bound )
                   call_model.side_effects graph_data.edge_data
@@ -401,7 +401,7 @@ let exec_instr :
     let locals =
       AccessExpressionSet.fold
         (fun access locals_acc ->
-          let access = HilExp.AccessExpression.dereference access in
+          let access = HilExp.AccessExpression.dereference_2 access in
           debug_log "Checking if local: %a@," HilExp.AccessExpression.pp access ;
           let access_base = HilExp.AccessExpression.get_base access in
           let is_formal = AccessPath.BaseSet.mem access_base proc_data.formals in
@@ -839,7 +839,7 @@ let exec_instr :
           (graph_data, proc_data) )
   | Metadata metadata -> (
     match metadata with
-    | VariableLifetimeBegins (pvar, typ, loc) ->
+    | VariableLifetimeBegins {pvar; typ; loc} ->
         debug_log "@[<v4>[VariableLifetimeBegins] %a@,Variable: %a@," Location.pp loc Pvar.pp_value
           pvar ;
         let pvar_base_access = HilExp.AccessExpression.base (AccessPath.base_of_pvar pvar typ) in
@@ -1055,16 +1055,26 @@ let process_split_node node successors predecessors (graph_data, proc_data) =
       (* Check if it is a loop head and add the join node into scope stack *)
       let prev_node = List.hd_exn predecessors in
       let prev_is_loop_head = Procdesc.is_loop_head graph_data.proc_desc prev_node in
-      let node_map =
-        if prev_is_loop_head then Procdesc.NodeMap.add prev_node prune_node graph_data.node_map
-        else Procdesc.NodeMap.add node prune_node graph_data.node_map
+      let current_is_loop_head = Procdesc.is_loop_head graph_data.proc_desc node in
+      let node_map, loop_heads =
+        if prev_is_loop_head then (
+          let node_map = Procdesc.NodeMap.add prev_node prune_node graph_data.node_map in
+          node_map, graph_data.loop_heads
+        ) else if current_is_loop_head then (
+          let loop_heads = prune_node :: graph_data.loop_heads in
+          Procdesc.NodeMap.add node prune_node graph_data.node_map, loop_heads
+        ) else (
+          Procdesc.NodeMap.add node prune_node graph_data.node_map, 
+          graph_data.loop_heads
+        )
       in
       let graph_data =
         { graph_data with
           last_split_info= Some (prune_node, current_if_kind)
         ; last_node= prune_node
         ; edge_data= LTS.EdgeData.default
-        ; node_map }
+        ; node_map
+        ; loop_heads }
       in
       let proc_data =
         { proc_data with

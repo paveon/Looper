@@ -18,9 +18,7 @@ module Access = MemoryAccess
     We could make only the types of [AddressOf] and [Dereference] private but that proved too
     cumbersome... *)
 module T : sig
-  type sizeof_data = {typ: Typ.t; nbytes: int option; dynamic_length: t option; subtype: Subtype.t}
-
-  and t =
+  type t =
     | AccessExpression of access_expression
     | UnaryOperator of Unop.t * t * Typ.t option
     | BinaryOperator of Binop.t * t * t
@@ -28,8 +26,7 @@ module T : sig
     | Closure of Procname.t * (AccessPath.base * t) list
     | Constant of Const.t
     | Cast of Typ.t * t
-    | Sizeof of sizeof_data
-  (* | Sizeof of Typ.t * t option *)
+    | Sizeof of Typ.t * t option
 
   and access_expression = private
     | Base of AccessPath.base
@@ -56,9 +53,7 @@ module T : sig
       remove_deref_after_base:bool -> AccessPath.base -> access_expression -> access_expression
   end
 end = struct
-  type sizeof_data = {typ: Typ.t; nbytes: int option; dynamic_length: t option; subtype: Subtype.t}
-
-  and t =
+  type t =
     | AccessExpression of access_expression
     | UnaryOperator of Unop.t * t * Typ.t option
     | BinaryOperator of Binop.t * t * t
@@ -66,8 +61,7 @@ end = struct
     | Closure of Procname.t * (AccessPath.base * t) list
     | Constant of Const.t
     | Cast of Typ.t * t
-    | Sizeof of sizeof_data
-  (* | Sizeof of Typ.t * t option *)
+    | Sizeof of Typ.t * t option
 
   and access_expression =
     | Base of AccessPath.base
@@ -170,9 +164,9 @@ and pp fmt = function
       Const.pp Pp.text fmt c
   | Cast (typ, e) ->
       F.fprintf fmt "(%a) %a" (Typ.pp_full Pp.text) typ pp e
-  | Sizeof {typ; dynamic_length} ->
+  | Sizeof (typ, length) ->
       let pp_length fmt = Option.iter ~f:(F.fprintf fmt "[%a]" pp) in
-      F.fprintf fmt "sizeof(%a%a)" (Typ.pp_full Pp.text) typ pp_length dynamic_length
+      F.fprintf fmt "sizeof(%a%a)" (Typ.pp_full Pp.text) typ pp_length length
 
 
 let get_access_exprs exp0 =
@@ -180,15 +174,13 @@ let get_access_exprs exp0 =
     match exp with
     | AccessExpression ae ->
         ae :: acc
-    | Cast (_, e) | UnaryOperator (_, e, _) | Exception e ->
+    | Cast (_, e) | UnaryOperator (_, e, _) | Exception e | Sizeof (_, Some e) ->
         get_access_exprs_ e acc
-    | Sizeof {dynamic_length} ->
-        Option.value_map dynamic_length ~default:acc ~f:(fun e -> get_access_exprs_ e acc)
     | BinaryOperator (_, e1, e2) ->
         get_access_exprs_ e1 acc |> get_access_exprs_ e2
     | Closure (_, captured) ->
         List.fold captured ~f:(fun acc (_, e) -> get_access_exprs_ e acc) ~init:acc
-    | Constant _ ->
+    | Constant _ | Sizeof _ ->
         acc
   in
   get_access_exprs_ exp0 []
@@ -238,6 +230,10 @@ module AccessExpression = struct
     | FieldOffset (ae, _) | ArrayOffset (ae, _, _) | AddressOf ae | Dereference ae ->
         get_base ae
 
+
+  let dereference_2 access = dereference access
+
+  let is_base = function Base _ -> true | _ -> false
 
   let lookup_field_type_annot tenv base_typ field_name =
     let lookup = Tenv.lookup tenv in
@@ -303,8 +299,8 @@ module AccessExpression = struct
             fold_vars_exp exp ~init ~f )
     | Constant _ ->
         init
-    | Sizeof {dynamic_length} ->
-        fold_vars_exp_opt dynamic_length ~init ~f
+    | Sizeof (_, exp_opt) ->
+        fold_vars_exp_opt exp_opt ~init ~f
 
 
   let truncate = function
@@ -520,14 +516,8 @@ and of_sil ~include_array_indexes ~f_resolve_id ~add_deref exp typ =
         Constant c
     | Cast (cast_typ, e) ->
         Cast (cast_typ, of_sil_ e typ)
-    | Sizeof data ->
-        let hil_data : sizeof_data =
-          { typ= data.typ
-          ; nbytes= data.nbytes
-          ; dynamic_length= Option.map ~f:(fun e -> of_sil_ e typ) data.dynamic_length
-          ; subtype= data.subtype }
-        in
-        Sizeof hil_data
+    | Sizeof {typ; dynamic_length} ->
+        Sizeof (typ, Option.map ~f:(fun e -> of_sil_ e typ) dynamic_length)
     | Closure closure ->
         let environment =
           List.map

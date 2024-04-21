@@ -43,7 +43,7 @@ depends: [
   "cppo" {= "1.6.9"}
   "csexp" {= "1.5.1"}
   "ctypes" {= "0.20.1"}
-  "dune" {= "3.7.1"}
+  "dune" {= "3.7.0"}
   "dune-configurator" {= "3.7.0"}
   "easy-format" {= "1.3.4"}
   "expect_test_helpers_core" {= "v0.15.0"}
@@ -158,6 +158,7 @@ depends: [
   "zarith" {= "1.12"}
   "why3" {= "1.6.0"}
   "zed" {= "3.2.1"}
+  "ocaml-lsp-server" {= "1.17.0"}
 ]
 build: [
   ["./autogen.sh"]

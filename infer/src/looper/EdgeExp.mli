@@ -153,7 +153,7 @@ val separate : T.t -> T.t * (Binop.t * IntLit.t) option
 
 val simplify : T.t -> T.t
 
-val remove_casts_of_consts : T.t -> Typ.IntegerWidths.t -> T.t
+val remove_casts_of_consts : T.t -> IntegerWidths.t -> T.t
 
 val evaluate_const_exp : T.t -> IntLit.t option
 

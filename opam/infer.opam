@@ -51,6 +51,7 @@ depends: [
   "yojson" {>="1.7.0"}
   "zarith" {>="1.12"}
   "why3"
+  "ocaml-lsp-server"
 ]
 build: [
   ["./autogen.sh"]

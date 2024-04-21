@@ -1323,7 +1323,7 @@ let rec remove_casts_of_consts exp integer_widths =
       then
         match Typ.get_ikind_opt typ with
         | Some ikind ->
-            let type_max_value = Z.((Typ.range_of_ikind integer_widths ikind |> snd) + ~$1) in
+            let type_max_value = Z.((IntegerWidths.range_of_ikind integer_widths ikind |> snd) + ~$1) in
             let value_after_cast = IntLit.of_big_int Z.(type_max_value - IntLit.to_big_int c) in
             Const (Const.Cint value_after_cast)
         | None ->
@@ -2293,7 +2293,7 @@ and access_exprs_of_exp ~include_array_indexes ~f_resolve_id ~test_resolver ~for
                complex expressions instead of just access expressions
                as it was originally *)
             map_accesses value ~init:None ~f:(fun ae None ->
-                let ae = if add_deref then HilExp.AccessExpression.dereference ae else ae in
+                let ae = if add_deref then HilExp.AccessExpression.dereference_2 ae else ae in
                 (Access (map_formal ae formal_map |> add_accesses), None) )
             |> fst
           in
@@ -2304,7 +2304,7 @@ and access_exprs_of_exp ~include_array_indexes ~f_resolve_id ~test_resolver ~for
               ValuePair.P (process_value lb, process_value ub) :: acc )
       | None, missing_id ->
           let ae = HilExp.AccessExpression.address_of_base (base_of_id id typ) in
-          let ae = if add_deref then HilExp.AccessExpression.dereference ae else ae in
+          let ae = if add_deref then HilExp.AccessExpression.dereference_2 ae else ae in
           ValuePair.V (Access (map_formal ae formal_map |> add_accesses)) :: acc
           (* match f_resolve_id (Var.of_id id) with
              | Some access_expr ->
@@ -2344,12 +2344,12 @@ and access_exprs_of_exp ~include_array_indexes ~f_resolve_id ~test_resolver ~for
       | None, missing_id ->
           let access_expr = of_pvar pvar typ in
           let access_expr =
-            if add_deref then HilExp.AccessExpression.dereference access_expr else access_expr
+            if add_deref then HilExp.AccessExpression.dereference_2 access_expr else access_expr
           in
           ValuePair.V (Access (map_formal access_expr formal_map |> add_accesses)) :: acc )
     | Lvar pvar ->
         let ae = of_pvar pvar typ in
-        let ae = if add_deref then HilExp.AccessExpression.dereference ae else ae in
+        let ae = if add_deref then HilExp.AccessExpression.dereference_2 ae else ae in
         ValuePair.V (Access (map_formal ae formal_map |> add_accesses)) :: acc
     | Lfield (root_exp, fld, root_exp_typ) ->
         let add_field_access_expr access_expr =
@@ -2457,7 +2457,7 @@ and of_sil_exp ~include_array_indexes ~f_resolve_id ~test_resolver ~formal_map ~
       | Some value_pair, _ -> (
           let process_value value =
             map_accesses value ~init:None ~f:(fun ae None ->
-                let ae = if add_deref then HilExp.AccessExpression.dereference ae else ae in
+                let ae = if add_deref then HilExp.AccessExpression.dereference_2 ae else ae in
                 let mapped_ae = map_formal ae formal_map in
                 (Access mapped_ae, None) )
             |> fst
@@ -2470,7 +2470,7 @@ and of_sil_exp ~include_array_indexes ~f_resolve_id ~test_resolver ~formal_map ~
       | None, missing ->
           let access_expr = HilExp.AccessExpression.of_id id typ in
           let access_expr =
-            if add_deref then HilExp.AccessExpression.dereference access_expr else access_expr
+            if add_deref then HilExp.AccessExpression.dereference_2 access_expr else access_expr
           in
           ValuePair.V (Access access_expr)
           (* let ae = match f_resolve_id (Var.of_id id) with

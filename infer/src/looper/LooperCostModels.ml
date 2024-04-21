@@ -24,7 +24,7 @@ module LooperModelEnv = struct
     ; node_hash: int
     ; location: Location.t
     ; tenv: Tenv.t
-    ; integer_type_widths: Typ.IntegerWidths.t
+    ; integer_type_widths: IntegerWidths.t
     ; get_summary: Procname.t -> LooperSummary.t option }
 
   let mk_model_env pname ~node_hash location tenv integer_type_widths get_summary =
@@ -180,7 +180,7 @@ let get_strtoul_model ~of_function arg_pairs widths =
       in
       (complexity, cache)
     in
-    let ret_lb, ret_ub = Typ.range_of_ikind widths Typ.IULong in
+    let ret_lb, ret_ub = IntegerWidths.range_of_ikind widths Typ.IULong in
     let output_bound =
       ( EdgeExp.T.Const (Const.Cint (IntLit.of_big_int ret_lb))
       , EdgeExp.T.Const (Const.Cint (IntLit.of_big_int ret_ub)) )

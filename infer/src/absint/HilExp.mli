@@ -17,8 +17,7 @@ type t =
   | Closure of Procname.t * (AccessPath.base * t) list  (** Name of function + environment *)
   | Constant of Const.t  (** Constants *)
   | Cast of Typ.t * t  (** Type cast *)
-  | Sizeof of sizeof_data
-  (* | Sizeof of Typ.t * t option *)
+  | Sizeof of Typ.t * t option
       (** C-style sizeof(), and also used to treate a type as an expression. Refer to [Exp] module
           for canonical documentation *)
 
@@ -48,6 +47,10 @@ module AccessExpression : sig
   val to_access_path : access_expression -> AccessPath.t
 
   val get_base : access_expression -> AccessPath.base
+
+  val dereference_2 : access_expression -> access_expression
+
+  val is_base : access_expression -> bool
 
   val replace_base :
     remove_deref_after_base:bool -> AccessPath.base -> access_expression -> access_expression
