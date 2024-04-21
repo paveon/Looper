@@ -56,6 +56,6 @@ val store_spec :
   -> proc_name:Sqlite3.Data.t
   -> merge_pulse_payload:(old_pulse_payload:Sqlite3.Data.t option -> Sqlite3.Data.t list)
   -> merge_report_summary:(old_report_summary:Sqlite3.Data.t option -> Sqlite3.Data.t)
-  -> merge_looper_summary:(old_report_summary:Sqlite3.Data.t option -> Sqlite3.Data.t)
+  -> merge_looper_summary:(old_looper_summary:Sqlite3.Data.t option -> Sqlite3.Data.t)
   -> merge_summary_metadata:(old_summary_metadata:Sqlite3.Data.t option -> Sqlite3.Data.t)
   -> unit

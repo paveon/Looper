@@ -85,7 +85,6 @@ let empty =
   ; config_impact_analysis= no_payload
   ; cost= no_payload
   ; looper= no_payload
-  (* ; deadlock= no_payload *)
   ; disjunctive_demo= no_payload
   ; lab_resource_leaks= no_payload
   ; litho_required_props= no_payload
@@ -164,8 +163,7 @@ module SQLite = struct
       ~racerd:data_of_sqlite_column ~lab_resource_leaks:data_of_sqlite_column
       ~scope_leakage:data_of_sqlite_column ~siof:data_of_sqlite_column
       ~lineage:data_of_sqlite_column ~lineage_shape:data_of_sqlite_column
-      ~looper:data_of_sqlite_column
-      ~starvation:data_of_sqlite_column
+      ~looper:data_of_sqlite_column ~starvation:data_of_sqlite_column
 
 
   let eager_load stmt ~first_column = (make_eager first_column |> fst) stmt
