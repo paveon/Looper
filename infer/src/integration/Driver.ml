@@ -22,7 +22,6 @@ type mode =
   | BuckGenrule of {prog: string}
   | BuckJavaFlavor of {build_cmd: string list}
   | BxlClang of {build_cmd: string list}
-  | BxlClangFile
   | BxlJava of {build_cmd: string list}
   | Clang of {compiler: Clang.compiler; prog: string; args: string list}
   | ClangCompilationDB of {db_files: [`Escaped of string | `Raw of string] list}
@@ -70,8 +69,6 @@ let pp_mode fmt = function
       F.fprintf fmt "BuckJavaFlavor driver mode:@\nbuild command = %a" Pp.cli_args build_cmd
   | BxlClang {build_cmd} ->
       F.fprintf fmt "BxlClang driver mode:@\nbuild command = %a" Pp.cli_args build_cmd
-  | BxlClangFile ->
-      F.fprintf fmt "BxlClang file driver mode"
   | BxlJava {build_cmd} ->
       F.fprintf fmt "BxlJava driver mode:@\nbuild command = %a" Pp.cli_args build_cmd
   | Clang {prog; args} ->
@@ -182,9 +179,6 @@ let capture ~changed_files mode =
       | BxlClang {build_cmd} ->
           L.progress "Capturing in bxl/clang mode...@." ;
           BxlCapture.capture build_cmd
-      | BxlClangFile ->
-          L.progress "Capturing in bxl/clang file mode...@." ;
-          BxlCapture.file_capture ()
       | BxlJava {build_cmd} ->
           L.progress "Capturing in bxl/java mode...@." ;
           BxlCapture.capture build_cmd
@@ -242,13 +236,7 @@ let capture ~changed_files mode =
           CaptureCompilationDatabase.capture ~changed_files ~db_files ) ;
   let should_merge =
     match mode with
-    | Buck2Clang _
-    | BuckClangFlavor _
-    | BuckJavaFlavor _
-    | BxlClang _
-    | BxlClangFile
-    | BxlJava _
-    | Gradle _ ->
+    | Buck2Clang _ | BuckClangFlavor _ | BuckJavaFlavor _ | BxlClang _ | BxlJava _ | Gradle _ ->
         true
     | _ ->
         not (List.is_empty Config.merge_capture)
@@ -257,7 +245,7 @@ let capture ~changed_files mode =
     if Config.export_changed_functions then MergeCapture.merge_changed_functions () ;
     let root =
       match mode with
-      | Buck2Clang _ | BxlClang _ | BxlClangFile | BxlJava _ ->
+      | Buck2Clang _ | BxlClang _ | BxlJava _ ->
           Config.buck2_root
       | _ ->
           Config.project_root
@@ -485,8 +473,6 @@ let assert_supported_build_system build_system =
 
 let mode_of_build_command build_cmd (buck_mode : BuckMode.t option) =
   match build_cmd with
-  | [] when Config.bxl_file_capture ->
-      BxlClangFile
   | [] when not (List.is_empty Config.pyc_file) ->
       PythonBytecode {files= Config.pyc_file}
   | [] -> (
@@ -615,13 +601,9 @@ let run_prologue mode =
 
 
 let run_epilogue () =
+  GCStats.log ~name:"main_process_full" Analysis (GCStats.get ~since:ProgramStart) ;
   if Config.is_originator then (
     if Config.fail_on_bug then fail_on_issue_epilogue () ;
     () ) ;
   if Config.buck_cache_mode then ResultsDir.scrub_for_caching () ;
   ()
-
-
-let run_epilogue () =
-  GCStats.log ~name:"main_process_full" Analysis (GCStats.get ~since:ProgramStart) ;
-  ScubaLogging.execute_with_time_logging "run_epilogue" run_epilogue

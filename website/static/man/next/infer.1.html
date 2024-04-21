@@ -128,29 +128,53 @@ infer-out/analysis_dependency_graph</p>
 --annotation-reachability</b></p>
 
 <p style="margin-left:17%;">Activates:
-<i>annotation-reachability</i> checker: Given a pair of
-source and sink annotation, e.g.
-&lsquo;@PerformanceCritical&lsquo; and
-&lsquo;@Expensive&lsquo;, this checker will warn whenever
-some method annotated with
-&lsquo;@PerformanceCritical&lsquo; calls, directly or
-indirectly, another method annotated with
-&lsquo;@Expensive&lsquo; (Conversely:
-<b>--no-annotation-reachability</b>)</p>
+<i>annotation-reachability</i> checker: Given pairs of
+source and sink annotations, e.g. &lsquo;@A&lsquo; and
+&lsquo;@B&lsquo;, this checker will warn whenever some
+method annotated with &lsquo;@A&lsquo; calls, directly or
+indirectly, another method annotated with &lsquo;@B&lsquo;.
+Besides the custom pairs, it is also possible to enable some
+built-in checks, such as &lsquo;@PerformanceCritical&lsquo;
+reaching &lsquo;@Expensive&lsquo; or
+&lsquo;@NoAllocation&lsquo; reaching &lsquo;new&lsquo;. See
+flags starting with &lsquo;--annotation-reachability&lsquo;.
+(Conversely: <b>--no-annotation-reachability</b>)</p>
 
 <p style="margin-left:11%;">See also
 <b>infer-analyze</b>(1). <b><br>
+
+--no-annotation-reachability-apply-class-annotations</b></p>
+
+<p style="margin-left:17%;">Deactivates: Applies
+annotations of a class/interface to all its methods
+(Conversely:
+<b>--annotation-reachability-apply-class-annotations</b>)</p>
+
+<p style="margin-left:11%;">See also
+<b>infer-analyze</b>(1). <b><br>
+--annotation-reachability-custom-models</b> <i>json</i></p>
+
+<p style="margin-left:17%;">Specify a map from annotations
+to lists of regexps to treat matching methods as if they had
+the annotation.</p>
+
+<p style="margin-left:11%;">Example format:
+{&quot;Annotation&quot;:
+[&quot;com\\.Myclass\\.foo.*&quot;]} <br>
+See also <b>infer-analyze</b>(1). <b><br>
 --annotation-reachability-custom-pairs</b> <i>json</i></p>
 
-<p style="margin-left:17%;">Specify custom sources/sinks
-for the annotation reachability checker</p>
+<p style="margin-left:17%;">Specify custom sources/sinks,
+and optionally sanitizers for the annotation reachability
+checker</p>
 
 <p style="margin-left:11%;">Example format: for custom
 annotations <br>
-com.my.annotation.{Source1,Source2,Sink1} <br>
+com.my.annotation.{Source1,Source2,Sink1,Sanitizer1} <br>
 { &quot;sources&quot; : [&quot;Source1&quot;,
 &quot;Source2&quot;], &quot;sinks&quot; :
-[&quot;Sink1&quot;] } <br>
+[&quot;Sink1&quot;], <br>
+&quot;sanitizers&quot;: [&quot;Sanitizer1&quot;] } <br>
 See also <b>infer-analyze</b>(1). <b><br>
 --annotation-reachability-cxx</b> <i>json</i></p>
 
@@ -196,10 +220,10 @@ spec</p>
 <b>infer-analyze</b>(1). <b><br>
 --annotation-reachability-expensive</b></p>
 
-<p style="margin-left:17%;">Activates: check if expensive
-methods (annotated @Expensive or modeled) can call
-@PerformanceCritical (with annotation reachability checker)
-(Conversely:
+<p style="margin-left:17%;">Activates: check if methods
+annotated with @PerformanceCritical can call expensive
+methods (annotated @Expensive or modeled, with annotation
+reachability checker) (Conversely:
 <b>--no-annotation-reachability-expensive</b>)</p>
 
 <p style="margin-left:11%;">See also
@@ -440,6 +464,14 @@ matched by the specified regular expression.</p>
 
 <p style="margin-left:11%;">See also
 <b>infer-capture</b>(1) and <b>infer-run</b>(1). <b><br>
+--buck2-bxl-capture-file-block-list</b> <i>+regex</i></p>
+
+<p style="margin-left:17%;">Skip capture of files matched
+by the specified regular expression. Only the clang, Buck2
+integration is supported, not Java.</p>
+
+<p style="margin-left:11%;">See also
+<b>infer-capture</b>(1) and <b>infer-run</b>(1). <b><br>
 --buck2-bxl-target</b> <i>string</i></p>
 
 <p style="margin-left:17%;">Buck2 BXL script (as a buck
@@ -452,6 +484,13 @@ integration.</p>
 
 <p style="margin-left:17%;">Buck2 target representing the
 inferconfig file; used in BXL capture.</p>
+
+<p style="margin-left:11%;">See also
+<b>infer-capture</b>(1). <b><br>
+--buck2-infertoolchain-target</b> <i>string</i></p>
+
+<p style="margin-left:17%;">Buck2 target representing the
+infer toolchain; used in BXL capture.</p>
 
 <p style="margin-left:11%;">See also
 <b>infer-capture</b>(1). <b><br>
@@ -502,16 +541,6 @@ accesses. (Conversely: <b>--no-bufferoverrun</b>)</p>
 
 <p style="margin-left:11%;">See also
 <b>infer-analyze</b>(1). <b><br>
---bxl-file-capture</b></p>
-
-<p style="margin-left:17%;">Activates: Given an
-<b>--changed-file-index</b> file, capture the owning buck2
-targets and their dependencies using the BXL script
-specified by <b>--buck2_bxl_target</b>. (Conversely:
-<b>--no-bxl-file-capture</b>)</p>
-
-<p style="margin-left:11%;">See also
-<b>infer-capture</b>(1). <b><br>
 --capture-block-list</b> <i>json</i></p>
 
 <p style="margin-left:17%;">Matcher or list of matchers for
@@ -1038,7 +1067,6 @@ PULSE_TRANSITIVE_ACCESS (enabled by default), <br>
 PULSE_UNAWAITED_AWAITABLE (enabled by default), <br>
 PULSE_UNINITIALIZED_CONST (disabled by default), <br>
 PULSE_UNINITIALIZED_VALUE (enabled by default), <br>
-PULSE_UNINITIALIZED_VALUE_LATENT (disabled by default), <br>
 PULSE_UNNECESSARY_COPY (enabled by default), <br>
 PULSE_UNNECESSARY_COPY_ASSIGNMENT (enabled by default), <br>
 PULSE_UNNECESSARY_COPY_ASSIGNMENT_CONST (disabled by
@@ -1077,7 +1105,6 @@ TAINT_ERROR (enabled by default), <br>
 THREAD_SAFETY_VIOLATION (enabled by default), <br>
 TOPL_ERROR (enabled by default), <br>
 TOPL_ERROR_LATENT (disabled by default), <br>
-UNINITIALIZED_VALUE (enabled by default), <br>
 UNREACHABLE_CODE (enabled by default), <br>
 UNTRUSTED_BUFFER_ACCESS (disabled by default), <br>
 UNTRUSTED_DESERIALIZATION (enabled by default), <br>
@@ -1752,6 +1779,22 @@ dependencies that cannot be found. (Conversely:
 
 <p style="margin-left:11%;">See also
 <b>infer-analyze</b>(1). <b><br>
+--log-pulse-disjunct-increase-after-model-call</b></p>
+
+<p style="margin-left:17%;">Activates: Log which model did
+increase the current number of Pulse disjuncts. (Conversely:
+<b>--no-log-pulse-disjunct-increase-after-model-call</b>)</p>
+
+<p style="margin-left:11%;">See also
+<b>infer-analyze</b>(1). <b><br>
+--log-pulse-unreachable-nodes</b></p>
+
+<p style="margin-left:17%;">Activates: Log for each
+function and each summary, the ratio of unreached nodes.
+(Conversely: <b>--no-log-pulse-unreachable-nodes</b>)</p>
+
+<p style="margin-left:11%;">See also
+<b>infer-analyze</b>(1). <b><br>
 --loop-hoisting</b></p>
 
 <p style="margin-left:17%;">Activates: <i>loop-hoisting</i>
@@ -2031,7 +2074,7 @@ found in the output of <b>--procedures</b> (Conversely:
 
 <p style="margin-left:17%;">Activates: Print the summaries
 of each procedure in the output of <b>--procedures</b>. See
-also <b>--procedures-summary-nonempty</b>. (Conversely:
+also <b>--procedures-summary-skip-empty</b>. (Conversely:
 <b>--no-procedures-summary</b>)</p>
 
 <p style="margin-left:11%;">See also <b>infer-debug</b>(1).
@@ -2157,6 +2200,13 @@ modelled as allocs in Pulse</p>
 <p style="margin-left:11%;">See also
 <b>infer-analyze</b>(1). <b><br>
 --pulse-model-cheap-copy-type</b> <i>regex</i></p>
+
+<p style="margin-left:17%;">Regex of methods that should be
+cheap to copy in Pulse</p>
+
+<p style="margin-left:11%;">See also
+<b>infer-analyze</b>(1). <b><br>
+--pulse-model-cheap-copy-type-list</b> <i>+regex</i></p>
 
 <p style="margin-left:17%;">Regex of methods that should be
 cheap to copy in Pulse</p>
@@ -3168,6 +3218,23 @@ is being made because of concurrency errors. (Conversely:
 
 <p style="margin-left:11%;">See also
 <b>infer-analyze</b>(1). <b><br>
+--stats-dir-current</b> <i>path</i></p>
+
+<p style="margin-left:17%;">The infer-out/stats from the
+current run. Together with <b>--stats-dir-previous</b>, make
+<i>infer reportdiff</i> compute the difference between two
+stats directories and output the results in
+infer-out/differential/stats_*.json files.</p>
+
+<p style="margin-left:11%;">See also
+<b>infer-reportdiff</b>(1). <b><br>
+--stats-dir-previous</b> <i>path</i></p>
+
+<p style="margin-left:17%;">The infer-out/stats from a
+previous run. See <b>--stats-dir-current</b>.</p>
+
+<p style="margin-left:11%;">See also
+<b>infer-reportdiff</b>(1). <b><br>
 --store-analysis-schedule</b></p>
 
 <p style="margin-left:17%;">Activates: Store the analysis
@@ -3225,24 +3292,6 @@ See also <b>infer-analyze</b>(1). <b><br>
 <p style="margin-left:17%;">Activates: Enable <i>topl</i>
 and disable all other checkers (Conversely:
 <b>--no-topl-only</b>)</p>
-
-<p style="margin-left:11%;">See also
-<b>infer-analyze</b>(1). <b><br>
---uninit</b></p>
-
-<p style="margin-left:17%;">Activates: <i>uninit</i>
-checker: Warns when values are used before having been
-initialized.</p>
-
-<p style="margin-left:11%;"><b>DEPRECATED</b>:
-Uninitialized value checking has moved to Pulse. <br>
-(Conversely: <b>--no-uninit</b>) <br>
-See also <b>infer-analyze</b>(1). <b><br>
---uninit-only</b></p>
-
-<p style="margin-left:17%;">Activates: Enable <i>uninit</i>
-and disable all other checkers (Conversely:
-<b>--no-uninit-only</b>)</p>
 
 <p style="margin-left:11%;">See also
 <b>infer-analyze</b>(1). <b><br>

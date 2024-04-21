@@ -173,9 +173,6 @@ module Attribute = struct
           F.fprintf f "DictMissingKey(%a, %a)" DecompilerExpr.pp dict Fieldname.pp key
   end
 
-  type dynamic_type_data = {typ: Typ.t; source_file: SourceFile.t option}
-  [@@deriving compare, equal]
-
   module ConstKeys = struct
     module Metadata = struct
       (** The metadata contains a timestamp and a trace. The trace is to construct a proper trace of
@@ -206,7 +203,6 @@ module Attribute = struct
     | AlwaysReachable
     | Closure of Procname.t
     | ConfigUsage of ConfigUsage.t
-    | ConstString of string
     | CopiedInto of CopiedInto.t
     | CopiedReturn of
         { source: AbstractValue.t
@@ -215,8 +211,8 @@ module Attribute = struct
         ; copied_location: Location.t }
     | DictContainConstKeys
     | DictReadConstKeys of ConstKeys.t
-    | DynamicType of dynamic_type_data
     | EndOfCollection
+    | InReportedRetainCycle
     | Initialized
     | Invalid of Invalidation.t * Trace.t
     | LastLookup of AbstractValue.t
@@ -260,8 +256,6 @@ module Attribute = struct
 
   let config_usage_rank = Variants.configusage.rank
 
-  let const_string_rank = Variants.conststring.rank
-
   let copied_into_rank = Variants.copiedinto.rank
 
   let copied_return_rank = Variants.copiedreturn.rank
@@ -272,9 +266,9 @@ module Attribute = struct
 
   let dict_read_const_keys_rank = Variants.dictreadconstkeys.rank
 
-  let dynamic_type_rank = Variants.dynamictype.rank
-
   let end_of_collection_rank = Variants.endofcollection.rank
+
+  let in_reported_retain_cycle_rank = Variants.inreportedretaincycle.rank
 
   let initialized_rank = Variants.initialized.rank
 
@@ -337,8 +331,6 @@ module Attribute = struct
         Procname.pp f pname
     | ConfigUsage config ->
         F.fprintf f "ConfigUsage (%a)" ConfigUsage.pp config
-    | ConstString s ->
-        F.fprintf f "ConstString (%s)" s
     | CopiedInto copied_into ->
         CopiedInto.pp f copied_into
     | CopiedReturn {source; is_const_ref; from; copied_location} ->
@@ -349,11 +341,10 @@ module Attribute = struct
         F.pp_print_string f "DictContainConstKeys"
     | DictReadConstKeys keys ->
         F.fprintf f "DictReadConstKeys(@[%a@])" ConstKeys.pp keys
-    | DynamicType {typ; source_file} ->
-        F.fprintf f "DynamicType %a, SourceFile %a" (Typ.pp Pp.text) typ (Pp.option SourceFile.pp)
-          source_file
     | EndOfCollection ->
         F.pp_print_string f "EndOfCollection"
+    | InReportedRetainCycle ->
+        F.pp_print_string f "InReportedRetainCycle"
     | Initialized ->
         F.pp_print_string f "Initialized"
     | Invalid (invalidation, trace) ->
@@ -429,12 +420,11 @@ module Attribute = struct
     | AlwaysReachable
     | Closure _
     | ConfigUsage _
-    | ConstString _
     | CopiedInto _
     | CopiedReturn _
     | DictContainConstKeys
-    | DynamicType _
     | EndOfCollection
+    | InReportedRetainCycle
     | Initialized
     | JavaResourceReleased
     | LastLookup _
@@ -471,12 +461,11 @@ module Attribute = struct
     | AlwaysReachable
     | Closure _
     | ConfigUsage _
-    | ConstString _
     | CopiedInto _
     | CopiedReturn _
     | DictContainConstKeys
-    | DynamicType _
     | EndOfCollection
+    | InReportedRetainCycle
     | Initialized
     | Invalid _
     | JavaResourceReleased
@@ -514,12 +503,11 @@ module Attribute = struct
     | AlwaysReachable
     | Closure _
     | ConfigUsage _
-    | ConstString _
     | CopiedReturn _
     | DictContainConstKeys
     | DictReadConstKeys _
-    | DynamicType _
     | EndOfCollection
+    | InReportedRetainCycle
     | Initialized
     | Invalid _
     | JavaResourceReleased
@@ -562,6 +550,8 @@ module Attribute = struct
           (ConstKeys.map
              (fun (_timestamp, trace) -> (timestamp, add_call_to_trace trace))
              const_keys )
+    | InReportedRetainCycle ->
+        InReportedRetainCycle
     | Invalid (invalidation, trace) ->
         Invalid (invalidation, add_call_to_trace trace)
     | MustBeValid (_timestamp, trace, reason) ->
@@ -620,10 +610,8 @@ module Attribute = struct
       | AlwaysReachable
       | Closure _
       | ConfigUsage (ConfigName _)
-      | ConstString _
       | CSharpResourceReleased
       | DictContainConstKeys
-      | DynamicType _
       | EndOfCollection
       | HackAsyncAwaited
       | Initialized
@@ -693,14 +681,13 @@ module Attribute = struct
       | AlwaysReachable
       | Closure _
       | ConfigUsage (ConfigName _)
-      | ConstString _
       | CopiedInto _
       | CSharpResourceReleased
       | DictContainConstKeys
       | DictReadConstKeys _
-      | DynamicType _
       | EndOfCollection
       | HackAsyncAwaited
+      | InReportedRetainCycle
       | Initialized
       | Invalid _
       | JavaResourceReleased
@@ -791,7 +778,7 @@ module Attributes = struct
               else Some sink2
             in
             update (MustNotBeTainted (TaintSinkMap.union aux new_sinks sinks)) attrs
-      | WrittenTo _ ->
+      | Invalid (OptionalEmpty, _) | WrittenTo _ ->
           update value attrs
       | _ ->
           add attrs value
@@ -824,6 +811,8 @@ module Attributes = struct
   let remove_by_rank = Set.remove_by_rank
 
   let mem_by_rank rank attrs = Set.find_rank attrs rank |> Option.is_some
+
+  let is_in_reported_retain_cycle = mem_by_rank Attribute.in_reported_retain_cycle_rank
 
   let get_invalid =
     get_by_rank Attribute.invalid_rank ~dest:(function [@warning "-partial-match"]
@@ -868,11 +857,6 @@ module Attributes = struct
   let get_config_usage =
     get_by_rank Attribute.config_usage_rank ~dest:(function [@warning "-partial-match"]
         | ConfigUsage config -> config )
-
-
-  let get_const_string =
-    get_by_rank Attribute.const_string_rank ~dest:(function [@warning "-partial-match"]
-        | ConstString s -> s )
 
 
   let get_used_as_branch_cond =
@@ -952,11 +936,6 @@ module Attributes = struct
   let remove_dict_contain_const_keys = remove_by_rank Attribute.dict_contain_const_keys_rank
 
   let is_dict_contain_const_keys = mem_by_rank Attribute.dict_contain_const_keys_rank
-
-  let get_dynamic_type =
-    get_by_rank Attribute.dynamic_type_rank ~dest:(function [@warning "-partial-match"]
-        | DynamicType dynamic_type_data -> dynamic_type_data )
-
 
   let get_must_be_initialized =
     get_by_rank Attribute.must_be_initialized_rank ~dest:(function [@warning "-partial-match"]

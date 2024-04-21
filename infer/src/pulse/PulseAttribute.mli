@@ -99,8 +99,6 @@ module UninitializedTyp : sig
   val pp : F.formatter -> t -> unit
 end
 
-type dynamic_type_data = {typ: Typ.t; source_file: SourceFile.t option} [@@deriving compare, equal]
-
 module ConstKeys : sig
   type t
 
@@ -116,7 +114,6 @@ type t =
   | AlwaysReachable
   | Closure of Procname.t
   | ConfigUsage of ConfigUsage.t
-  | ConstString of string
   | CopiedInto of CopiedInto.t  (** records the copied var/field for each source address *)
   | CopiedReturn of
       {source: AbstractValue.t; is_const_ref: bool; from: CopyOrigin.t; copied_location: Location.t}
@@ -125,8 +122,8 @@ type t =
       (** the dictionary contains only constant keys (note: only string constant is supported for
           now) *)
   | DictReadConstKeys of ConstKeys.t  (** constant string keys that are read from the dictionary *)
-  | DynamicType of dynamic_type_data
   | EndOfCollection
+  | InReportedRetainCycle
   | Initialized
   | Invalid of Invalidation.t * Trace.t
   | LastLookup of AbstractValue.t
@@ -175,8 +172,6 @@ module Attributes : sig
 
   val get_config_usage : t -> ConfigUsage.t option
 
-  val get_const_string : t -> string option
-
   val get_used_as_branch_cond : t -> (Procname.t * Location.t * Trace.t) option
 
   val get_copied_into : t -> CopiedInto.t option
@@ -198,8 +193,6 @@ module Attributes : sig
   val is_dict_contain_const_keys : t -> bool
 
   val get_dict_read_const_keys : t -> ConstKeys.t option
-
-  val get_dynamic_type : t -> dynamic_type_data option
 
   val get_static_type : t -> Typ.Name.t option
 
@@ -237,6 +230,8 @@ module Attributes : sig
   val get_written_to : t -> (Timestamp.t * Trace.t) option
 
   val is_always_reachable : t -> bool
+
+  val is_in_reported_retain_cycle : t -> bool
 
   val is_modified : t -> bool
 

@@ -130,6 +130,25 @@ module SQLite = struct
     List.map all_fields ~f:(fun (F {field}) -> Field.get field payloads |> serialize_payload_opt)
 
 
+  let serialize ({pulse} as payloads) =
+    let default = serialize payloads in
+    fun ~old_pulse_payload ->
+      (* All payloads must be null or blob. *)
+      match[@warning "-partial-match"] (old_pulse_payload : Sqlite3.Data.t option) with
+      | None | Some NULL ->
+          (* No row or no pulse payload is in the DB. *)
+          default
+      | Some (BLOB blob) -> (
+          let old_pulse_payload : PulseSummary.t = Marshal.from_string blob 0 in
+          match Lazy.force pulse with
+          | None ->
+              serialize {payloads with pulse= lazy (Some old_pulse_payload)}
+          | Some pulse_payload ->
+              let res = PulseSummary.merge pulse_payload old_pulse_payload in
+              if phys_equal res pulse_payload then default
+              else serialize {payloads with pulse= lazy (Some res)} )
+
+
   let make_eager =
     let data_of_sqlite_column _field column =
       ( (fun stmt ->
@@ -181,7 +200,7 @@ module SQLite = struct
         Sqlite3.bind_text load_stmt 1 proc_uid
         |> SqliteUtils.check_result_code db ~log:"load payloads bind proc_uid" ;
         SqliteUtils.result_option ~finalize:false db ~log:"load payloads exec" load_stmt
-          ~read_row:(fun stmt -> Sqlite3.column stmt 0 |> deserialize_payload_opt |> Lazy.force) )
+          ~read_row:(fun stmt -> Sqlite3.column stmt 0 |> deserialize_payload_opt |> Lazy.force ) )
     |> Option.join
 
 

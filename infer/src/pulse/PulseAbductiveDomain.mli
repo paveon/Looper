@@ -184,6 +184,10 @@ module AddressAttributes : sig
 
   val is_csharp_resource_released : AbstractValue.t -> t -> bool
 
+  val in_reported_retain_cycle : AbstractValue.t -> t -> t
+
+  val is_in_reported_retain_cycle : AbstractValue.t -> t -> bool
+
   val add_dict_contain_const_keys : AbstractValue.t -> t -> t
 
   val remove_dict_contain_const_keys : AbstractValue.t -> t -> t
@@ -192,15 +196,11 @@ module AddressAttributes : sig
 
   val add_dict_read_const_key : Timestamp.t -> Trace.t -> AbstractValue.t -> Fieldname.t -> t -> t
 
-  val add_dynamic_type : Attribute.dynamic_type_data -> AbstractValue.t -> t -> t
-
-  val add_static_type : Tenv.t -> Typ.name -> AbstractValue.t -> t -> t
+  val add_static_type : Tenv.t -> Typ.name -> AbstractValue.t -> Location.t -> t -> t
 
   val remove_allocation_attr : AbstractValue.t -> t -> t
 
   val remove_taint_attrs : AbstractValue.t -> t -> t
-
-  val get_dynamic_type : AbstractValue.t -> t -> Attribute.dynamic_type_data option
 
   val get_static_type : AbstractValue.t -> t -> Typ.Name.t option
 
@@ -242,8 +242,6 @@ module AddressAttributes : sig
 
   val get_config_usage : AbstractValue.t -> t -> Attribute.ConfigUsage.t option
 
-  val get_const_string : AbstractValue.t -> t -> string option
-
   val get_valid_returned_from_unknown : AbstractValue.t -> t -> AbstractValue.t list option
 
   val get_written_to : AbstractValue.t -> t -> (Timestamp.t * Trace.t) option
@@ -254,6 +252,8 @@ module AddressAttributes : sig
 
   val get_address_of_stack_variable :
     AbstractValue.t -> t -> (Var.t * Location.t * ValueHistory.t) option
+
+  val has_unknown_effect : AbstractValue.t -> t -> bool
 end
 
 val should_havoc_if_unknown : unit -> [> `ShouldHavoc | `ShouldOnlyHavocResources]
@@ -340,8 +340,7 @@ module Summary : sig
   val add_need_dynamic_type_specialization : AbstractValue.t -> summary -> summary
 
   val of_post :
-       Tenv.t
-    -> Procname.t
+       Procname.t
     -> ProcAttributes.t
     -> Location.t
     -> t

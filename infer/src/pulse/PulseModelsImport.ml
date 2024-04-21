@@ -139,18 +139,19 @@ module Basic = struct
     in
     let astate =
       if Typ.is_objc_class typ then
-        PulseOperations.add_dynamic_type typ ~source_file:location.file value astate
-      else PulseOperations.add_dynamic_type typ value astate
+        PulseArithmetic.and_dynamic_type_is_unsafe value typ ~source_file:location.file location
+          astate
+      else PulseArithmetic.and_dynamic_type_is_unsafe value typ location astate
     in
     let++ astate = PulseArithmetic.and_positive value astate in
     (astate, (value, hist))
 
 
   let early_exit : model_no_non_disj =
-   fun {analysis_data= {tenv; proc_desc}; location} astate ->
+   fun {analysis_data= {proc_desc}; location} astate ->
     let open SatUnsat.Import in
     match
-      AbductiveDomain.Summary.of_post tenv
+      AbductiveDomain.Summary.of_post
         (Procdesc.get_proc_name proc_desc)
         (Procdesc.get_attributes proc_desc)
         location astate
@@ -384,8 +385,9 @@ module Basic = struct
       match size_exp_opt with
       | Some (Exp.Sizeof {typ}) ->
           if Typ.is_objc_class typ then
-            PulseOperations.add_dynamic_type typ ~source_file:location.file ret_addr astate
-          else PulseOperations.add_dynamic_type typ ret_addr astate
+            PulseArithmetic.and_dynamic_type_is_unsafe ret_addr typ ~source_file:location.file
+              location astate
+          else PulseArithmetic.and_dynamic_type_is_unsafe ret_addr typ location astate
       | _ ->
           (* The type expr is sometimes a Var expr in Java but this is not expected.
               This seems to be introduced by inline mechanism of Java synthetic methods during preanalysis *)

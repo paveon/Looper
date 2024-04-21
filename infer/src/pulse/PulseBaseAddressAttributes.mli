@@ -37,6 +37,8 @@ module type S = sig
 
   val csharp_resource_release : key -> t -> t
 
+  val in_reported_retain_cycle : key -> t -> t
+
   val fold : (key -> Attributes.t -> 'a -> 'a) -> t -> 'a -> 'a
 
   val check_valid : key -> t -> (unit, Invalidation.t * Trace.t) result
@@ -79,10 +81,6 @@ module type S = sig
 
   val get_dict_read_const_keys : key -> t -> Attribute.ConstKeys.t option
 
-  val add_dynamic_type : Attribute.dynamic_type_data -> key -> t -> t
-
-  val get_dynamic_type : t -> key -> Attribute.dynamic_type_data option
-
   val add_static_type : Typ.Name.t -> key -> t -> t
 
   val get_static_type : t -> key -> Typ.Name.t option
@@ -94,6 +92,8 @@ module type S = sig
   val is_java_resource_released : key -> t -> bool
 
   val is_csharp_resource_released : key -> t -> bool
+
+  val is_in_reported_retain_cycle : key -> t -> bool
 
   val is_std_moved : key -> t -> bool
 
@@ -112,8 +112,6 @@ module type S = sig
 
   val get_config_usage : key -> t -> Attribute.ConfigUsage.t option
 
-  val get_const_string : key -> t -> string option
-
   val get_used_as_branch_cond : key -> t -> (Procname.t * Location.t * Trace.t) option
 
   val remove_allocation_attr : key -> t -> t
@@ -127,6 +125,8 @@ module type S = sig
   val initialize : key -> t -> t
 
   val get_address_of_stack_variable : key -> t -> (Var.t * Location.t * ValueHistory.t) option
+
+  val has_unknown_effect : key -> t -> bool
 end
 
 include S with type key := AbstractValue.t

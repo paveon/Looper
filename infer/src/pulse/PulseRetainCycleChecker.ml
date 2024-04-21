@@ -13,8 +13,8 @@ let is_ref_counted_or_block addr astate =
   AddressAttributes.get_static_type addr astate
   |> Option.exists ~f:(fun typ_name -> Typ.Name.is_objc_class typ_name)
   ||
-  match AddressAttributes.get_dynamic_type addr astate with
-  | Some {Attribute.typ= {desc= Tstruct typ_name}} ->
+  match PulseArithmetic.get_dynamic_type addr astate with
+  | Some {typ= {desc= Tstruct typ_name}} ->
       Typ.Name.is_objc_class typ_name || Typ.Name.is_objc_block typ_name
   | _ ->
       false
@@ -24,39 +24,73 @@ let rec crop_seen_to_cycle seen_list addr =
   match seen_list with
   | [] ->
       []
-  | hd :: rest ->
-      if AbstractValue.equal hd addr then seen_list else crop_seen_to_cycle rest addr
+  | (value, _) :: rest ->
+      if AbstractValue.equal value addr then seen_list else crop_seen_to_cycle rest addr
+
+
+let has_static_dynamic_type astate v =
+  let has_static_type = AddressAttributes.get_static_type v astate |> Option.is_some in
+  has_static_type || PulseArithmetic.get_dynamic_type v astate |> Option.is_some
 
 
 let remove_non_objc_objects cycle astate =
-  let has_static_dynamic_type astate v =
-    let has_static_type = AddressAttributes.get_static_type v astate |> Option.is_some in
-    has_static_type || AddressAttributes.get_dynamic_type v astate |> Option.is_some
-  in
   List.filter ~f:(fun v -> not (has_static_dynamic_type astate v)) cycle
 
 
-let create_values astate get_assignment_trace cycle =
+let add_missing_objects path loc cycle astate =
+  let add_missing_object (astate, cycle) addr_hist =
+    if has_static_dynamic_type astate (fst addr_hist) then
+      match
+        PulseOperations.eval_access path NoAccess loc addr_hist MemoryAccess.TakeAddress astate
+      with
+      | Ok (astate, (value, hist)) | Recoverable ((astate, (value, hist)), _) ->
+          if
+            not
+              (List.mem cycle (value, hist) ~equal:(fun (value1, _) (value2, _) ->
+                   let expr1 = Decompiler.find value1 astate in
+                   let expr2 = Decompiler.find value2 astate in
+                   AbstractValue.equal value1 value2
+                   || DecompilerExpr.decomp_source_expr_equal expr1 expr2 ) )
+          then (astate, (value, hist) :: cycle)
+          else (astate, cycle)
+      | _ ->
+          (astate, cycle)
+    else (astate, cycle)
+  in
+  (* We aim to add the missing objects only on cycles of length 1 where this will help make the message clearer.
+     Here we write 2 because it's before we remove non objects (the values that have the dynamic type attribute) *)
+  if Int.equal (List.length cycle) 2 then List.fold ~f:add_missing_object cycle ~init:(astate, cycle)
+  else (astate, cycle)
+
+
+let get_assignment_trace astate addr =
+  AddressAttributes.get_written_to addr astate |> Option.map ~f:snd
+
+
+let create_values astate cycle =
   let values =
     List.map
       ~f:(fun v ->
         let value = Decompiler.find v astate in
         let trace = get_assignment_trace astate v in
         let location = Option.map ~f:Trace.get_outer_location trace in
-        (value, location) )
+        {Diagnostic.expr= value; location; trace} )
       cycle
   in
   let sorted_values =
-    List.sort ~compare:(fun (_, loc1) (_, loc2) -> Option.compare Location.compare loc1 loc2) values
+    List.sort
+      ~compare:(fun {Diagnostic.location= loc1} {Diagnostic.location= loc2} ->
+        Option.compare Location.compare loc1 loc2 )
+      values
   in
   List.map
-    ~f:(fun (value, loc) ->
+    ~f:(fun {Diagnostic.expr; location; trace} ->
       let location =
-        if DecompilerExpr.includes_captured_variable value || DecompilerExpr.includes_block value
-        then None
-        else loc
+        if DecompilerExpr.includes_captured_variable expr || DecompilerExpr.includes_block expr then
+          None
+        else location
       in
-      (value, location) )
+      {Diagnostic.expr; location; trace} )
     sorted_values
 
 
@@ -77,43 +111,56 @@ let create_values astate get_assignment_trace cycle =
    When reporting a retain cycle, we want to give the location of its
    creation, therefore we need to remember location of the latest assignement
    in the cycle *)
-let check_retain_cycles tenv addresses orig_astate =
-  let get_assignment_trace astate addr =
-    AddressAttributes.get_written_to addr astate |> Option.map ~f:snd
-  in
-  let compare_traces trace1 trace2 =
-    let loc1 = Trace.get_outer_location trace1 in
-    let loc2 = Trace.get_outer_location trace2 in
-    let compared_locs = Location.compare loc2 loc1 in
-    if Int.equal compared_locs 0 then Trace.compare trace1 trace2 else compared_locs
-  in
+let check_retain_cycles path tenv location addresses orig_astate =
   (* remember explored adresses to avoid reexploring path without retain cycles *)
   let checked = ref AbstractValue.Set.empty in
   let check_retain_cycle src_addr =
-    let rec contains_cycle ~assignment_traces ~seen (addr, hist) astate =
-      (* [assignment_traces] tracks the assignments met in the retain cycle
-         [seen] tracks addresses met in the current path
+    let rec contains_cycle ~seen (addr, hist) astate =
+      (* [seen] tracks addresses met in the current path
          [addr] is the address to explore
       *)
-      if AbstractValue.Set.mem addr !checked then Ok ()
+      if AbstractValue.Set.mem addr !checked then Ok astate
       else
         let value = Decompiler.find addr astate in
         let is_known = not (DecompilerExpr.is_unknown value) in
-        let is_seen = List.mem ~equal:AbstractValue.equal seen addr in
+        let is_seen =
+          List.mem
+            ~equal:(fun (value1, _) (value2, _) -> AbstractValue.equal value1 value2)
+            seen (addr, hist)
+        in
         let is_ref_counted_or_block = is_ref_counted_or_block addr astate in
-        if is_known && is_seen && is_ref_counted_or_block then
-          let assignment_traces = List.dedup_and_sort ~compare:compare_traces assignment_traces in
-          match assignment_traces with
-          | [] ->
-              Ok ()
-          | most_recent_trace :: _ ->
-              let location = Trace.get_outer_location most_recent_trace in
-              let seen = List.rev seen in
-              let cycle = crop_seen_to_cycle seen addr in
-              let cycle = remove_non_objc_objects cycle astate in
-              let values = create_values astate get_assignment_trace cycle in
-              let diagnostic = Diagnostic.RetainCycle {assignment_traces; values; location} in
-              Recoverable ((), [ReportableError {astate; diagnostic}])
+        let not_previously_reported =
+          not (AddressAttributes.is_in_reported_retain_cycle addr astate)
+        in
+        let path_condition = astate.AbductiveDomain.path_condition in
+        let is_not_null = not (PulseFormula.is_known_zero path_condition addr) in
+        if is_known && is_seen && is_ref_counted_or_block && not_previously_reported && is_not_null
+        then
+          let seen = List.rev seen in
+          let cycle = crop_seen_to_cycle seen addr in
+          let astate, cycle = add_missing_objects path location cycle astate in
+          let cycle = List.map ~f:fst cycle in
+          let cycle = remove_non_objc_objects cycle astate in
+          let values = create_values astate cycle in
+          if List.exists ~f:(fun {Diagnostic.trace} -> Option.is_some trace) values then
+            match List.rev values with
+            | {Diagnostic.trace} :: _ ->
+                let astate =
+                  List.fold ~init:astate
+                    ~f:(fun astate (addr, _) ->
+                      AddressAttributes.in_reported_retain_cycle addr astate )
+                    seen
+                in
+                let location =
+                  Option.value_map trace
+                    ~f:(fun trace -> Trace.get_outer_location trace)
+                    ~default:location
+                in
+                let diagnostic = Diagnostic.RetainCycle {values; location} in
+                Recoverable (astate, [ReportableError {astate; diagnostic}])
+            | [] ->
+                Ok astate
+          else Ok astate
         else (
           if is_seen && ((not is_known) || not is_ref_counted_or_block) then
             (* add the `UNKNOWN` address at which we have found a cycle to the [checked]
@@ -122,12 +169,12 @@ let check_retain_cycles tenv addresses orig_astate =
                we could loop forever otherwise *)
             checked := AbstractValue.Set.add addr !checked ;
           let res =
-            AbductiveDomain.Memory.fold_edges ~init:(Ok ()) addr astate
-              ~f:(fun acc (access, (accessed_addr, _)) ->
+            AbductiveDomain.Memory.fold_edges ~init:(Ok astate) addr astate
+              ~f:(fun acc (access, (accessed_addr, accessed_hist)) ->
                 match acc with
                 | Recoverable _ | FatalError _ ->
                     acc
-                | Ok () ->
+                | Ok astate ->
                     if PulseRefCounting.is_strong_access tenv access then
                       (* This is needed to update the decompiler and be able to get good values when printing the path (above).
                           We don't want to return those changes in the decompiler to the rest of the analysis though, that was
@@ -136,46 +183,38 @@ let check_retain_cycles tenv addresses orig_astate =
                         if not is_known then Memory.eval_edge (addr, hist) access astate |> fst
                         else astate
                       in
-                      let assignment_traces =
-                        match access with
-                        | MemoryAccess.FieldAccess _ -> (
-                          match get_assignment_trace astate accessed_addr with
-                          | None ->
-                              assignment_traces
-                          | Some assignment_trace ->
-                              assignment_trace :: assignment_traces )
-                        | _ ->
-                            assignment_traces
-                      in
-                      let seen = addr :: seen in
-                      contains_cycle ~assignment_traces ~seen (accessed_addr, hist) astate
-                    else Ok () )
+                      let seen = (addr, hist) :: seen in
+                      contains_cycle ~seen (accessed_addr, accessed_hist) astate
+                    else Ok astate )
           in
           (* all paths down [addr] have been explored *)
           checked := AbstractValue.Set.add addr !checked ;
           res )
     in
-    contains_cycle ~assignment_traces:[] ~seen:[] src_addr orig_astate
+    contains_cycle ~seen:[] src_addr orig_astate
   in
-  List.fold addresses ~init:(Ok ()) ~f:(fun acc (addr, hist) ->
+  List.fold addresses ~init:(Ok orig_astate) ~f:(fun acc (addr, hist) ->
       match acc with
       | Recoverable _ | FatalError _ ->
           acc
-      | Ok () ->
+      | Ok astate ->
           if is_ref_counted_or_block addr orig_astate then check_retain_cycle (addr, hist)
-          else Ok () )
+          else Ok astate )
 
 
-let check_retain_cycles_call tenv func_args ret_opt astate =
+let check_retain_cycles_call path tenv location func_args ret_opt astate =
   let actuals =
     let func_args = ValueOrigin.addr_hist_args func_args in
     List.map func_args ~f:(fun {ProcnameDispatcher.Call.FuncArg.arg_payload= addr_hist} ->
         addr_hist )
   in
   let addresses = Option.value_map ~default:actuals ~f:(fun ret -> ret :: actuals) ret_opt in
-  if Language.curr_language_is Language.Clang then check_retain_cycles tenv addresses astate
-  else Ok ()
+  if Language.curr_language_is Language.Clang then
+    check_retain_cycles path tenv location addresses astate
+  else Ok astate
 
 
-let check_retain_cycles_store tenv addr astate =
-  if Language.curr_language_is Language.Clang then check_retain_cycles tenv [addr] astate else Ok ()
+let check_retain_cycles_store path tenv location addr astate =
+  if Language.curr_language_is Language.Clang then
+    check_retain_cycles path tenv location [addr] astate
+  else Ok astate

@@ -50,6 +50,8 @@ let rec pp_access_expr fmt access_expr =
     F.fprintf fmt "%a%s%a" pp_access_expr access_expr sep Fieldname.pp field
   in
   match access_expr with
+  | ProgramVar pvar when Language.curr_language_is Language.Clang ->
+      Pvar.pp_value_non_verbose fmt pvar
   | ProgramVar pvar ->
       Pvar.pp_value fmt pvar
   | ProgramBlock block ->
@@ -159,6 +161,16 @@ type t = SourceExpr of source_expr * AbstractValue.t option | Unknown of Abstrac
 [@@deriving compare, equal]
 
 let abstract_value_of_expr = function Unknown v | SourceExpr (_, v) -> v
+
+let decomp_source_expr_equal expr1 expr2 =
+  match (expr1, expr2) with
+  | SourceExpr (source_expr1, _), SourceExpr (source_expr2, _) ->
+      let s1 = F.asprintf "%a" pp_source_expr source_expr1 in
+      let s2 = F.asprintf "%a" pp_source_expr source_expr2 in
+      String.equal s1 s2
+  | _ ->
+      false
+
 
 let pp fmt = function
   | Unknown _ ->

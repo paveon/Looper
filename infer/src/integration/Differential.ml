@@ -62,12 +62,15 @@ let create_json_bug ~qualifier ~suggestion ~line ~file ~source_file ~trace
   ; qualifier
   ; suggestion
   ; severity= IssueType.string_of_severity Advice
+  ; category= IssueType.string_of_category issue_type.category
   ; line
   ; column= item.loc.cnum
   ; procedure= item.procedure_id
   ; procedure_start_line= line
   ; file
   ; bug_trace= JsonReports.loc_trace_to_jsonbug_record trace
+  ; bug_trace_length= Errlog.loc_trace_length trace
+  ; bug_trace_max_depth= Errlog.loc_trace_max_depth trace
   ; key= ""
   ; node_key= None
   ; hash= item.hash

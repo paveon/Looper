@@ -159,8 +159,8 @@ module Unsafe : sig
               a broken (partial) summary application. *)
     ; aliases: HeapPath.Set.t HeapPath.Map.t
           (** if an alias was detected between a [addr_callee] and [addr_callee'] with heap path
-              accesses [path] nad [path'], then [aliases\[addr_callee\]] contains [addr_callee'],
-              where [rev_subst\[addr_caller\] = (addr_callee, path)]. *) }
+              accesses [path] nad [path'], then [aliases[addr_callee]] contains [addr_callee'],
+              where [rev_subst[addr_caller] = (addr_callee, path)]. *) }
 
   val to_caller_value_ :
        AbductiveDomain.t
@@ -951,11 +951,13 @@ let record_skipped_calls callee_proc_name call_loc callee_summary call_state =
 
 
 let record_transitive_info callee_proc_name call_location callee_summary call_state =
-  let astate =
-    AbductiveDomain.transfer_transitive_info_to_caller callee_proc_name call_location callee_summary
-      call_state.astate
-  in
-  {call_state with astate}
+  if PulseTransitiveAccessChecker.should_skip_call callee_proc_name then call_state
+  else
+    let astate =
+      AbductiveDomain.transfer_transitive_info_to_caller callee_proc_name call_location
+        callee_summary call_state.astate
+    in
+    {call_state with astate}
 
 
 let apply_unknown_effects callee_summary call_state =

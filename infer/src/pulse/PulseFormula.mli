@@ -27,7 +27,7 @@ type t [@@deriving compare, equal, yojson_of]
 val pp : F.formatter -> t -> unit
 
 val pp_with_pp_var : (F.formatter -> Var.t -> unit) -> F.formatter -> t -> unit
-  [@@warning "-unused-value-declaration"]
+[@@warning "-unused-value-declaration"]
 (** only used for unit tests *)
 
 type function_symbol = Unknown of Var.t | Procname of Procname.t [@@deriving compare, equal]
@@ -62,14 +62,18 @@ val and_equal_vars : Var.t -> Var.t -> t -> (t * new_eqs) SatUnsat.t
 
 val and_not_equal : operand -> operand -> t -> (t * new_eqs) SatUnsat.t
 
-val and_equal_instanceof :
-     Var.t
-  -> Var.t
-  -> Typ.t
-  -> get_dynamic_type:(Var.t -> Typ.t option)
-  -> tenv:Tenv.t
-  -> t
-  -> (t * new_eqs) SatUnsat.t
+val and_equal_instanceof : Var.t -> Var.t -> Typ.t -> t -> (t * new_eqs) SatUnsat.t
+
+type dynamic_type_data = {typ: Typ.t; source_file: SourceFile.t option}
+
+val get_dynamic_type : Var.t -> t -> dynamic_type_data option
+
+val and_dynamic_type_is :
+  Var.t -> Typ.t -> ?source_file:SourceFile.t -> t -> (t * new_eqs) SatUnsat.t
+
+val add_dynamic_type_unsafe : Var.t -> Typ.t -> ?source_file:SourceFile.t -> Location.t -> t -> t
+
+val copy_type_constraints : Var.t -> Var.t -> t -> t
 
 val and_less_equal : operand -> operand -> t -> (t * new_eqs) SatUnsat.t
 
@@ -79,26 +83,25 @@ val and_equal_unop : Var.t -> Unop.t -> operand -> t -> (t * new_eqs) SatUnsat.t
 
 val and_equal_binop : Var.t -> Binop.t -> operand -> operand -> t -> (t * new_eqs) SatUnsat.t
 
+val and_equal_string_concat : Var.t -> operand -> operand -> t -> (t * new_eqs) SatUnsat.t
+
 val and_is_int : Var.t -> t -> (t * new_eqs) SatUnsat.t
 
 val prune_binop : negated:bool -> Binop.t -> operand -> operand -> t -> (t * new_eqs) SatUnsat.t
 
 (** {3 Operations} *)
 
-val normalize : Tenv.t -> get_dynamic_type:(Var.t -> Typ.t option) -> t -> (t * new_eqs) SatUnsat.t
+val normalize : t -> (t * new_eqs) SatUnsat.t
 (** think a bit harder about the formula *)
 
 val simplify :
-     Tenv.t
-  -> get_dynamic_type:(Var.t -> Typ.t option)
-  -> precondition_vocabulary:Var.Set.t
-  -> keep:Var.Set.t
-  -> t
-  -> (t * Var.Set.t * new_eqs) SatUnsat.t
+  precondition_vocabulary:Var.Set.t -> keep:Var.Set.t -> t -> (t * Var.Set.t * new_eqs) SatUnsat.t
 
 val is_known_zero : t -> Var.t -> bool
 
-val get_known_constant_opt : t -> Var.t -> Q.t option
+val as_constant_q : t -> Var.t -> Q.t option
+
+val as_constant_string : t -> Var.t -> string option
 
 val is_known_non_pointer : t -> Var.t -> bool
 
@@ -140,3 +143,5 @@ val absval_of_int : t -> IntLit.t -> t * Var.t
     {!IR.IntLit.t}. The idea is that clients will record in the abstract state that the returned [t]
     is equal to the given integer. If the same integer is queried later on then this module will
     return the same abstract variable. *)
+
+val absval_of_string : t -> string -> t * Var.t

@@ -18,12 +18,37 @@ module FieldLabel : sig
 end
 
 module FieldPath : sig
-  (** The fields are listed in syntactic order: [\[a; b\]] for [x#a#b]. *)
+  (** A module to help manipulating lists of (nested) fields. *)
+
+  (** The fields are listed in syntactic order: [[a; b]] for [x#a#b]. *)
   type t = FieldLabel.t list [@@deriving compare, equal, sexp, hash, yojson_of]
 
   include Comparable.S with type t := t
 
   val pp : t Fmt.t
+end
+
+module VarPath : sig
+  (** A variable path is a pair of a variable and a possibly empty list of subscripted fields. They
+      are built from their in-program occurrences. They may semantically have sub-fields themselves:
+      it is the job of the {!Cell} module to determine the final graph nodes constructed from paths. *)
+
+  (** The type of variable paths: a variable and a possibly empty list of subscripted fields. *)
+  type t = Var.t * FieldPath.t
+
+  val var : Var.t -> t
+
+  val sub_label : t -> FieldLabel.t -> t
+  (** Subscript one sub-field from a variable path.*)
+
+  val sub_path : t -> FieldPath.t -> t
+  (** Subscript nested sub-fields from a variable path. *)
+
+  val make : Var.t -> FieldPath.t -> t
+
+  val pvar : Pvar.t -> t
+
+  val ident : Ident.t -> t
 end
 
 module Cell : sig
@@ -64,6 +89,26 @@ module Cell : sig
   val is_abstract : t -> bool
 
   val var_appears_in_source_code : t -> bool
+
+  val path_from_origin : origin:VarPath.t -> t -> FieldPath.t
+  (** Assuming the cell represents a component of the origin variable path, returns the sub-path
+      subscriptable from this origin path to reach the cell component.
+
+      If the cell is larger than the origin path (eg. because the origin path is longer than the
+      limit and the cells groups it with other paths), returns an empty path. The rationale is that
+      the result of this function can be seen as the subpath which, when extracted from the origin,
+      will cover all the components of that origin stored in the cell. If the cell is larger than
+      the origin then all the components of the origin are in the cell.
+
+      Raises if the cell and the origin path are incompatible (eg. their variables are different).
+
+      Examples assuming a depth limit of 3:
+
+      - origin: X#a ; cell: X#a#b#c ; result : #b#c
+      - origin: X#a#b#c ; cell : X#a#b#c ; result : empty
+      - origin: X#a#b#c ; cell : X#a#b#d ; result : raises
+      - origin: X#a#b#c ; cell : X#a#b#d ; result : raises
+      - origin: X#a#b#c#d ; cell : X#a#b#c ; result : empty *)
 end
 
 module Summary : sig
@@ -71,9 +116,11 @@ module Summary : sig
 
   val pp : Format.formatter -> t -> unit
 
+  val assert_equal_shapes : t option -> VarPath.t -> VarPath.t -> unit
+
   val fold_field_labels :
        t option
-    -> Var.t * FieldPath.t
+    -> VarPath.t
     -> init:'accum
     -> f:('accum -> FieldLabel.t -> 'accum)
     -> fallback:('accum -> 'accum)
@@ -85,8 +132,11 @@ module Summary : sig
 
       If the summary is [None], will always fallback. *)
 
-  val fold_cells :
-    t option -> Var.t * FieldPath.t -> init:'accum -> f:('accum -> Cell.t -> 'accum) -> 'accum
+  val as_field_label_singleton : t option -> VarPath.t -> FieldLabel.t option
+  (** If a variable path has the shape that corresponds to a single statically known label, return
+      it. *)
+
+  val fold_cells : t option -> VarPath.t -> init:'accum -> f:('accum -> Cell.t -> 'accum) -> 'accum
   (** Folds over all cells under a variable and field path. A field path is "terminal" if its length
       (that includes the prefixed fields given as parameters) is equal to
       {!IBase.Config.lineage_field_depth}, or no more field can be subscripted from its
@@ -99,33 +149,15 @@ module Summary : sig
       itself.
 
       If the summary is [None], [f] will be called once with a var-only abstract cell. *)
+end
 
-  val fold_cell_pairs :
-       t option
-    -> Var.t * FieldPath.t
-    -> Var.t * FieldPath.t
-    -> init:'accum
-    -> f:('accum -> Cell.t -> Cell.t -> 'accum)
-    -> 'accum
-  (** Folds over all corresponding cell pairs of two same-shape variable and field paths. See
-      {!fold_cells}.
+module StdModules : sig
+  (** Can be safely opened to provide module definitions at once. *)
 
-      Dies if the parameters do not have the same shape.
-
-      Note that, since the parameters field paths may not have the same length, [f] may be called on
-      field paths of different lengths. For instance, if the parameters [var#field1] and
-      [var'#field2#field3] don't have any subfield, then [f] will be called with [#field1] and
-      [#field2#field3].
-
-      Also, since the parameters lengths are taken into account for determining the depth of the
-      result, the arguments of [f] may not have the same suffix when extracting these parameters:
-      for instance, if [Config.lineage_field_depth = 1] and [var] and [var'#field] have a subfield
-      [foo], then [f] will be called on [#foo] and [#field].
-
-      The same width limitation as the function {!fold_cells} is ensured for both parameters (even
-      if these parameters cross wide shapes, the result will not).
-
-      If the summary is [None], [f] will be called once with a var-only abstract cells pair. *)
+  module FieldLabel = FieldLabel
+  module FieldPath = FieldPath
+  module VarPath = VarPath
+  module Cell = Cell
 end
 
 val checker : Summary.t InterproceduralAnalysis.t -> Summary.t option

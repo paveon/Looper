@@ -174,7 +174,7 @@ void call_init_ptr_zero_good() {
   int y = x;
 }
 
-int uninit_if_zero_latent(int a) {
+int uninit_if_zero_bad(int a) {
   int x;
   if (a == 0) {
     int y = x + 1;
@@ -185,11 +185,10 @@ int uninit_if_zero_latent(int a) {
 }
 
 void uninit_interproc_manifest_bad() {
-  int x = uninit_if_zero_latent(0);
+  int x = uninit_if_zero_bad(0);
   if (x == 4) {
     int* p = NULL;
     *p = 42; // NPE to test that uninit didn't terminate the symbolic execution
-    // currently FN as uninit does in fact terminate symbolic execution
   }
 }
 

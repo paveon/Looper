@@ -37,14 +37,14 @@ let write_field path field new_val location addr astate =
 
 
 let instance_of (argv, hist) typeexpr : model_no_non_disj =
- fun {location; path; ret= ret_id, _; analysis_data= {tenv}; _} astate ->
+ fun {location; path; ret= ret_id, _} astate ->
   if Language.curr_language_is Hack then
     let event = Hist.call_event path location "Hack.instanceof" in
     let res_addr = AbstractValue.mk_fresh () in
     (* Just copying the Java version to see how well it works *)
     match typeexpr with
     | Exp.Sizeof {typ} ->
-        let<++> astate = PulseArithmetic.and_equal_instanceof res_addr argv typ ~tenv astate in
+        let<++> astate = PulseArithmetic.and_equal_instanceof res_addr argv typ astate in
         PulseOperations.write_id ret_id (res_addr, Hist.add_event path event hist) astate
     | _ ->
         astate |> Basic.ok_continue
@@ -53,7 +53,7 @@ let instance_of (argv, hist) typeexpr : model_no_non_disj =
     let res_addr = AbstractValue.mk_fresh () in
     match typeexpr with
     | Exp.Sizeof {typ} ->
-        let<++> astate = PulseArithmetic.and_equal_instanceof res_addr argv typ ~tenv astate in
+        let<++> astate = PulseArithmetic.and_equal_instanceof res_addr argv typ astate in
         PulseOperations.write_id ret_id (res_addr, Hist.add_event path event hist) astate
     (* The type expr is sometimes a Var expr but this is not expected.
        This seems to be introduced by inline mechanism of Java synthetic methods during preanalysis *)
@@ -68,7 +68,7 @@ let call_may_throw_exception (exn : JavaClassName.t) : model_no_non_disj =
   let desc = Printf.sprintf "throw_%s" exn_name in
   let ret_alloc_hist = Hist.single_alloc path location desc in
   let typ = Typ.mk_struct (Typ.JavaClass exn) in
-  let astate = PulseOperations.add_dynamic_type typ ret_addr astate in
+  let astate = PulseArithmetic.and_dynamic_type_is_unsafe ret_addr typ location astate in
   let ret_var = Procdesc.get_ret_var analysis_data.proc_desc in
   let astate, ref = PulseOperations.eval_var path location ret_var astate in
   let obj = (ret_addr, ret_alloc_hist) in

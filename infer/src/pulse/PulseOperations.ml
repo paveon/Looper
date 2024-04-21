@@ -165,6 +165,14 @@ let write_deref path location ~ref:addr_trace_ref ~obj:addr_trace_obj astate =
   write_access path location addr_trace_ref Dereference addr_trace_obj astate
 
 
+let degrade_mode addr astate mode =
+  match mode with
+  | Read when AbductiveDomain.AddressAttributes.has_unknown_effect addr astate ->
+      NoAccess
+  | _ ->
+      mode
+
+
 let rec eval (path : PathContext.t) mode location exp astate :
     (t * (AbstractValue.t * ValueHistory.t)) PulseOperationResult.t =
   let++ astate, value_origin = eval_to_value_origin path mode location exp astate in
@@ -179,22 +187,16 @@ and record_closure astate (path : PathContext.t) loc procname
     match (Procname.get_class_type_name procname, procname) with
     | Some typ_name, _ when Procname.is_cpp_lambda procname ->
         let typ = Typ.mk (Typ.Tstruct typ_name) in
-        AddressAttributes.add_one (fst closure_addr_hist)
-          (Attribute.DynamicType {typ; source_file= None})
-          astate
+        PulseArithmetic.and_dynamic_type_is_unsafe (fst closure_addr_hist) typ loc astate
     | _, Procname.Block bsig ->
         let typ = Typ.mk (Typ.Tstruct (Typ.ObjcBlock bsig)) in
         let astate =
-          AddressAttributes.add_one (fst closure_addr_hist)
-            (Attribute.DynamicType {typ; source_file= None})
-            astate
+          PulseArithmetic.and_dynamic_type_is_unsafe (fst closure_addr_hist) typ loc astate
         in
         AbductiveDomain.add_block_source (fst closure_addr_hist) bsig.name astate
     | _, Procname.C csig ->
         let typ = Typ.mk (Typ.Tstruct (Typ.CFunction csig)) in
-        AddressAttributes.add_one (fst closure_addr_hist)
-          (Attribute.DynamicType {typ; source_file= None})
-          astate
+        PulseArithmetic.and_dynamic_type_is_unsafe (fst closure_addr_hist) typ loc astate
     | _ ->
         astate
   in
@@ -232,11 +234,13 @@ and eval_to_value_origin (path : PathContext.t) mode location exp astate :
   | Lvar pvar ->
       Sat (Ok (eval_var_to_value_origin path location pvar astate))
   | Lfield (exp', field, _) ->
-      let+* astate, addr_hist = eval path Read location exp' astate in
+      let+* astate, ((addr, _) as addr_hist) = eval path Read location exp' astate in
+      let mode = degrade_mode addr astate mode in
       eval_access_to_value_origin path mode location addr_hist (FieldAccess field) astate
   | Lindex (exp', exp_index) ->
       let** astate, addr_hist_index = eval path Read location exp_index astate in
-      let+* astate, addr_hist = eval path Read location exp' astate in
+      let+* astate, ((addr, _) as addr_hist) = eval path Read location exp' astate in
+      let mode = degrade_mode addr astate mode in
       eval_access_to_value_origin path mode location addr_hist
         (ArrayAccess (StdTyp.void, fst addr_hist_index))
         astate
@@ -279,18 +283,12 @@ and eval_to_value_origin (path : PathContext.t) mode location exp astate :
       in
       Sat (Ok (astate, ValueOrigin.Unknown addr_hist))
   | Const (Cstr s) ->
-      (* TODO: record actual string value; since we are making strings be a record in memory
-         instead of pure values some care has to be added to access string values once written *)
-      let v = AbstractValue.mk_fresh () in
-      let=* astate, (len_addr, hist) =
-        eval_access path Write location
-          (v, ValueHistory.singleton (Assignment (location, path.timestamp)))
-          (FieldAccess ModeledField.string_length) astate
-      in
-      let len_int = IntLit.of_int (String.length s) in
-      let++ astate = PulseArithmetic.and_eq_int len_addr len_int astate in
-      let astate = AddressAttributes.add_one v (ConstString s) astate in
-      (astate, ValueOrigin.Unknown (v, hist))
+      let astate, v = PulseArithmetic.absval_of_string astate s in
+      Sat
+        (Ok
+           ( astate
+           , ValueOrigin.Unknown (v, ValueHistory.singleton (Assignment (location, path.timestamp)))
+           ) )
   | Const ((Cfloat _ | Cclass _) as c) ->
       let v = AbstractValue.mk_fresh () in
       let++ astate = PulseArithmetic.and_eq_const v c astate in
@@ -351,9 +349,29 @@ let prune path location ~condition astate =
   prune_aux ~negated:false condition astate
 
 
+let degrade_mode_exp path location exp astate mode =
+  let rec has_unknown_effect exp =
+    match (exp : Exp.t) with
+    | Lfield (exp, _, _) | Lindex (exp, _) ->
+        let** astate, (addr, _) = eval path NoAccess location exp astate in
+        if AddressAttributes.has_unknown_effect addr astate then Sat (Ok true)
+        else has_unknown_effect exp
+    | _ ->
+        let** astate, (addr, _) = eval path NoAccess location exp astate in
+        Sat (Ok (AddressAttributes.has_unknown_effect addr astate))
+  in
+  match mode with
+  | Read ->
+      let++ has_unknown_effect = has_unknown_effect exp in
+      if has_unknown_effect then NoAccess else Read
+  | _ ->
+      Sat (Ok mode)
+
+
 let eval_deref_to_value_origin path ?must_be_valid_reason location exp astate =
-  let+* astate, addr_hist = eval path Read location exp astate in
-  let+ astate = check_addr_access path ?must_be_valid_reason Read location addr_hist astate in
+  let** astate, addr_hist = eval path Read location exp astate in
+  let+* mode = degrade_mode_exp path location exp astate Read in
+  let+ astate = check_addr_access path ?must_be_valid_reason mode location addr_hist astate in
   let astate, dest_addr_hist = Memory.eval_edge addr_hist Dereference astate in
   (astate, ValueOrigin.InMemory {src= addr_hist; access= Dereference; dest= dest_addr_hist})
 
@@ -391,10 +409,10 @@ let write_id id new_addr_loc astate = Stack.add (Var.of_id id) new_addr_loc asta
 
 let read_id id astate = Stack.find_opt (Var.of_id id) astate
 
-let add_static_type_objc_class tenv typ address astate =
+let add_static_type_objc_class tenv typ address location astate =
   match typ with
   | {Typ.desc= Typ.Tptr ({Typ.desc= Tstruct (ObjcClass class_name)}, _)} ->
-      AddressAttributes.add_static_type tenv (ObjcClass class_name) address astate
+      AddressAttributes.add_static_type tenv (ObjcClass class_name) address location astate
   | _ ->
       astate
 
@@ -442,7 +460,7 @@ let hack_python_propagates_type_on_load tenv path loc rhs_exp addr astate =
           let+ field_typ_name =
             if Typ.is_pointer field_typ then Typ.name (Typ.strip_ptr field_typ) else None
           in
-          AbductiveDomain.AddressAttributes.add_static_type tenv field_typ_name addr astate
+          AbductiveDomain.AddressAttributes.add_static_type tenv field_typ_name addr loc astate
       | _ ->
           None
     else None )
@@ -532,10 +550,6 @@ let add_dict_read_const_key timestamp trace address key astate =
   else Ok (AddressAttributes.add_dict_read_const_key timestamp trace address key astate)
 
 
-let add_dynamic_type typ ?source_file address astate =
-  AddressAttributes.add_dynamic_type {typ; source_file} address astate
-
-
 let remove_allocation_attr address astate = AddressAttributes.remove_allocation_attr address astate
 
 type invalidation_access =
@@ -618,7 +632,8 @@ let shallow_copy path location addr_hist astate =
   let cell_opt = AbductiveDomain.find_post_cell_opt (fst addr_hist) astate in
   let copy = (AbstractValue.mk_fresh (), snd addr_hist) in
   ( Option.value_map cell_opt ~default:astate ~f:(fun cell ->
-        AbductiveDomain.set_post_cell path copy cell location astate )
+        let astate = AbductiveDomain.set_post_cell path copy cell location astate in
+        PulseArithmetic.copy_type_constraints (fst addr_hist) (fst copy) astate )
   , copy )
 
 
@@ -641,6 +656,7 @@ let rec deep_copy ?depth_max ({PathContext.timestamp} as path) location addr_his
             in
             Memory.add_edge path copy access addr_hist_dest_copy location astate )
       in
+      let astate = PulseArithmetic.copy_type_constraints (fst addr_hist_src) (fst copy) astate in
       let astate =
         AddressAttributes.find_opt (fst addr_hist_src) astate
         |> Option.value_map ~default:astate ~f:(fun src_attrs ->
@@ -738,8 +754,7 @@ let get_dynamic_type_unreachable_values vars astate =
   let res =
     List.fold unreachable_addrs ~init:[] ~f:(fun res addr ->
         (let open IOption.Let_syntax in
-         let* attrs = AbductiveDomain.AddressAttributes.find_opt addr astate in
-         let* ({typ} : Attribute.dynamic_type_data) = Attributes.get_dynamic_type attrs in
+         let* {Formula.typ} = PulseArithmetic.get_dynamic_type addr astate in
          let+ var = find_var_opt astate addr in
          (var, addr, typ) :: res )
         |> Option.value ~default:res )
@@ -859,7 +874,7 @@ let check_used_as_branch_cond (addr, hist) ~pname_using_config ~branch_location 
   | Some (ConfigName config) ->
       if FbPulseConfigName.has_config_read hist then report_config_usage config else Ok astate
   | Some (StringParam {v; config_type}) -> (
-    match AddressAttributes.get_const_string v astate with
+    match PulseArithmetic.as_constant_string astate v with
     | None ->
         Ok astate
     | Some s ->

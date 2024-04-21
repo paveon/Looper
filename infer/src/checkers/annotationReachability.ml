@@ -42,8 +42,28 @@ let is_allocator tenv pname =
       false
 
 
+type custom_model = {method_regex: string; annotation: string} [@@deriving of_yojson]
+
+type custom_models = custom_model list [@@deriving of_yojson]
+
+let parse_custom_models () =
+  match Config.annotation_reachability_custom_models with
+  (* The default value for JSON options is an empty list and not an empty object *)
+  | `List [] ->
+      String.Map.empty
+  | json ->
+      json |> Yojson.Safe.Util.to_assoc
+      |> List.map ~f:(fun (key, val_arr) ->
+             ( key
+             , val_arr |> Yojson.Safe.Util.to_list
+               |> List.map ~f:Yojson.Safe.Util.to_string
+               |> List.map ~f:Str.regexp ) )
+      |> String.Map.of_alist_exn
+
+
 let check_attributes check tenv pname =
-  PatternMatch.Java.check_class_attributes check tenv pname
+  Config.annotation_reachability_apply_class_annotations
+  && PatternMatch.Java.check_class_attributes check tenv pname
   || Annotations.pname_has_return_annot pname check
 
 
@@ -51,7 +71,13 @@ let method_overrides is_annotated tenv pname =
   PatternMatch.override_exists (fun pn -> is_annotated tenv pn) tenv pname
 
 
-let method_has_annot annot tenv pname =
+let check_modeled_annotation models annot pname =
+  let method_name = Procname.to_string ~verbosity:Verbose pname in
+  Option.exists (String.Map.find models annot.Annot.class_name) ~f:(fun methods ->
+      List.exists methods ~f:(fun r -> Str.string_match r method_name 0) )
+
+
+let method_has_annot annot models tenv pname =
   let has_annot ia = Annotations.ia_ends_with ia annot.Annot.class_name in
   if
     Config.annotation_reachability_no_allocation
@@ -61,10 +87,12 @@ let method_has_annot annot tenv pname =
     Config.annotation_reachability_expensive
     && Annotations.annot_ends_with annot Annotations.expensive
   then check_attributes has_annot tenv pname || is_modeled_expensive tenv pname
-  else check_attributes has_annot tenv pname
+  else check_attributes has_annot tenv pname || check_modeled_annotation models annot pname
 
 
-let method_overrides_annot annot tenv pname = method_overrides (method_has_annot annot) tenv pname
+let method_overrides_annot annot models tenv pname =
+  method_overrides (method_has_annot annot models) tenv pname
+
 
 let lookup_annotation_calls {InterproceduralAnalysis.analyze_dependency} annot pname =
   analyze_dependency pname
@@ -103,11 +131,10 @@ let report_annotation_stack ({InterproceduralAnalysis.proc_desc; err_log} as ana
     let final_trace = List.rev (update_trace call_loc trace) in
     let exp_pname_str = string_of_pname snk_pname in
     let description =
-      Format.asprintf "Method %a annotated with %a calls %a where %a is annotated with %a"
-        MF.pp_monospaced
+      Format.asprintf "Method %a (annotated with %a) calls %a (annotated with %a)" MF.pp_monospaced
         (Procname.to_simplified_string src_pname)
         MF.pp_monospaced ("@" ^ src_annot) MF.pp_monospaced exp_pname_str MF.pp_monospaced
-        exp_pname_str MF.pp_monospaced ("@" ^ snk_annot)
+        ("@" ^ snk_annot)
     in
     let issue_type =
       if String.equal src_annot Annotations.performance_critical then
@@ -155,22 +182,23 @@ let report_call_stack end_of_stack lookup_next_calls report call_site sink_map =
 
 
 let report_src_snk_path ({InterproceduralAnalysis.proc_desc; tenv} as analysis_data) sink_map
-    snk_annot src_annot =
+    snk_annot models src_annot =
   let proc_name = Procdesc.get_proc_name proc_desc in
   let loc = Procdesc.get_loc proc_desc in
-  if method_overrides_annot src_annot tenv proc_name then
+  if method_overrides_annot src_annot models tenv proc_name then
     let f_report =
       report_annotation_stack analysis_data src_annot.Annot.class_name snk_annot.Annot.class_name
     in
-    report_call_stack (method_has_annot snk_annot tenv)
+    report_call_stack
+      (method_overrides_annot snk_annot models tenv)
       (lookup_annotation_calls analysis_data snk_annot)
       f_report (CallSite.make proc_name loc) sink_map
 
 
-let report_src_snk_paths proc_data annot_map src_annot_list snk_annot =
+let report_src_snk_paths proc_data annot_map src_annot_list snk_annot models =
   try
     let sink_map = Domain.find snk_annot annot_map in
-    List.iter ~f:(report_src_snk_path proc_data sink_map snk_annot) src_annot_list
+    List.iter ~f:(report_src_snk_path proc_data sink_map snk_annot models) src_annot_list
   with Caml.Not_found -> ()
 
 
@@ -191,18 +219,20 @@ module AnnotationSpec = struct
 end
 
 module StandardAnnotationSpec = struct
-  let from_annotations str_src_annots str_snk_annot =
+  let from_annotations str_src_annots str_snk_annot str_sanitizer_annots models =
     let src_annots = List.map str_src_annots ~f:annotation_of_str in
+    let sanitizer_annots = List.map str_sanitizer_annots ~f:annotation_of_str in
     let snk_annot = annotation_of_str str_snk_annot in
-    let has_annot ia = Annotations.ia_ends_with ia snk_annot.Annot.class_name in
     let open AnnotationSpec in
     { description= "StandardAnnotationSpec"
-    ; sink_predicate= (fun tenv pname -> check_attributes has_annot tenv pname)
-    ; sanitizer_predicate= default_sanitizer
+    ; sink_predicate= (fun tenv pname -> method_overrides_annot snk_annot models tenv pname)
+    ; sanitizer_predicate=
+        (fun tenv pname ->
+          List.exists sanitizer_annots ~f:(fun s -> method_overrides_annot s models tenv pname) )
     ; sink_annotation= snk_annot
     ; report=
-        (fun proc_data annot_map -> report_src_snk_paths proc_data annot_map src_annots snk_annot)
-    }
+        (fun proc_data annot_map ->
+          report_src_snk_paths proc_data annot_map src_annots snk_annot models ) }
 end
 
 module CxxAnnotationSpecs = struct
@@ -380,7 +410,8 @@ module NoAllocationAnnotationSpec = struct
     ; sink_annotation= constructor_annot
     ; report=
         (fun proc_data annot_map ->
-          report_src_snk_paths proc_data annot_map [no_allocation_annot] constructor_annot ) }
+          report_src_snk_paths proc_data annot_map [no_allocation_annot] constructor_annot
+            String.Map.empty ) }
 end
 
 module ExpensiveAnnotationSpec = struct
@@ -423,33 +454,29 @@ module ExpensiveAnnotationSpec = struct
             PatternMatch.override_iter
               (check_expensive_subtyping_rules analysis_data)
               tenv proc_name ;
-          report_src_snk_paths analysis_data astate [performance_critical_annot] expensive_annot )
-    }
+          report_src_snk_paths analysis_data astate [performance_critical_annot] expensive_annot
+            String.Map.empty ) }
 end
 
-(* parse user-defined specs from .inferconfig *)
-let parse_user_defined_specs = function
-  | `List user_specs ->
-      let parse_user_spec json =
-        let open Yojson.Basic in
-        let sources = Util.member "sources" json |> Util.to_list |> List.map ~f:Util.to_string in
-        let sinks = Util.member "sinks" json |> Util.to_list |> List.map ~f:Util.to_string in
-        (sources, sinks)
-      in
-      List.map ~f:parse_user_spec user_specs
-  | _ ->
-      []
+type user_defined_spec =
+  {sources: string list; sinks: string list; sanitizers: string list [@yojson.default []]}
+[@@deriving of_yojson]
 
+type user_defined_specs = user_defined_spec list [@@deriving of_yojson]
 
 let annot_specs =
-  let parse_one_spec (str_src_annots, str_snk_annots) =
+  let models = parse_custom_models () in
+  let make_standard_spec_from_user_spec {sources; sinks; sanitizers} =
     List.map
-      ~f:(fun str_snk_annot -> StandardAnnotationSpec.from_annotations str_src_annots str_snk_annot)
-      str_snk_annots
+      ~f:(fun sink -> StandardAnnotationSpec.from_annotations sources sink sanitizers models)
+      sinks
   in
   let user_defined_specs =
-    parse_user_defined_specs Config.annotation_reachability_custom_pairs
-    |> List.map ~f:parse_one_spec
+    let specs =
+      try user_defined_specs_of_yojson Config.annotation_reachability_custom_pairs
+      with _ -> L.die ExternalError "Could not parse annotation reachability custom pairs@."
+    in
+    List.map specs ~f:make_standard_spec_from_user_spec
   in
   let user_defined_specs = List.concat user_defined_specs in
   [ (Language.Clang, CxxAnnotationSpecs.from_config ())

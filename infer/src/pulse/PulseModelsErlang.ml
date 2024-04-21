@@ -52,15 +52,15 @@ let write_field_and_deref path location ~struct_addr ~field_addr ~field_val fiel
 let get_erlang_type_or_any val_ astate =
   let open IOption.Let_syntax in
   let typename =
-    let* {Attribute.typ} = AbductiveDomain.AddressAttributes.get_dynamic_type val_ astate in
+    let* {Formula.typ} = PulseArithmetic.get_dynamic_type val_ astate in
     Typ.name typ
   in
   match typename with Some (Typ.ErlangType erlang_type) -> erlang_type | _ -> ErlangTypeName.Any
 
 
-let write_dynamic_type_and_return (addr_val, hist) typ ret_id astate =
+let write_dynamic_type_and_return (addr_val, hist) typ ret_id location astate =
   let typ = Typ.mk_struct (ErlangType typ) in
-  let astate = PulseOperations.add_dynamic_type typ addr_val astate in
+  let astate = PulseArithmetic.and_dynamic_type_is_unsafe addr_val typ location astate in
   PulseOperations.write_id ret_id (addr_val, hist) astate
 
 
@@ -83,12 +83,12 @@ let eval_into_fresh eval =
     example, consider [f] of type ['a->('b,'err) result list] and [g] of type
     ['b->('c,'err) result list] and [a] is some value of type ['a]. Note that the type of error is
     the same, so they can be propagated forward. To chain the application of these functions, you
-    can write [let> x=f a in let> y=g x in \[Ok y\]].
+    can write [let> x=f a in let> y=g x in [Ok y]].
 
     In several places, we have to compose with functions of the type ['a->('b,'err) result], which
     don't produce a list. One way to handle this is to wrap those functions in a list. For example,
     if [f] and [a] have the same type as before but [g] has type ['b->('c,'err) result], then we can
-    write [let> =f a in let> y=\[g x\] in \[Ok y\].] *)
+    write [let> =f a in let> y=[g x] in [Ok y].] *)
 let ( let> ) x f =
   List.concat_map
     ~f:(function
@@ -125,22 +125,22 @@ let value_die message opt =
 
 (** Builds as an abstract value the truth value of the predicate "The value given as an argument as
     the erlang type given as the other argument" *)
-let has_erlang_type value typ ~tenv : value_maker =
+let has_erlang_type value typ : value_maker =
  fun astate ->
   let instanceof_val = AbstractValue.mk_fresh () in
   let sil_type = Typ.mk_struct (ErlangType typ) in
-  let++ astate = PulseArithmetic.and_equal_instanceof instanceof_val value sil_type ~tenv astate in
+  let++ astate = PulseArithmetic.and_equal_instanceof instanceof_val value sil_type astate in
   (astate, instanceof_val)
 
 
-let prune_type path location (value, hist) typ ~tenv astate : AbductiveDomain.t result =
+let prune_type path location (value, hist) typ astate : AbductiveDomain.t result =
   (let open SatUnsat.Import in
    let* astate =
      (* If check_addr_access fails, we stop exploring this path by marking it [Unsat] *)
      PulseOperations.check_addr_access path Read location (value, hist) astate
      |> PulseResult.ok |> SatUnsat.of_option
    in
-   let** astate, instanceof_val = has_erlang_type value typ ~tenv astate in
+   let** astate, instanceof_val = has_erlang_type value typ astate in
    PulseArithmetic.prune_positive instanceof_val astate )
   |> SatUnsat.to_list
 
@@ -273,7 +273,7 @@ module Atoms = struct
 
   let get_name path location var astate : string option =
     let _astate, _addr, (name, _) = load_field path name_field location var astate in
-    AbductiveDomain.AddressAttributes.get_const_string name astate
+    PulseArithmetic.as_constant_string astate name
 
 
   let make_raw location path name hash : sat_maker =
@@ -290,7 +290,8 @@ module Atoms = struct
         ~field_addr:(AbstractValue.mk_fresh (), hist)
         ~field_val:hash hash_field astate
     in
-    ( PulseOperations.add_dynamic_type (Typ.mk_struct (ErlangType Atom)) (fst addr_atom) astate
+    ( PulseArithmetic.and_dynamic_type_is_unsafe (fst addr_atom) (Typ.mk_struct (ErlangType Atom))
+        location astate
     , addr_atom )
 
 
@@ -327,7 +328,8 @@ module Atoms = struct
     in
     let> astate, (addr, hist) = SatUnsat.to_list astate_true @ SatUnsat.to_list astate_false in
     let typ = Typ.mk_struct (ErlangType Atom) in
-    [Ok (PulseOperations.add_dynamic_type typ addr astate, (addr, hist))]
+    let astate = PulseArithmetic.and_dynamic_type_is_unsafe addr typ location astate in
+    [Ok (astate, (addr, hist))]
 
 
   (** Takes a boolean value, converts it to true/false atom and writes to return value. *)
@@ -350,7 +352,8 @@ module Integers = struct
         ~field_addr:(AbstractValue.mk_fresh (), hist)
         ~field_val:value value_field astate
     in
-    (PulseOperations.add_dynamic_type typ (fst addr) astate, addr)
+    let astate = PulseArithmetic.and_dynamic_type_is_unsafe (fst addr) typ location astate in
+    (astate, addr)
 
 
   let make value : model_no_non_disj =
@@ -568,7 +571,7 @@ module Comparison = struct
       the actual comparison operator that we're computing. For instance the equality of atoms can be
       decided on their hash, but their relative ordering should check their names as
       lexicographically ordered strings. *)
-  let make_raw (cmp : Comparator.t) location path ((x_val, _) as x) ((y_val, _) as y) ~tenv :
+  let make_raw (cmp : Comparator.t) location path ((x_val, _) as x) ((y_val, _) as y) :
       disjunction_maker =
    fun astate ->
     let x_typ = get_erlang_type_or_any x_val astate in
@@ -584,22 +587,22 @@ module Comparison = struct
         let hist = Hist.single_call path location "atom_comparison" in
         [Ok (astate, (result, hist))]
     | Integer, Any ->
-        let> astate = prune_type path location y Integer ~tenv astate in
+        let> astate = prune_type path location y Integer astate in
         let<**> astate, result = cmp.integer x y location path astate in
         let hist = Hist.single_call path location "integer_any_comparison" in
         [Ok (astate, (result, hist))]
     | Any, Integer ->
-        let> astate = prune_type path location x Integer ~tenv astate in
+        let> astate = prune_type path location x Integer astate in
         let<**> astate, result = cmp.integer x y location path astate in
         let hist = Hist.single_call path location "any_integer_comparison" in
         [Ok (astate, (result, hist))]
     | Atom, Any ->
-        let> astate = prune_type path location y Atom ~tenv astate in
+        let> astate = prune_type path location y Atom astate in
         let<**> astate, result = cmp.atom x y location path astate in
         let hist = Hist.single_call path location "atom_any_comparison" in
         [Ok (astate, (result, hist))]
     | Any, Atom ->
-        let> astate = prune_type path location x Atom ~tenv astate in
+        let> astate = prune_type path location x Atom astate in
         let<**> astate, result = cmp.atom x y location path astate in
         let hist = Hist.single_call path location "any_atom_comparison" in
         [Ok (astate, (result, hist))]
@@ -616,14 +619,14 @@ module Comparison = struct
   (** A model of comparison operators where we store in the destination the result of comparing two
       parameters. *)
   let make cmp x y : model_no_non_disj =
-   fun {location; path; ret= ret_id, _; analysis_data= {tenv}} astate ->
-    let> astate, (result, _hist) = make_raw cmp location path x y ~tenv astate in
+   fun {location; path; ret= ret_id, _} astate ->
+    let> astate, (result, _hist) = make_raw cmp location path x y astate in
     Atoms.write_return_from_bool path location result ret_id astate
 
 
   (** Returns an abstract state that has been pruned on the comparison result being true. *)
-  let prune cmp location path x y ~tenv astate : AbductiveDomain.t AccessResult.t list =
-    let> astate, (comparison, _hist) = make_raw cmp location path x y ~tenv astate in
+  let prune cmp location path x y astate : AbductiveDomain.t AccessResult.t list =
+    let> astate, (comparison, _hist) = make_raw cmp location path x y astate in
     PulseArithmetic.prune_positive comparison astate |> SatUnsat.to_list
 
 
@@ -656,7 +659,8 @@ module Lists = struct
     let addr_nil_val = AbstractValue.mk_fresh () in
     let addr_nil = (addr_nil_val, Hist.single_event path event) in
     let astate =
-      PulseOperations.add_dynamic_type (Typ.mk_struct (ErlangType Nil)) addr_nil_val astate
+      PulseArithmetic.and_dynamic_type_is_unsafe addr_nil_val (Typ.mk_struct (ErlangType Nil))
+        location astate
     in
     Ok (astate, addr_nil)
 
@@ -685,7 +689,8 @@ module Lists = struct
         ~field_val:tl tail_field astate
     in
     let astate =
-      PulseOperations.add_dynamic_type (Typ.mk_struct (ErlangType Cons)) addr_cons_val astate
+      PulseArithmetic.and_dynamic_type_is_unsafe addr_cons_val (Typ.mk_struct (ErlangType Cons))
+        location astate
     in
     (astate, addr_cons)
 
@@ -704,7 +709,8 @@ module Lists = struct
             ~field_val:fval field astate
         in
         let astate' =
-          PulseOperations.add_dynamic_type (Typ.mk_struct (ErlangType Cons)) (fst addr_cons) astate'
+          PulseArithmetic.and_dynamic_type_is_unsafe (fst addr_cons)
+            (Typ.mk_struct (ErlangType Cons)) location astate'
         in
         (astate', addr_cons)
     | (fname, fval) :: fld_ls' ->
@@ -734,36 +740,36 @@ module Lists = struct
 
 
   (** Assumes that the argument is a Cons and loads the head and tail *)
-  let load_head_tail cons ~tenv astate path location =
-    let> astate = prune_type path location cons Cons ~tenv astate in
+  let load_head_tail cons astate path location =
+    let> astate = prune_type path location cons Cons astate in
     let astate, _, head = load_field path head_field location cons astate in
     let astate, _, tail = load_field path tail_field location cons astate in
     [Ok (head, tail, astate)]
 
 
   (** Assumes that a list is of given length and reads the elements *)
-  let rec assume_and_deconstruct list length ~tenv astate path location =
+  let rec assume_and_deconstruct list length astate path location =
     match length with
     | 0 ->
-        let> astate = prune_type path location list Nil ~tenv astate in
+        let> astate = prune_type path location list Nil astate in
         [Ok ([], astate)]
     | _ ->
-        let> hd, tl, astate = load_head_tail list ~tenv astate path location in
-        let> elems, astate = assume_and_deconstruct tl (length - 1) ~tenv astate path location in
+        let> hd, tl, astate = load_head_tail list astate path location in
+        let> elems, astate = assume_and_deconstruct tl (length - 1) astate path location in
         [Ok (hd :: elems, astate)]
 
 
-  let make_astate_badarg (list_val, _list_hist) data ~tenv astate =
+  let make_astate_badarg (list_val, _list_hist) data astate =
     (* arg is not a list if its type is neither Cons nor Nil *)
     let typ_cons = Typ.mk_struct (ErlangType Cons) in
     let typ_nil = Typ.mk_struct (ErlangType Nil) in
     let instanceof_val_cons = AbstractValue.mk_fresh () in
     let instanceof_val_nil = AbstractValue.mk_fresh () in
     let<**> astate =
-      PulseArithmetic.and_equal_instanceof instanceof_val_cons list_val typ_cons ~tenv astate
+      PulseArithmetic.and_equal_instanceof instanceof_val_cons list_val typ_cons astate
     in
     let<**> astate =
-      PulseArithmetic.and_equal_instanceof instanceof_val_nil list_val typ_nil ~tenv astate
+      PulseArithmetic.and_equal_instanceof instanceof_val_nil list_val typ_nil astate
     in
     let<**> astate = PulseArithmetic.prune_eq_zero instanceof_val_cons astate in
     let<**> astate = PulseArithmetic.prune_eq_zero instanceof_val_nil astate in
@@ -771,11 +777,11 @@ module Lists = struct
 
 
   let append2 ~reverse list1 list2 : model_no_non_disj =
-   fun ({location; path; ret= ret_id, _; analysis_data= {tenv}} as data) astate ->
+   fun ({location; path; ret= ret_id, _} as data) astate ->
     let mk_astate_badarg = make_astate_badarg list1 data astate in
     (* Makes an abstract state corresponding to appending to a list of given length *)
     let mk_good_astate_concat length =
-      let> elems, astate = assume_and_deconstruct list1 length ~tenv astate path location in
+      let> elems, astate = assume_and_deconstruct list1 length astate path location in
       let elems = if reverse then elems else List.rev elems in
       let> astate, result_list =
         [ PulseResult.list_fold ~init:(astate, list2)
@@ -784,7 +790,7 @@ module Lists = struct
       in
       [Ok (PulseOperations.write_id ret_id result_list astate)]
     in
-    mk_astate_badarg ~tenv
+    mk_astate_badarg
     @ ( List.concat (List.init Config.erlang_list_unfold_depth ~f:mk_good_astate_concat)
       |> List.map ~f:Basic.map_continue )
 
@@ -839,8 +845,11 @@ module Tuples = struct
     let+ astate =
       PulseResult.list_fold addr_elems_fields_payloads ~init:astate ~f:write_tuple_field
     in
-    ( PulseOperations.add_dynamic_type (Typ.mk_struct tuple_typ_name) (fst addr_tuple) astate
-    , addr_tuple )
+    let astate =
+      PulseArithmetic.and_dynamic_type_is_unsafe (fst addr_tuple) (Typ.mk_struct tuple_typ_name)
+        location astate
+    in
+    (astate, addr_tuple)
 
 
   let make (args : 'a ProcnameDispatcher.Call.FuncArg.t list) : model_no_non_disj =
@@ -891,16 +900,15 @@ module Maps = struct
         ~field_val:fresh_val is_empty_field astate
     in
     let<++> astate = PulseArithmetic.and_eq_int is_empty_value is_empty_lit astate in
-    write_dynamic_type_and_return addr_map Map ret_id astate
+    write_dynamic_type_and_return addr_map Map ret_id location astate
 
 
   let new_ : model_no_non_disj = make []
 
   let make_astate_badmap (map_val, _map_hist) data astate =
-    let {analysis_data= {tenv}} = data in
     let typ = Typ.mk_struct (ErlangType Map) in
     let instanceof_val = AbstractValue.mk_fresh () in
-    let<**> astate = PulseArithmetic.and_equal_instanceof instanceof_val map_val typ ~tenv astate in
+    let<**> astate = PulseArithmetic.and_equal_instanceof instanceof_val map_val typ astate in
     let<**> astate = PulseArithmetic.prune_eq_zero instanceof_val astate in
     Errors.badmap data astate
 
@@ -908,7 +916,7 @@ module Maps = struct
   let make_astate_goodmap path location map astate = prune_type path location map Map astate
 
   let is_key key map : model_no_non_disj =
-   fun ({location; path; ret= ret_id, _; analysis_data= {tenv}} as data) astate ->
+   fun ({location; path; ret= ret_id, _} as data) astate ->
     (* Return 3 cases:
      * - Error & assume not map
      * - Ok & assume map & assume empty & return false
@@ -917,7 +925,7 @@ module Maps = struct
     let astate_badmap = make_astate_badmap map data astate in
     let astate_empty =
       let ret_val_false = AbstractValue.mk_fresh () in
-      let> astate = make_astate_goodmap path location map ~tenv astate in
+      let> astate = make_astate_goodmap path location map astate in
       let astate, _isempty_addr, (is_empty, _isempty_hist) =
         load_field path is_empty_field location map astate
       in
@@ -929,13 +937,13 @@ module Maps = struct
     in
     let astate_haskey =
       let ret_val_true = AbstractValue.mk_fresh () in
-      let> astate = make_astate_goodmap path location map ~tenv astate in
+      let> astate = make_astate_goodmap path location map astate in
       let astate, _isempty_addr, (is_empty, _isempty_hist) =
         load_field path is_empty_field location map astate
       in
       let> astate = PulseArithmetic.prune_eq_zero is_empty astate |> SatUnsat.to_list in
       let astate, _key_addr, tracked_key = load_field path key_field location map astate in
-      let> astate = Comparison.prune_equal location path key tracked_key ~tenv astate in
+      let> astate = Comparison.prune_equal location path key tracked_key astate in
       let> astate = PulseArithmetic.and_eq_int ret_val_true IntLit.one astate |> SatUnsat.to_list in
       Atoms.write_return_from_bool path location ret_val_true ret_id astate
     in
@@ -943,7 +951,7 @@ module Maps = struct
 
 
   let get (key, key_history) map : model_no_non_disj =
-   fun ({location; path; ret= ret_id, _; analysis_data= {tenv}} as data) astate ->
+   fun ({location; path; ret= ret_id, _} as data) astate ->
     (* Return 3 cases:
      * - Error & assume not map
      * - Error & assume map & assume empty;
@@ -951,20 +959,18 @@ module Maps = struct
      *)
     let astate_badmap = make_astate_badmap map data astate in
     let astate_ok =
-      let> astate = make_astate_goodmap path location map ~tenv astate in
+      let> astate = make_astate_goodmap path location map astate in
       let astate, _isempty_addr, (is_empty, _isempty_hist) =
         load_field path is_empty_field location map astate
       in
       let> astate = PulseArithmetic.prune_eq_zero is_empty astate |> SatUnsat.to_list in
       let astate, _key_addr, tracked_key = load_field path key_field location map astate in
-      let> astate =
-        Comparison.prune_equal location path (key, key_history) tracked_key ~tenv astate
-      in
+      let> astate = Comparison.prune_equal location path (key, key_history) tracked_key astate in
       let astate, _value_addr, tracked_value = load_field path value_field location map astate in
       [Ok (PulseOperations.write_id ret_id tracked_value astate)]
     in
     let astate_badkey =
-      let> astate = make_astate_goodmap path location map ~tenv astate in
+      let> astate = make_astate_goodmap path location map astate in
       let astate, _isempty_addr, (is_empty, _isempty_hist) =
         load_field path is_empty_field location map astate
       in
@@ -975,7 +981,7 @@ module Maps = struct
 
 
   let put key value map : model_no_non_disj =
-   fun ({location; path; ret= ret_id, _; analysis_data= {tenv}} as data) astate ->
+   fun ({location; path; ret= ret_id, _} as data) astate ->
     (* Ignore old map. We only store one key/value so we can simply create a new map. *)
     (* Return 2 cases:
      * - Error & assume not map
@@ -990,7 +996,7 @@ module Maps = struct
       let fresh_val = (is_empty_value, hist) in
       let addr_key = (AbstractValue.mk_fresh (), hist) in
       let addr_value = (AbstractValue.mk_fresh (), hist) in
-      let> astate = make_astate_goodmap path location map ~tenv astate in
+      let> astate = make_astate_goodmap path location map astate in
       let> astate =
         [ write_field_and_deref path location ~struct_addr:addr_map ~field_addr:addr_key
             ~field_val:key key_field astate ]
@@ -1005,7 +1011,7 @@ module Maps = struct
         >>>= PulseArithmetic.and_eq_int is_empty_value IntLit.zero
         |> SatUnsat.to_list
       in
-      [Ok (write_dynamic_type_and_return addr_map Map ret_id astate)]
+      [Ok (write_dynamic_type_and_return addr_map Map ret_id location astate)]
     in
     List.map ~f:Basic.map_continue astate_ok @ astate_badmap
 end
@@ -1013,7 +1019,7 @@ end
 module Strings = struct
   (** This is a temporary solution for strings to avoid false positives. For now, we consider that
       the type of strings is list and compute this information whenever a string is created. Strings
-      should be fully supported in future. T93361792 **)
+      should be fully supported in future. T93361792 *)
 
   let of_const_string location path (const_str : String.t) : sat_maker =
    fun astate ->
@@ -1023,7 +1029,7 @@ module Strings = struct
     |> value_die "'of_const_string' failed evaluation"
 
 
-  (* recurese caracter by caracter of the string and build suitable heap allocated data structure *)
+  (** recurse character by character of the string and build suitable heap allocated data structure *)
   let rec handle_string_content location path value str_lst : sat_maker =
    fun astate ->
     match str_lst with
@@ -1041,7 +1047,7 @@ module Strings = struct
   let make_raw location path (value, _) : sat_maker =
    fun astate ->
     let string_value =
-      AddressAttributes.get_const_string value astate |> value_die "expected string value attribute"
+      PulseArithmetic.as_constant_string astate value |> value_die "expected string value attribute"
     in
     let ls_str = String.to_list string_value in
     handle_string_content location path value ls_str astate
@@ -1055,28 +1061,28 @@ end
 
 module BIF = struct
   let has_type (value, _hist) type_ : model_no_non_disj =
-   fun {location; path; ret= ret_id, _; analysis_data= {tenv}} astate ->
+   fun {location; path; ret= ret_id, _} astate ->
     let typ = Typ.mk_struct (ErlangType type_) in
     let is_typ = AbstractValue.mk_fresh () in
-    let<**> astate = PulseArithmetic.and_equal_instanceof is_typ value typ ~tenv astate in
+    let<**> astate = PulseArithmetic.and_equal_instanceof is_typ value typ astate in
     Atoms.write_return_from_bool path location is_typ ret_id astate
 
 
   let is_atom x : model_no_non_disj = has_type x Atom
 
   let is_boolean ((atom_val, _atom_hist) as atom) : model_no_non_disj =
-   fun {location; path; ret= ret_id, _; analysis_data= {tenv}} astate ->
+   fun {location; path; ret= ret_id, _} astate ->
     let astate_not_atom =
       (* Assume not atom: just return false *)
       let typ = Typ.mk_struct (ErlangType Atom) in
       let is_atom = AbstractValue.mk_fresh () in
-      let<**> astate = PulseArithmetic.and_equal_instanceof is_atom atom_val typ ~tenv astate in
+      let<**> astate = PulseArithmetic.and_equal_instanceof is_atom atom_val typ astate in
       let<**> astate = PulseArithmetic.prune_eq_zero is_atom astate in
       Atoms.write_return_from_bool path location is_atom ret_id astate
     in
     let astate_is_atom =
       (* Assume atom: return hash==hashof(true) or hash==hashof(false) *)
-      let> astate = prune_type path location atom Atom ~tenv astate in
+      let> astate = prune_type path location atom Atom astate in
       let astate, _hash_addr, (hash, _hash_hist) =
         load_field path
           (Fieldname.make (ErlangType Atom) ErlangTypeName.atom_hash)
@@ -1109,31 +1115,27 @@ module BIF = struct
   let is_integer x : model_no_non_disj = has_type x Integer
 
   let is_list (list_val, _list_hist) : model_no_non_disj =
-   fun {location; path; ret= ret_id, _; analysis_data= {tenv}} astate ->
+   fun {location; path; ret= ret_id, _} astate ->
     let cons_typ = Typ.mk_struct (ErlangType Cons) in
     let nil_typ = Typ.mk_struct (ErlangType Nil) in
     let astate_is_cons =
       let is_cons = AbstractValue.mk_fresh () in
-      let<**> astate =
-        PulseArithmetic.and_equal_instanceof is_cons list_val cons_typ ~tenv astate
-      in
+      let<**> astate = PulseArithmetic.and_equal_instanceof is_cons list_val cons_typ astate in
       let<**> astate = PulseArithmetic.prune_positive is_cons astate in
       Atoms.write_return_from_bool path location is_cons ret_id astate
     in
     let astate_is_nil =
       let is_nil = AbstractValue.mk_fresh () in
-      let<**> astate = PulseArithmetic.and_equal_instanceof is_nil list_val nil_typ ~tenv astate in
+      let<**> astate = PulseArithmetic.and_equal_instanceof is_nil list_val nil_typ astate in
       let<**> astate = PulseArithmetic.prune_positive is_nil astate in
       Atoms.write_return_from_bool path location is_nil ret_id astate
     in
     let astate_not_list =
       let is_cons = AbstractValue.mk_fresh () in
       let is_nil = AbstractValue.mk_fresh () in
-      let<**> astate =
-        PulseArithmetic.and_equal_instanceof is_cons list_val cons_typ ~tenv astate
-      in
+      let<**> astate = PulseArithmetic.and_equal_instanceof is_cons list_val cons_typ astate in
       let<**> astate = PulseArithmetic.prune_eq_zero is_cons astate in
-      let<**> astate = PulseArithmetic.and_equal_instanceof is_nil list_val nil_typ ~tenv astate in
+      let<**> astate = PulseArithmetic.and_equal_instanceof is_nil list_val nil_typ astate in
       let<**> astate = PulseArithmetic.prune_eq_zero is_nil astate in
       (* At this point, both [is_cons] and [is_nil] are false so we can return any of them. *)
       Atoms.write_return_from_bool path location is_nil ret_id astate
@@ -1326,32 +1328,33 @@ module Custom = struct
       | Some (Atom None) ->
           let ret_addr = AbstractValue.mk_fresh () in
           let ret_hist = Hist.single_alloc path location "nondet_atom" in
-          Sat
-            (Ok
-               ( PulseOperations.add_dynamic_type (Typ.mk_struct (ErlangType Atom)) ret_addr astate
-               , (ret_addr, ret_hist) ) )
+          let astate =
+            PulseArithmetic.and_dynamic_type_is_unsafe ret_addr (Typ.mk_struct (ErlangType Atom))
+              location astate
+          in
+          Sat (Ok (astate, (ret_addr, ret_hist)))
       | Some (Atom (Some name)) ->
           Atoms.of_string location path name astate
       | Some (GenServer {module_name}) ->
           let ret_addr = AbstractValue.mk_fresh () in
           let ret_hist = Hist.single_alloc path location "gen_server_pid" in
-          Sat
-            (Ok
-               ( PulseOperations.add_dynamic_type
-                   (Typ.mk_struct (ErlangType (GenServerPid {module_name})))
-                   ret_addr astate
-               , (ret_addr, ret_hist) ) )
+          let astate =
+            PulseArithmetic.and_dynamic_type_is_unsafe ret_addr
+              (Typ.mk_struct (ErlangType (GenServerPid {module_name})))
+              location astate
+          in
+          Sat (Ok (astate, (ret_addr, ret_hist)))
       | Some (IntLit (Some intlit)) ->
           Sat (Integers.of_string location path intlit astate)
       | Some (IntLit None) ->
           let ret_addr = AbstractValue.mk_fresh () in
           let ret_hist = Hist.single_alloc path location "nondet_abstr_intlit" in
-          Sat
-            (Ok
-               ( PulseOperations.add_dynamic_type
-                   (Typ.mk_struct (ErlangType Integer))
-                   ret_addr astate
-               , (ret_addr, ret_hist) ) )
+          let astate =
+            PulseArithmetic.and_dynamic_type_is_unsafe ret_addr
+              (Typ.mk_struct (ErlangType Integer))
+              location astate
+          in
+          Sat (Ok (astate, (ret_addr, ret_hist)))
       | Some (List elements) ->
           let mk = Lists.make_raw location path in
           many mk elements astate
@@ -1377,14 +1380,14 @@ module Custom = struct
     PulseOperations.write_id ret_id ret astate
 
 
-  let rec argument_value_helper path location actual_arg (pre_arg : erlang_value) ~tenv astate :
+  let rec argument_value_helper path location actual_arg (pre_arg : erlang_value) astate :
       AbductiveDomain.t result =
     let of_atom_like typ value_opt =
       match value_opt with
       | None ->
-          prune_type path location actual_arg typ ~tenv astate
+          prune_type path location actual_arg typ astate
       | Some value ->
-          let> astate = prune_type path location actual_arg typ ~tenv astate in
+          let> astate = prune_type path location actual_arg typ astate in
           let astate, _, (arg_hash, _hist) =
             load_field path Atoms.hash_field location actual_arg astate
           in
@@ -1396,9 +1399,9 @@ module Custom = struct
     let of_intlit_like typ value_opt =
       match value_opt with
       | None ->
-          prune_type path location actual_arg typ ~tenv astate
+          prune_type path location actual_arg typ astate
       | Some intlit ->
-          let> astate = prune_type path location actual_arg typ ~tenv astate in
+          let> astate = prune_type path location actual_arg typ astate in
           let astate, _, (value, _hist) =
             load_field path Integers.value_field location actual_arg astate
           in
@@ -1418,35 +1421,35 @@ module Custom = struct
         of_intlit_like Integer intlit_opt
     | Some (Tuple elements) ->
         let size = List.length elements in
-        let> astate = prune_type path location actual_arg (Tuple size) ~tenv astate in
+        let> astate = prune_type path location actual_arg (Tuple size) astate in
         let one_element index astate pattern =
           let field = Tuples.field_name size (index + 1) in
           let astate, _, argi = load_field path field location actual_arg astate in
-          argument_value_helper path location argi pattern ~tenv astate
+          argument_value_helper path location argi pattern astate
         in
         result_foldi elements ~init:astate ~f:one_element
     | Some (List elements) ->
-        let rec go value elements ~tenv astate =
+        let rec go value elements astate =
           match elements with
           | [] ->
-              prune_type path location value Nil ~tenv astate
+              prune_type path location value Nil astate
           | element :: rest ->
-              let> head, tail, astate = Lists.load_head_tail value ~tenv astate path location in
-              let> astate = argument_value_helper path location head element ~tenv astate in
-              go tail rest ~tenv astate
+              let> head, tail, astate = Lists.load_head_tail value astate path location in
+              let> astate = argument_value_helper path location head element astate in
+              go tail rest astate
         in
-        go actual_arg elements ~tenv astate
+        go actual_arg elements astate
 
 
   let arguments_return_model args (summaries : arguments_return list) : model_no_non_disj =
-   fun {location; path; ret= ret_id, _; analysis_data= {tenv}} astate ->
+   fun {location; path; ret= ret_id, _} astate ->
     let get_payload (arg : 'a ProcnameDispatcher.Call.FuncArg.t) =
       arg.arg_payload |> ValueOrigin.addr_hist
     in
     let actual_arguments = args |> List.map ~f:get_payload in
     let one_summary {arguments; return} =
       let one_arg astate (actual_arg, pre_arg) =
-        argument_value_helper path location actual_arg pre_arg ~tenv astate
+        argument_value_helper path location actual_arg pre_arg astate
       in
       let paired =
         match List.zip actual_arguments arguments with

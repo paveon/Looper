@@ -308,7 +308,7 @@ let apply_callee tenv ({PathContext.timestamp} as path) ~caller_proc_desc callee
       map_call_result astate ~f:(fun _return_val_opt (subst, hist_map) astate_post_call ->
           let** astate_summary =
             let open SatUnsat.Import in
-            AbductiveDomain.Summary.of_post tenv
+            AbductiveDomain.Summary.of_post
               (Procdesc.get_proc_name caller_proc_desc)
               (Procdesc.get_attributes caller_proc_desc)
               call_loc astate_post_call
@@ -431,8 +431,10 @@ let call_aux tenv path caller_proc_desc call_loc callee_pname ret actuals call_k
     L.d_printfln "Will keep at most one disjunct because %a is in block list" Procname.pp
       callee_pname ;
   (* we propagate transitive accesses from callee to caller using *)
+  let skip_transitive_accesses = PulseTransitiveAccessChecker.should_skip_call callee_pname in
   let non_disj =
-    NonDisjDomain.apply_summary ~callee_pname ~call_loc non_disj_caller non_disj_callee
+    NonDisjDomain.apply_summary ~callee_pname ~call_loc ~skip_transitive_accesses non_disj_caller
+      non_disj_callee
   in
   (* call {!AbductiveDomain.PrePost.apply} on each pre/post pair in the summary. *)
   let posts, contradiction =
@@ -465,10 +467,11 @@ let call_aux_unknown tenv path ~caller_proc_desc call_loc callee_pname ~ret ~act
     |> unknown_call tenv path call_loc (SkippedKnownCall callee_pname) (Some callee_pname) ~ret
          ~actuals ~formals_opt
   in
-  ScubaLogging.pulse_log_message ~label:"unmodeled_function_operation_pulse"
-    ~loc:(F.asprintf "%a" Location.pp_file_pos call_loc)
-    ~message:
-      (Format.asprintf "Unmodeled Function[Pulse] : %a" Procname.pp_without_templates callee_pname) ;
+  if Config.pulse_log_unknown_calls then
+    ScubaLogging.log_message_with_location ~label:"unmodeled_function_operation_pulse"
+      ~loc:(F.asprintf "%a" Location.pp_file_pos call_loc)
+      ~message:
+        (Format.asprintf "Unmodeled Function[Pulse] : %a" Procname.pp_without_templates callee_pname) ;
   if Procname.is_objc_instance_method callee_pname then
     (* a special case for objc nil messaging *)
     let unknown_objc_nil_messaging astate_unknown proc_name proc_attrs =
@@ -547,8 +550,8 @@ let maybe_dynamic_type_specialization_is_needed already_specialized contradictio
           Option.value_map opt ~f
             ~default:(dyntypes_map, AbstractValue.Set.add addr need_specialization_from_caller)
         in
-        let** dynamic_type_data = AbductiveDomain.AddressAttributes.get_dynamic_type addr astate in
-        let** dynamic_type_name = Typ.name dynamic_type_data.Attribute.typ in
+        let** dynamic_type_data = PulseArithmetic.get_dynamic_type addr astate in
+        let** dynamic_type_name = Typ.name dynamic_type_data.Formula.typ in
         let dyntypes_map =
           if Specialization.HeapPath.Map.mem heap_path already_specialized then dyntypes_map
           else Specialization.HeapPath.Map.add heap_path dynamic_type_name dyntypes_map
@@ -701,7 +704,9 @@ let call tenv path ~caller_proc_desc
               Specialization.Pulse.pp specialization ;
           if nth_iteration >= max_iteration then
             L.d_printfln "[specialization] we have reached the maximum number of iteration" ;
-          if nth_iteration >= max_iteration || has_already_be_given || ask_caller_of_caller_first
+          if
+            nth_iteration >= max_iteration || has_already_be_given || ask_caller_of_caller_first
+            || Specialization.Pulse.is_empty specialization
           then
             case_if_specialization_is_impossible
               ~f:(add_need_dynamic_type_specialization needs_from_caller)

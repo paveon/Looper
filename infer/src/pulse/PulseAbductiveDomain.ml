@@ -163,11 +163,11 @@ module Internal = struct
   let downcast_fst pair = (pair : CanonValue.t * _ :> AbstractValue.t * _) [@@inline always]
 
   let downcast_snd_fst pair_pair = (pair_pair : _ * (CanonValue.t * _) :> _ * (AbstractValue.t * _))
-    [@@inline always]
+  [@@inline always]
 
 
   let downcast_access access = (access : BaseMemory.Access.t :> RawMemory.Access.t)
-    [@@inline always]
+  [@@inline always]
 
 
   module SafeBaseMemory = struct
@@ -460,8 +460,8 @@ module Internal = struct
       map_post_attrs astate ~f:(BaseAddressAttributes.csharp_resource_release address)
 
 
-    let get_dynamic_type addr astate =
-      BaseAddressAttributes.get_dynamic_type (astate.post :> base_domain).attrs addr
+    let in_reported_retain_cycle address astate =
+      map_post_attrs astate ~f:(BaseAddressAttributes.in_reported_retain_cycle address)
 
 
     let get_static_type addr astate =
@@ -509,11 +509,6 @@ module Internal = struct
         ~f:(BaseAddressAttributes.add_dict_read_const_key timestamp trace address key)
 
 
-    let add_dynamic_type {Attribute.typ; source_file} address astate =
-      map_post_attrs astate
-        ~f:(BaseAddressAttributes.add_dynamic_type {Attribute.typ; source_file} address)
-
-
     let add_static_type typ address astate =
       map_post_attrs astate ~f:(BaseAddressAttributes.add_static_type typ address)
 
@@ -543,6 +538,10 @@ module Internal = struct
 
     let is_java_resource_released addr astate =
       BaseAddressAttributes.is_java_resource_released addr (astate.post :> base_domain).attrs
+
+
+    let is_in_reported_retain_cycle addr astate =
+      BaseAddressAttributes.is_in_reported_retain_cycle addr (astate.post :> base_domain).attrs
 
 
     let is_csharp_resource_released addr astate =
@@ -576,10 +575,6 @@ module Internal = struct
 
     let get_config_usage addr astate =
       BaseAddressAttributes.get_config_usage addr (astate.post :> base_domain).attrs
-
-
-    let get_const_string addr astate =
-      BaseAddressAttributes.get_const_string addr (astate.post :> base_domain).attrs
 
 
     let get_valid_returned_from_unknown addr astate =
@@ -625,6 +620,10 @@ module Internal = struct
       abduce_one addr
         (MustBeValid (path.PathContext.timestamp, access_trace, must_be_valid_reason))
         astate
+
+
+    let has_unknown_effect addr astate =
+      BaseAddressAttributes.has_unknown_effect addr (astate.post :> base_domain).attrs
   end
 
   module SafeMemory = struct
@@ -717,13 +716,17 @@ module Internal = struct
     let exists_edge v astate ~f = Container.exists ~iter:(iter_edges v) astate ~f
   end
 
-  let add_static_type tenv typ_name addr astate =
+  let add_static_type tenv typ_name addr location astate =
     let is_final =
       Tenv.lookup tenv typ_name
       |> Option.value_map ~default:false ~f:(fun {Struct.annots} -> Annot.Item.is_final annots)
     in
     if is_final then
-      SafeAttributes.add_dynamic_type {typ= Typ.mk_struct typ_name; source_file= None} addr astate
+      let phi' =
+        PulseFormula.add_dynamic_type_unsafe (downcast addr) (Typ.mk_struct typ_name) location
+          astate.path_condition
+      in
+      set_path_condition phi' astate
     else SafeAttributes.add_static_type typ_name addr astate
 
 
@@ -746,7 +749,7 @@ module Internal = struct
           , Option.value attrs_opt ~default:Attributes.empty )
 
 
-  let add_static_types tenv astate formals_and_captured =
+  let add_static_types tenv location astate formals_and_captured =
     let record_static_type astate (_var, typ, _, (src_addr, src_addr_hist)) =
       match typ with
       | {Typ.desc= Tptr ({desc= Tstruct typ_name}, _)}
@@ -769,7 +772,7 @@ module Internal = struct
               pre= PreDomain.update ~heap:pre_heap astate.pre
             ; post= PostDomain.update ~heap:post_heap astate.post }
           in
-          add_static_type tenv typ_name addr astate
+          add_static_type tenv typ_name addr location astate
       | _ ->
           astate
     in
@@ -1329,14 +1332,14 @@ module Internal = struct
 
   let reachable_addresses ?(var_filter = fun _ -> true) ?edge_filter astate pre_or_post =
     GraphVisit.fold astate pre_or_post ~var_filter ?edge_filter ~init:() ~finish:Fn.id
-      ~f:(fun _ () _ _ -> Continue ())
+      ~f:(fun _ () _ _ -> Continue () )
     |> fst
 
 
   let reachable_addresses_from ?(already_visited = CanonValue.Set.empty) ?edge_filter addresses
       astate pre_or_post =
     GraphVisit.fold_from_addresses ?edge_filter addresses astate pre_or_post ~init:()
-      ~already_visited ~finish:Fn.id ~f:(fun () _ _ -> Continue ())
+      ~already_visited ~finish:Fn.id ~f:(fun () _ _ -> Continue () )
     |> fst
 end
 
@@ -1413,7 +1416,7 @@ let mk_initial tenv (proc_attrs : ProcAttributes.t) =
   let formals_and_captured = captured @ formals in
   let initial_stack =
     List.fold formals_and_captured ~init:(PreDomain.empty :> BaseDomain.t).stack
-      ~f:(fun stack (formal, _, _, addr_loc) -> BaseStack.add formal addr_loc stack)
+      ~f:(fun stack (formal, _, _, addr_loc) -> BaseStack.add formal addr_loc stack )
   in
   let initial_heap =
     let register heap (_, _, _, (addr, _)) =
@@ -1436,9 +1439,12 @@ let mk_initial tenv (proc_attrs : ProcAttributes.t) =
   in
   let post =
     List.fold proc_attrs.locals ~init:post
-      ~f:(fun (acc : PostDomain.t) {ProcAttributes.name; typ; modify_in_block; is_constexpr; tmp_id}
-         ->
-        if modify_in_block || is_constexpr || Option.is_some tmp_id then acc
+      ~f:(fun
+          (acc : PostDomain.t) {ProcAttributes.name; typ; modify_in_block; is_constexpr; tmp_id} ->
+        if
+          modify_in_block || is_constexpr || Option.is_some tmp_id
+          || not (Language.curr_language_is Clang)
+        then acc
         else
           SafeAttributes.set_uninitialized_post tenv Timestamp.t0
             (`LocalDecl (Pvar.mk name proc_name, None))
@@ -1461,7 +1467,7 @@ let mk_initial tenv (proc_attrs : ProcAttributes.t) =
     then
       (* The Hack and Python and Clang frontends do not propagate types from declarations to usage,
          so we redo part of the work ourself *)
-      add_static_types tenv astate formals_and_captured
+      add_static_types tenv proc_attrs.loc astate formals_and_captured
     else astate
   in
   update_pre_for_kotlin_proc astate proc_attrs formals
@@ -1716,8 +1722,10 @@ let discard_unreachable_ ~for_summary ({pre; post} as astate) =
   (astate, pre_addresses, post_addresses, dead_addresses)
 
 
-let filter_for_summary tenv proc_name astate0 =
+let filter_for_summary proc_name astate0 =
   let open SatUnsat.Import in
+  L.d_printfln "state *before* calling canonicalize:" ;
+  L.d_printfln "%a" pp astate0 ;
   L.d_printfln "Canonicalizing..." ;
   let* astate_before_filter = canonicalize astate0 in
   let pp_state = Pp.html_collapsible_block ~name:"Show/hide canonicalized state" pp in
@@ -1741,16 +1749,8 @@ let filter_for_summary tenv proc_name astate0 =
   let live_addresses =
     CanonValue.Set.union pre_live_addresses post_live_addresses |> CanonValue.downcast_set
   in
-  (* [unsafe_cast] is safe because the state has been normalized so all values are already
-     canonical ones *)
-  let get_dynamic_type v =
-    BaseAddressAttributes.get_dynamic_type (astate_before_filter.post :> BaseDomain.t).attrs
-      (CanonValue.unsafe_cast v [@alert "-deprecated"])
-    |> Option.map ~f:(fun dynamic_type_data -> dynamic_type_data.Attribute.typ)
-  in
   let+ path_condition, live_via_arithmetic, new_eqs =
-    Formula.simplify tenv ~get_dynamic_type ~precondition_vocabulary ~keep:live_addresses
-      astate.path_condition
+    Formula.simplify ~precondition_vocabulary ~keep:live_addresses astate.path_condition
   in
   (* [unsafe_cast_set] is safe because a) all the values are actually canon_values in disguise,
      and b) we have canonicalised all the values in the state already so all we have left are
@@ -1867,30 +1867,20 @@ module Summary = struct
 
   let remove_all_must_not_be_tainted = SafeAttributes.remove_all_must_not_be_tainted
 
-  let of_post_ tenv proc_name (proc_attrs : ProcAttributes.t) location astate0 =
+  let of_post_ proc_name (proc_attrs : ProcAttributes.t) location astate0 =
     let open SatUnsat.Import in
     let astate = astate0 in
     (* NOTE: we normalize (to strengthen the equality relation used by canonicalization) then
        canonicalize *before* garbage collecting unused addresses in case we detect any last-minute
        contradictions about addresses we are about to garbage collect *)
-    let* path_condition, new_eqs =
-      Formula.normalize tenv
-        ~get_dynamic_type:(fun v ->
-          (* [unsafe_cast] is safe because the formula will only query canonical values *)
-          BaseAddressAttributes.get_dynamic_type (astate.post :> BaseDomain.t).attrs
-            (CanonValue.unsafe_cast v [@alert "-deprecated"])
-          |> Option.map ~f:(fun dynamic_type_data -> dynamic_type_data.Attribute.typ) )
-        astate.path_condition
-    in
+    let* path_condition, new_eqs = Formula.normalize astate.path_condition in
     let astate = {astate with path_condition} in
     let* astate, error = incorporate_new_eqs astate new_eqs in
     let astate_before_filter = astate in
     (* do not store the decompiler in the summary and make sure we only use the original one by
        marking it invalid *)
     let astate = {astate with decompiler= Decompiler.invalid} in
-    let* astate, live_addresses, dead_addresses, new_eqs =
-      filter_for_summary tenv proc_name astate
-    in
+    let* astate, live_addresses, dead_addresses, new_eqs = filter_for_summary proc_name astate in
     let+ astate, error =
       match error with None -> incorporate_new_eqs astate new_eqs | Some _ -> Sat (astate, error)
     in
@@ -1943,8 +1933,8 @@ module Summary = struct
             )
 
 
-  let of_post tenv proc_name proc_attrs location astate0 =
-    let summary_sat = of_post_ tenv proc_name proc_attrs location astate0 in
+  let of_post proc_name proc_attrs location astate0 =
+    let summary_sat = of_post_ proc_name proc_attrs location astate0 in
     match summary_sat with
     | Sat _ ->
         summary_sat
@@ -2082,9 +2072,7 @@ let is_allocated_this_pointer proc_attrs astate address =
 
 let incorporate_new_eqs new_eqs astate =
   let open SatUnsat.Import in
-  let proc_attrs =
-    Procdesc.get_attributes (PulseCurrentProcedure.proc_desc () |> Option.value_exn)
-  in
+  let proc_attrs = Procdesc.get_attributes (PulseContext.proc_desc () |> Option.value_exn) in
   let* astate, potential_invalid_access_opt = incorporate_new_eqs astate new_eqs in
   match potential_invalid_access_opt with
   | None ->
@@ -2212,15 +2200,17 @@ module AddressAttributes = struct
   let initialize v astate = SafeAttributes.initialize (CanonValue.canon' astate v) astate
 
   let set_uninitialized tenv {PathContext.timestamp} src typ location astate =
-    let src =
-      match src with
-      | `LocalDecl (pvar, v_opt) ->
-          `LocalDecl (pvar, CanonValue.canon_opt' astate v_opt)
-      | `Malloc v ->
-          `Malloc (CanonValue.canon' astate v)
-    in
-    { astate with
-      post= SafeAttributes.set_uninitialized_post tenv timestamp src typ location astate.post }
+    if Language.curr_language_is Clang then
+      let src =
+        match src with
+        | `LocalDecl (pvar, v_opt) ->
+            `LocalDecl (pvar, CanonValue.canon_opt' astate v_opt)
+        | `Malloc v ->
+            `Malloc (CanonValue.canon' astate v)
+      in
+      { astate with
+        post= SafeAttributes.set_uninitialized_post tenv timestamp src typ location astate.post }
+    else astate
 
 
   let always_reachable v astate =
@@ -2251,6 +2241,14 @@ module AddressAttributes = struct
     SafeAttributes.is_csharp_resource_released (CanonValue.canon' astate v) astate
 
 
+  let in_reported_retain_cycle v astate =
+    SafeAttributes.in_reported_retain_cycle (CanonValue.canon' astate v) astate
+
+
+  let is_in_reported_retain_cycle v astate =
+    SafeAttributes.is_in_reported_retain_cycle (CanonValue.canon' astate v) astate
+
+
   let add_dict_contain_const_keys v astate =
     SafeAttributes.add_dict_contain_const_keys (CanonValue.canon' astate v) astate
 
@@ -2267,12 +2265,8 @@ module AddressAttributes = struct
     SafeAttributes.add_dict_read_const_key timestamp trace (CanonValue.canon' astate v) key astate
 
 
-  let add_dynamic_type dynamic_type_data v astate =
-    SafeAttributes.add_dynamic_type dynamic_type_data (CanonValue.canon' astate v) astate
-
-
-  let add_static_type tenv typ v astate =
-    add_static_type tenv typ (CanonValue.canon' astate v) astate
+  let add_static_type tenv typ v location astate =
+    add_static_type tenv typ (CanonValue.canon' astate v) location astate
 
 
   let remove_allocation_attr v astate =
@@ -2281,10 +2275,6 @@ module AddressAttributes = struct
 
   let remove_taint_attrs v astate =
     SafeAttributes.remove_taint_attrs (CanonValue.canon' astate v) astate
-
-
-  let get_dynamic_type v astate =
-    SafeAttributes.get_dynamic_type (CanonValue.canon' astate v) astate
 
 
   let get_closure_proc_name v astate =
@@ -2360,12 +2350,12 @@ module AddressAttributes = struct
 
   let is_std_moved v astate = SafeAttributes.is_std_moved (CanonValue.canon' astate v) astate
 
-  let get_const_string v astate =
-    SafeAttributes.get_const_string (CanonValue.canon' astate v) astate
-
-
   let get_address_of_stack_variable v astate =
     SafeAttributes.get_address_of_stack_variable (CanonValue.canon' astate v) astate
+
+
+  let has_unknown_effect v astate =
+    SafeAttributes.has_unknown_effect (CanonValue.canon' astate v) astate
 end
 
 module CanonValue = struct

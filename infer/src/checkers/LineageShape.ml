@@ -9,7 +9,7 @@ open! IStd
 module L = Logging
 module CFG = ProcCfg.NormalOneInstrPerNode
 
-module LineageConfig = struct
+module ShapeConfig = struct
   let field_max_cfg_size = Config.lineage_field_max_cfg_size
 
   let field_depth = Config.lineage_field_depth
@@ -24,7 +24,7 @@ end
 module FieldLabel = struct
   module T = struct
     type t =
-      | BoxedValue
+      | BoxedValue  (** Denotes an internal boxing field, such as integer.value or atom.hash *)
       | Fieldname of Fieldname.t
       | MapKey of string  (** Statically known map keys, ie. currently constant atoms. *)
     [@@deriving compare, equal, sexp, hash]
@@ -99,6 +99,27 @@ module FieldPath = struct
   let pp = Fmt.(list ~sep:nop FieldLabel.pp_subscript)
 end
 
+module VarPath = struct
+  type t = Var.t * FieldPath.t
+
+  let pp fmt (var, field_path) =
+    Var.pp fmt var ;
+    FieldPath.pp fmt field_path
+
+
+  let var v = (v, [])
+
+  let sub_path (var, field_path) subfields = (var, field_path @ subfields)
+
+  let sub_label var_path label = sub_path var_path [label]
+
+  let make var field_path = (var, field_path)
+
+  let pvar pvar = var (Var.of_pvar pvar)
+
+  let ident id = var (Var.of_id id)
+end
+
 module Cell : sig
   (** See .mli for doc *)
 
@@ -117,6 +138,8 @@ module Cell : sig
   val is_abstract : t -> bool
 
   val var_appears_in_source_code : t -> bool
+
+  val path_from_origin : origin:VarPath.t -> t -> FieldPath.t
 end = struct
   type t = {var: Var.t; field_path: FieldPath.t; is_abstract: bool}
   [@@deriving compare, equal, sexp, hash, fields]
@@ -126,8 +149,7 @@ end = struct
   let var_abstract var = create ~var ~is_abstract:true ~field_path:[]
 
   let pp fmt {var; field_path; is_abstract} =
-    Var.pp fmt var ;
-    FieldPath.pp fmt field_path ;
+    VarPath.pp fmt (var, field_path) ;
     if is_abstract && Config.debug_mode then
       (* We could also consider printing that by default but that could break some other systems
          expectations. *)
@@ -137,6 +159,28 @@ end = struct
   let yojson_of_t x = `String (Fmt.to_to_string pp x)
 
   let var_appears_in_source_code x = Var.appears_in_source_code (var x)
+
+  let path_from_origin ~origin:(origin_var, origin_path) {var; field_path; _} =
+    if not ([%equal: Var.t] origin_var var) then L.internal_error "incompatible var paths" ;
+    let rec aux origin_path cell_path =
+      match (origin_path, cell_path) with
+      | [], _ ->
+          cell_path
+      | _ :: _, [] ->
+          []
+      | origin_field :: origin_tail, cell_field :: cell_tail ->
+          if not ([%equal: FieldLabel.t] origin_field cell_field) then
+            L.internal_error "incompatible var paths" ;
+          aux origin_tail cell_tail
+    in
+    aux origin_path field_path
+end
+
+module StdModules = struct
+  module FieldLabel = FieldLabel
+  module FieldPath = FieldPath
+  module VarPath = VarPath
+  module Cell = Cell
 end
 
 module Id () : sig
@@ -259,26 +303,22 @@ module Env : sig
     (** Makes a summary from a state environment. Further updates to the state will have no effect
         on the summary. *)
 
+    val assert_equal_shapes : t option -> VarPath.t -> VarPath.t -> unit
+
     val fold_field_labels :
          t option
-      -> Var.t * FieldPath.t
+      -> VarPath.t
       -> init:'accum
       -> f:('accum -> FieldLabel.t -> 'accum)
       -> fallback:('accum -> 'accum)
       -> 'accum
     (* Doc in .mli *)
 
-    val fold_cells :
-      t option -> Var.t * FieldPath.t -> init:'accum -> f:('accum -> Cell.t -> 'accum) -> 'accum
+    val as_field_label_singleton : t option -> VarPath.t -> FieldLabel.t option
     (* Doc in .mli *)
 
-    val fold_cell_pairs :
-         t option
-      -> Var.t * FieldPath.t
-      -> Var.t * FieldPath.t
-      -> init:'accum
-      -> f:('accum -> Cell.t -> Cell.t -> 'accum)
-      -> 'accum
+    val fold_cells :
+      t option -> VarPath.t -> init:'accum -> f:('accum -> Cell.t -> 'accum) -> 'accum
     (* Doc in .mli *)
 
     val introduce :
@@ -387,8 +427,8 @@ end = struct
                   be the same shape as [X].
 
                   Within [main], the shape of the argument of [f] is actually known to be the
-                  singleton variant [\[ok\]]. That argument is not introduced as an abstract shape
-                  by the call instruction, which allows actually unifying it with a variant at
+                  singleton variant [[ok]]. That argument is not introduced as an abstract shape by
+                  the call instruction, which allows actually unifying it with a variant at
                   call-time. [Y] will still have the same shape as that argument as mandated by the
                   summary of [f], therefore [Y] will correctly be inferred as the variant [ok]. *)
           | Vector of
@@ -434,7 +474,7 @@ end = struct
         val bottom : t
 
         val variant : String.Set.t -> t
-        (** If the set is too big (see {!LineageConfig}), will build a {!scalar} structure instead. *)
+        (** If the set is too big (see {!ShapeConfig}), will build a {!scalar} structure instead. *)
 
         val variant_of_list : string list -> t
 
@@ -504,8 +544,7 @@ end = struct
         let local_abstract = LocalAbstract
 
         let variant constructors =
-          if Int.O.(Set.length constructors <= LineageConfig.variant_width) then
-            Variant constructors
+          if Set.length constructors <= ShapeConfig.variant_width then Variant constructors
           else scalar
 
 
@@ -827,8 +866,7 @@ end = struct
              also be affected in the process. If it doesn't we don't need to create it. *)
           List.iter
             ~f:(fun constructor ->
-              unify_field state map_shape ~field_label:(FieldLabel.map_key constructor) ~value_shape
-              )
+              unify_field state map_shape ~field_label:(FieldLabel.map_key constructor) ~value_shape )
             constructors
       | None ->
           (* Key isn't variant-shaped: we potentially unify every map value field in the map. *)
@@ -915,15 +953,15 @@ end = struct
             field_table
 
 
-    let find_var_path_shape {var_shapes; shape_structures} var field_path =
+    let find_var_path_shape {var_shapes; shape_structures} (var, field_path) =
       let var_shape = find_var_shape var_shapes var in
       List.fold
         ~f:(fun shape field -> find_next_field_shape shape_structures shape field)
         ~init:var_shape field_path
 
 
-    let find_var_path_structure {var_shapes; shape_structures} var field_path =
-      let shape_id = find_var_path_shape {var_shapes; shape_structures} var field_path in
+    let find_var_path_structure {var_shapes; shape_structures} var_path =
+      let shape_id = find_var_path_shape {var_shapes; shape_structures} var_path in
       match Hashtbl.find shape_structures shape_id with
       | None ->
           Structure.bottom
@@ -1038,12 +1076,28 @@ end = struct
       (args_state_shapes, return_state_shape)
 
 
-    let finalise {var_shapes; shape_structures} var field_path =
+    let assert_equal_shapes summary_option var_path_1 var_path_2 =
+      match summary_option with
+      | None ->
+          ()
+      | Some {var_shapes; shape_structures} ->
+          let var_path_shape_1 = find_var_path_shape {var_shapes; shape_structures} var_path_1 in
+          let var_path_shape_2 = find_var_path_shape {var_shapes; shape_structures} var_path_2 in
+          if not ([%equal: Shape_id.t] var_path_shape_1 var_path_shape_2) then
+            L.die InternalError
+              "@[Assertion fails: incompatible shapes.@ @[`%a`: %a={%a}@]@ vs@ @[`%a`: %a={%a}@]@]"
+              VarPath.pp var_path_1 Shape_id.pp var_path_shape_1 (Fmt.option Structure.pp)
+              (Hashtbl.find shape_structures var_path_shape_1)
+              VarPath.pp var_path_2 Shape_id.pp var_path_shape_2 (Fmt.option Structure.pp)
+              (Hashtbl.find shape_structures var_path_shape_2)
+
+
+    let finalise {var_shapes; shape_structures} (var, field_path) =
       let rec aux remaining_depth traversed_shape_set shape (field_path : FieldPath.t) :
           FieldPath.t * bool =
         match field_path with
         (* Walk through the fields and ensure that we do not:
-           - Traverse a field table wider than LineageConfig.field_width
+           - Traverse a field table wider than ShapeConfig.field_width
            - Traverse cycles if forbidden by the option
            - "Traverse" (they must be in last position) internal "boxing" fields that should be
              ignored
@@ -1062,9 +1116,9 @@ end = struct
         | field :: fields ->
             let field_table = find_field_table shape_structures shape in
             if
-              Int.(remaining_depth <= 0)
-              || Map.length field_table > LineageConfig.field_width
-              || (LineageConfig.prevent_cycles && Set.mem traversed_shape_set shape)
+              remaining_depth <= 0
+              || Map.length field_table > ShapeConfig.field_width
+              || (ShapeConfig.prevent_cycles && Set.mem traversed_shape_set shape)
             then ([], true)
             else
               let final_sub_path, is_abstract =
@@ -1076,65 +1130,71 @@ end = struct
       in
       let var_shape = find_var_shape var_shapes var in
       let field_path, is_abstract =
-        aux LineageConfig.field_depth (Set.empty (module Shape_id)) var_shape field_path
+        aux ShapeConfig.field_depth (Set.empty (module Shape_id)) var_shape field_path
       in
       Cell.create ~var ~field_path ~is_abstract
 
 
-    (** Given field shapes, a particular shape, a maximal width, a maximal search depth and a
-        boolean indicating that cycles should not be traversed, traverses the field shapes table and
-        builds the field paths obtained by recursively adding all the defined fieldnames of the
-        considered shape to the prefixes.
+    (** Given a summary, a variable path and according to {!ShapeConfig} parameters (max depth, max
+        width, prevent cycles), traverses the shape tables and builds the field paths obtained by
+        recursively adding all the defined fieldnames of the varpath to the prefixes.
 
-        The traversal building a field path will stop when the maximal search depth has been
-        reached, a shape with more than [LineageConfig.field_width] fields is encountered, or a
-        shape that has already been traversed is encountered and [LineageConfig.prevent_cycles] is
-        true.
+        The traversal building a field path will stop when the maximal search depth has been reached
+        (including the length of the argument field path), a shape with more than
+        [ShapeConfig.field_width] fields is encountered, or a shape that has already been traversed
+        is encountered and [ShapeConfig.prevent_cycles] is true.
 
-        When the building of a field path stops, the folding function [f] will be called on the path
-        built so far.
+        When the building of a field path stops, the folding function [f] will be called on the
+        subpath built so far.
 
-        Note that the traversal and the calling of [f] is done from the original argument shape: for
-        instance, if [X] has the field [X#foo#bar#baz], the depth limit is 2 and this function is
-        called from the shape of [X#foo], then [f] will be called with the field path [bar#baz] --
-        even if [X#foo] and [X#bar#baz] have the same shape, or [X] has a thousand other fields. For
-        this reason, [~max_search_depth] is an explicit parameter, different from the
-        {!LineageConfig.field_depth} configuration option.
+        Note that the original argument path depth will be used to stop the search and call [f] when
+        {!ShapeConfig.field_depth} has been reached, but no width check will be checked on it and
+        its field shapes will not be considered for cycles (see example below). This is why these
+        sub_paths are called "candidate" and not the actual sub_paths of the eventual Cells.
 
-        The typical use-case is to then have [f] call {!finalise}, with [X#foo] in the parameters,
-        which will repeat a similar traversal to only yield [X#foo#bar] as a final field path. This
-        allows implementing {!fold_cell_pairs} by first getting the candidate final fields from a
-        common shape of two different origin paths, then finalising separately wrt. these two paths
-        (which could have different depths to begin with). *)
-    let fold_final_fields_of_shape shape_structures shape ~search_depth ~init ~f =
-      let rec aux shape depth traversed field_path_acc ~init =
-        if Int.(depth >= search_depth) || (LineageConfig.prevent_cycles && Set.mem traversed shape)
-        then f init (List.rev field_path_acc)
+        For instance, if [X] has the field [X#foo#bar#baz], the depth limit is 2 and this function
+        is called on [X#foo], then [f] will be called with the field path [#bar] -- even if [X#foo]
+        and [X#bar] have the same shape, or [X#foo] has a thousand other fields.
+
+        The typical current use-case is to then have [f] call {!finalise}, with [X#foo] in the
+        parameters, which will repeat a similar traversal to only yield [X#foo] as a final field
+        path (if reaching width limits).
+
+        Note: this is for historical implementation reasons and could be changed now, for instance
+        by first traversing the argument path and initialise the cycle set and/or stop early if it
+        already exceeds width limit. Note that finalise also processes fields to eg. remove
+        {!BoxedValue} and computes [is_abstract] booleans, thus that logic would need to be moved
+        here too. *)
+    let fold_candidate_final_sub_paths {var_shapes; shape_structures} (var, field_path) ~init ~f =
+      let rec fold_candidate_sub_paths_of_shape shape depth traversed sub_path_acc ~init =
+        if
+          depth >= ShapeConfig.field_depth || (ShapeConfig.prevent_cycles && Set.mem traversed shape)
+        then f init (List.rev sub_path_acc)
         else
           match (Hashtbl.find shape_structures shape : Structure.t option) with
           | None | Some Bottom | Some (Variant _) | Some LocalAbstract ->
               (* No more fields. *)
-              f init (List.rev field_path_acc)
+              f init (List.rev sub_path_acc)
           | Some (Vector {fields; _}) ->
               let len = Map.length fields in
-              if Int.(len = 0 || len > LineageConfig.field_width) then
-                f init (List.rev field_path_acc)
+              if Int.O.(len = 0) || len > ShapeConfig.field_width then
+                f init (List.rev sub_path_acc)
               else
                 let traversed = Set.add traversed shape in
                 Map.fold
                   ~f:(fun ~key:fieldname ~data:fieldshape acc ->
-                    aux fieldshape (depth + 1) traversed (fieldname :: field_path_acc) ~init:acc )
+                    fold_candidate_sub_paths_of_shape fieldshape (depth + 1) traversed
+                      (fieldname :: sub_path_acc) ~init:acc )
                   fields ~init
       in
-      aux shape 0 (Set.empty (module Shape_id)) [] ~init
+      let shape = find_var_path_shape {var_shapes; shape_structures} (var, field_path) in
+      let depth = List.length field_path in
+      fold_candidate_sub_paths_of_shape shape depth (Set.empty (module Shape_id)) [] ~init
 
 
-    let fold_cells_actual {var_shapes; shape_structures} (var, field_path) ~init ~f =
-      let var_path_shape = find_var_path_shape {var_shapes; shape_structures} var field_path in
-      let search_depth = LineageConfig.field_depth - List.length field_path in
-      fold_final_fields_of_shape shape_structures var_path_shape ~search_depth ~init
-        ~f:(fun acc sub_path ->
-          f acc (finalise {var_shapes; shape_structures} var (field_path @ sub_path)) )
+    let fold_cells_actual summary var_path ~init ~f =
+      fold_candidate_final_sub_paths summary var_path ~init ~f:(fun acc sub_path ->
+          f acc (finalise summary (VarPath.sub_path var_path sub_path)) )
 
 
     let fold_cells summary_option (var, path) ~init ~f =
@@ -1145,44 +1205,8 @@ end = struct
           f init (Cell.var_abstract var)
 
 
-    let fold_cell_pairs_actual {var_shapes; shape_structures} (var_1, field_path_1)
-        (var_2, field_path_2) ~init ~f =
-      let var_path_shape_1 =
-        find_var_path_shape {var_shapes; shape_structures} var_1 field_path_1
-      in
-      let var_path_shape_2 =
-        find_var_path_shape {var_shapes; shape_structures} var_2 field_path_2
-      in
-      if not ([%equal: Shape_id.t] var_path_shape_1 var_path_shape_2) then
-        L.die InternalError
-          "@[Attempting to get related fields of differently shaped fields: @[%a={%a}@]@ vs@ \
-           @[%a={%a}@]@]"
-          Shape_id.pp var_path_shape_1 (Fmt.option Structure.pp)
-          (Hashtbl.find shape_structures var_path_shape_1)
-          Shape_id.pp var_path_shape_2 (Fmt.option Structure.pp)
-          (Hashtbl.find shape_structures var_path_shape_2)
-      else
-        let search_depth =
-          (* Use the shallowest argument to determine the search depth. *)
-          LineageConfig.field_depth - Int.min (List.length field_path_1) (List.length field_path_2)
-        in
-        fold_final_fields_of_shape shape_structures var_path_shape_1 ~search_depth ~init
-          ~f:(fun acc sub_path ->
-            f acc
-              (finalise {var_shapes; shape_structures} var_1 (field_path_1 @ sub_path))
-              (finalise {var_shapes; shape_structures} var_2 (field_path_2 @ sub_path)) )
-
-
-    let fold_cell_pairs summary_option (var1, f1) (var2, f2) ~init ~f =
-      match summary_option with
-      | Some summary ->
-          fold_cell_pairs_actual summary (var1, f1) (var2, f2) ~init ~f
-      | None ->
-          f init (Cell.var_abstract var1) (Cell.var_abstract var2)
-
-
     let fold_field_labels_actual summary (var, field_path) ~init ~f ~fallback =
-      match find_var_path_structure summary var field_path with
+      match find_var_path_structure summary (var, field_path) with
       | Variant set ->
           String.Set.fold ~init
             ~f:(fun acc constructor -> f acc (FieldLabel.map_key constructor))
@@ -1197,6 +1221,19 @@ end = struct
           fold_field_labels_actual summary (var, path) ~init ~f ~fallback
       | None ->
           fallback init
+
+
+    let as_field_label_singleton summary_option var_path =
+      let open IOption.Let_syntax in
+      let* summary = summary_option in
+      match find_var_path_structure summary var_path with
+      | Variant set ->
+          if Int.O.(Set.length set = 1) then
+            let+ constructor = Set.choose set in
+            FieldLabel.map_key constructor
+          else None
+      | _ ->
+          None
   end
 end
 
@@ -1533,6 +1570,6 @@ let unskipped_checker ({InterproceduralAnalysis.proc_desc} as analysis_data) =
 
 let checker analysis_data =
   (* We skip the big functions and the ones that would not be analysed by Lineage anyway. *)
-  LineageUtils.skip_unwanted "LineageShape" ~max_size:LineageConfig.field_max_cfg_size
+  LineageBase.skip_unwanted "LineageShape" ~max_size:ShapeConfig.field_max_cfg_size
     (fun data () -> unskipped_checker data)
     analysis_data ()

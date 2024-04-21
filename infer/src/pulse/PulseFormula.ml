@@ -71,6 +71,10 @@ module LinArith : sig
      we resolve the circular dependency further down this file *)
   type 'term_t subst_target =
     | QSubst of Q.t
+    | ConstantSubst of 'term_t * Var.t option
+        (** the constant term to substitute and, optionally, a fallback variable to substitute with
+            (eg if a variable is equal to a constant string but also to a new canonical
+            representative, the linear arithmetic domain needs to use the latter *)
     | VarSubst of Var.t
     | LinSubst of t
     | NonLinearTermSubst of 'term_t
@@ -177,6 +181,7 @@ end = struct
 
   type 'term_t subst_target =
     | QSubst of Q.t
+    | ConstantSubst of 'term_t * Var.t option
     | VarSubst of Var.t
     | LinSubst of t
     | NonLinearTermSubst of 'term_t
@@ -293,11 +298,11 @@ end = struct
   let of_subst_target v0 = function
     | QSubst q ->
         of_q q
-    | VarSubst v ->
+    | VarSubst v | ConstantSubst (_, Some v) ->
         of_var v
     | LinSubst l ->
         l
-    | NonLinearTermSubst _ ->
+    | NonLinearTermSubst _ | ConstantSubst (_, None) ->
         of_var v0
 
 
@@ -469,7 +474,7 @@ module Tableau = struct
                    let gain = Q.(-(q_c / coeff)) in
                    if
                      Container.for_all ~iter:(Container.iter ~fold:LinArith.fold) l
-                       ~f:(fun (_, coeff') -> Q.(coeff' >= zero || -(q_c / coeff') >= gain))
+                       ~f:(fun (_, coeff') -> Q.(coeff' >= zero || -(q_c / coeff') >= gain) )
                    then Some (u, (v, coeff))
                    else None
                  else None ) )
@@ -491,6 +496,7 @@ end
 
 type 'term_t subst_target = 'term_t LinArith.subst_target =
   | QSubst of Q.t
+  | ConstantSubst of 'term_t * Var.t option
   | VarSubst of Var.t
   | LinSubst of LinArith.t
   | NonLinearTermSubst of 'term_t
@@ -529,6 +535,7 @@ module Term = struct
     | BitShiftLeft of t * t
     | BitShiftRight of t * t
     | BitXor of t * t
+    | StringConcat of t * t
     | IsInstanceOf of Var.t * Typ.t
     | IsInt of t
   [@@deriving compare, equal, yojson_of]
@@ -564,6 +571,7 @@ module Term = struct
     | BitShiftLeft _
     | BitShiftRight _
     | BitXor _
+    | StringConcat _
     | And _
     | Or _
     | LessThan _
@@ -624,6 +632,8 @@ module Term = struct
     | BitXor (t1, t2) ->
         F.fprintf fmt "%a xor %a" (pp_paren pp_var ~needs_paren) t1 (pp_paren pp_var ~needs_paren)
           t2
+    | StringConcat (t1, t2) ->
+        F.fprintf fmt "%a^%a" (pp_paren pp_var ~needs_paren) t1 (pp_paren pp_var ~needs_paren) t2
     | And (t1, t2) ->
         F.fprintf fmt "%a∧%a" (pp_paren pp_var ~needs_paren) t1 (pp_paren pp_var ~needs_paren) t2
     | Or (t1, t2) ->
@@ -679,7 +689,7 @@ module Term = struct
         Var v
     | LinSubst l ->
         Linear l
-    | NonLinearTermSubst t ->
+    | ConstantSubst (t, _) | NonLinearTermSubst t ->
         t
 
 
@@ -769,7 +779,8 @@ module Term = struct
     | BitNot _
     | BitShiftLeft _
     | BitShiftRight _
-    | BitXor _ ->
+    | BitXor _
+    | StringConcat _ ->
         true
 
 
@@ -819,6 +830,7 @@ module Term = struct
     | BitShiftLeft (t1, t2)
     | BitShiftRight (t1, t2)
     | BitXor (t1, t2)
+    | StringConcat (t1, t2)
     | And (t1, t2)
     | Or (t1, t2)
     | LessThan (t1, t2)
@@ -851,6 +863,8 @@ module Term = struct
                 BitShiftRight (t1', t2')
             | BitXor _ ->
                 BitXor (t1', t2')
+            | StringConcat _ ->
+                StringConcat (t1', t2')
             | And _ ->
                 And (t1', t2')
             | Or _ ->
@@ -901,18 +915,23 @@ module Term = struct
         let acc, op = f_subst init v in
         let t' =
           match op with
-          | VarSubst v' when not (Var.equal v v') ->
+          | (VarSubst v' | ConstantSubst (_, Some v')) when not (Var.equal v v') ->
               IsInstanceOf (v', typ)
           | QSubst q when Q.is_zero q ->
               zero
-          | QSubst _ | VarSubst _ | LinSubst _ | NonLinearTermSubst _ ->
+          | QSubst _ | ConstantSubst _ | VarSubst _ | LinSubst _ | NonLinearTermSubst _ ->
               t
         in
         f_post ~prev:t acc t'
-    | Linear l ->
-        let acc, l' = LinArith.fold_subst_variables l ~init ~f:f_subst in
-        let t' = if phys_equal l l' then t else Linear l' in
-        f_post ~prev:t acc t'
+    | Linear l -> (
+      match LinArith.get_as_var l with
+      | Some v ->
+          (* avoid code duplication for the [Var v] case *)
+          fold_subst_variables ~init ~f_subst ~f_post (Var v)
+      | None ->
+          let acc, l' = LinArith.fold_subst_variables l ~init ~f:f_subst in
+          let t' = if phys_equal l l' then t else Linear l' in
+          f_post ~prev:t acc t' )
     | Const _
     | String _
     | Procname _
@@ -936,6 +955,7 @@ module Term = struct
     | BitShiftLeft _
     | BitShiftRight _
     | BitXor _
+    | StringConcat _
     | IsInt _ ->
         let acc, t' =
           fold_map_direct_subterms t ~init ~f:(fun acc t' ->
@@ -1049,6 +1069,10 @@ module Term = struct
                   map_i64_i c1 c2 Int64.shift_right |> or_raise
               | BitXor _ ->
                   map_i64_i64 c1 c2 Int64.bit_xor |> or_raise )
+      | StringConcat (String s1, String s2) ->
+          String (s1 ^ s2)
+      | StringConcat _ ->
+          t0
     in
     match eval_const_shallow_or_raise t0 with
     | Const q as t ->
@@ -1228,6 +1252,7 @@ module Term = struct
       | BitShiftLeft _
       | BitShiftRight _
       | BitXor _
+      | StringConcat _
       | Not _
       | And _
       | Or _
@@ -1249,10 +1274,16 @@ module Term = struct
 
   let simplify_linear = function
     | Linear l -> (
-      match LinArith.get_as_const l with Some c -> Const c | None -> Linear l )
+      match LinArith.get_as_const l with
+      | Some c ->
+          Const c
+      | None -> (
+        match LinArith.get_as_var l with Some v -> Var v | None -> Linear l ) )
     | t ->
         t
 
+
+  let get_as_isinstanceof t = match t with IsInstanceOf (var, typ) -> Some (var, typ) | _ -> None
 
   let get_as_var = function
     | Var x ->
@@ -1282,6 +1313,7 @@ module Term = struct
     | BitShiftLeft _
     | BitShiftRight _
     | BitXor _
+    | StringConcat _
     | IsInstanceOf _
     | IsInt _ ->
         None
@@ -1315,9 +1347,43 @@ module Term = struct
     | BitShiftLeft _
     | BitShiftRight _
     | BitXor _
+    | StringConcat _
     | IsInstanceOf _
     | IsInt _ ->
         None
+
+
+  let is_non_numeric_constant = function
+    | String _ ->
+        true
+    | Const _
+    | Linear _
+    | Var _
+    | Procname _
+    | FunctionApplication _
+    | Add _
+    | Minus _
+    | LessThan _
+    | LessEqual _
+    | Equal _
+    | NotEqual _
+    | Mult _
+    | DivI _
+    | DivF _
+    | And _
+    | Or _
+    | Not _
+    | Mod _
+    | BitAnd _
+    | BitOr _
+    | BitNot _
+    | BitShiftLeft _
+    | BitShiftRight _
+    | BitXor _
+    | StringConcat _
+    | IsInstanceOf _
+    | IsInt _ ->
+        false
 
 
   let get_as_linear = function
@@ -1349,6 +1415,7 @@ module Term = struct
     | BitShiftLeft _
     | BitShiftRight _
     | BitXor _
+    | StringConcat _
     | IsInstanceOf _
     | IsInt _ ->
         None
@@ -1359,11 +1426,13 @@ module Term = struct
     | Some q ->
         QSubst q
     | None -> (
-      match get_as_var t with
-      | Some v ->
-          VarSubst v
-      | None -> (
-        match t with Linear l -> LinSubst l | _ -> NonLinearTermSubst t ) )
+        if is_non_numeric_constant t then ConstantSubst (t, None)
+        else
+          match get_as_var t with
+          | Some v ->
+              VarSubst v
+          | None -> (
+            match t with Linear l -> LinSubst l | _ -> NonLinearTermSubst t ) )
 
 
   module VarMap = struct
@@ -1492,10 +1561,10 @@ module Atom = struct
 
   let nnot_if b atom = if b then nnot atom else atom
 
-  (** [atoms_of_term ~negated t] is [Some \[atom1; ..; atomN\]] if [t] (or [¬t] if [negated]) is
+  (** [atoms_of_term ~negated t] is [Some [atom1; ..; atomN]] if [t] (or [¬t] if [negated]) is
       (mostly syntactically) equivalent to [atom1 ∧ .. ∧ atomN]. For example
       [atoms_of_term ~negated:false (Equal (Or (x, Not y), 0))] should be
-      [\[Equal (x, 0); NotEqual (y, 0)\]]. When the term [y] is known as a boolean, it generates a
+      [[Equal (x, 0); NotEqual (y, 0)]]. When the term [y] is known as a boolean, it generates a
       preciser atom [Equal (y, 1)].
 
       [is_neq_zero] is a function that can tell if a term is known to be [≠0], and [force_to_atom]
@@ -1625,8 +1694,12 @@ module Atom = struct
         Atom atom
 
 
+  let var_terms_to_linear atom =
+    map_terms atom ~f:(function Var v -> Linear (LinArith.of_var v) | t -> t)
+
+
   let get_as_linear atom =
-    match get_terms atom with
+    match get_terms @@ var_terms_to_linear atom with
     | Linear l1, Linear l2 ->
         let l = LinArith.subtract l1 l2 in
         let t = Term.simplify_linear (Linear l) in
@@ -1730,7 +1803,7 @@ module Atom = struct
 
 
   let eval ~is_neq_zero atom =
-    Debug.p "Atom.eval %a@\n" (pp_with_pp_var Var.pp) atom ;
+    Debug.p "Atom.val %a@\n" (pp_with_pp_var Var.pp) atom ;
     let* atom =
       let exception FoundUnsat in
       try
@@ -1790,11 +1863,7 @@ module Atom = struct
         None
 
 
-  let simplify_linear atom =
-    map_terms atom ~f:(fun t ->
-        let t = Term.simplify_linear t in
-        match Term.get_as_var t with Some v -> Term.Var v | None -> t )
-
+  let simplify_linear atom = map_terms atom ~f:Term.simplify_linear
 
   module Set = struct
     include Caml.Set.Make (struct
@@ -1873,7 +1942,7 @@ module VarMapOccurrences = MakeOccurrences (struct
 end)
 
 module TermDomainOrRange = struct
-  (** for a binding [t=v], describes whether a variable [v'] appears in [t] (domain), is [v']
+  (** for a binding [t=v], describes whether a variable [v'] appears in [t] (domain), is [v]
       (range), or both; we could have a different representation of term occurrences using a map
       [t -> Domain | Range | DomainAndRange] to match what we are trying to do closer but we use a
       set like other occurrence maps, oh well. *)
@@ -1910,6 +1979,46 @@ module AtomMapOccurrences = MakeOccurrences (struct
   let pp_set = Atom.Set.pp_with_pp_var
 end)
 
+module InstanceOf = struct
+  (** Domain for tracking dynamic type of variables via positive and negative instanceof constraints *)
+
+  type dynamic_type_data = {typ: Typ.t; source_file: (SourceFile.t[@yojson.opaque]) option}
+  [@@deriving compare, equal, yojson_of]
+
+  type instance_fact =
+    | Known of dynamic_type_data
+    | Unknown of {below: Typ.t list; notbelow: Typ.t list}
+  [@@deriving compare, equal, yojson_of]
+
+  let pp_instance_fact fmt inf =
+    match inf with
+    | Known {typ; source_file} ->
+        F.fprintf fmt "%a, SourceFile %a" (Typ.pp_full Pp.text) typ (Pp.option SourceFile.pp)
+          source_file
+    | Unknown {below; notbelow} ->
+        let tlist_pp = Pp.seq ~sep:"," (Typ.pp_full Pp.text) in
+        F.fprintf fmt "{%a \\ %a}" tlist_pp below tlist_pp notbelow
+
+
+  type t = instance_fact Var.Map.t [@@deriving compare, equal, yojson_of]
+
+  let pp_with_pp_var pp_var fmt m =
+    Pp.collection ~sep:"∧"
+      ~fold:(IContainer.fold_of_pervasives_map_fold Var.Map.fold)
+      ~pp_item:(fun fmt (var, inf) -> F.fprintf fmt "%a:%a" pp_var var pp_instance_fact inf)
+      fmt m
+
+
+  let is_subtype t1 t2 =
+    (* Don't really like doing dereference on every call *)
+    let tenv = PulseContext.tenv_exn () in
+    match (Typ.name t1, Typ.name t2) with
+    | Some n1, Some n2 ->
+        PatternMatch.is_subtype tenv n1 n2
+    | _, _ ->
+        Typ.equal t1 t2
+end
+
 module Formula = struct
   (* redefined for yojson output *)
   type var_eqs = VarUF.t [@@deriving compare, equal]
@@ -1937,6 +2046,8 @@ module Formula = struct
             (** Equality relation between variables. We want to only use canonical representatives
                 from this equality relation in the rest of the formula and more generally in all of
                 the abstract state. See also {!AbductiveDomain}. *)
+      ; const_eqs: Term.t Var.Map.t
+      ; type_constraints: InstanceOf.t
       ; linear_eqs: linear_eqs
             (** Equalities of the form [x = l] where [l] is from linear arithmetic. These are
                 interpreted over the *rationals*, not integers (or floats), so this will be
@@ -1978,8 +2089,8 @@ module Formula = struct
 
                 INVARIANT: see {!Tableau} *)
       ; intervals: (intervals[@yojson.opaque])
-            (** A simple, non-relational domain of concrete integer intervals of the form
-                [x∈\[i,j\]] or [x∉\[i,j\]].
+            (** A simple, non-relational domain of concrete integer intervals of the form [x∈[i,j]]
+                or [x∉[i,j]].
 
                 This is used to recover a little bit of completeness on integer reasoning at no
                 great cost. *)
@@ -2028,6 +2139,20 @@ module Formula = struct
     val subst_term_eqs : Var.t Var.Map.t -> t -> Term.VarMap.t_
 
     (* {2 mutations} *)
+
+    val add_const_eq : Var.t -> Term.t -> t -> t SatUnsat.t
+    (** [add_const_eq v t phi] adds [v=t] to [const_eqs]; [Unsat] if [v] was already bound to a
+        different constant *)
+
+    val remove_const_eq : Var.t -> t -> t
+
+    val add_dynamic_type : Var.t -> Typ.t -> ?source_file:SourceFile.t -> t -> t SatUnsat.t
+
+    val add_below : Var.t -> Typ.t -> t -> t SatUnsat.t
+
+    val add_notbelow : Var.t -> Typ.t -> t -> t SatUnsat.t
+
+    val copy_type_constraints : Var.t -> Var.t -> t -> t
 
     val add_linear_eq : Var.t -> LinArith.t -> t -> t * Var.t option
     (** [add_linear_eq v l phi] adds [v=l] to [linear_eqs] and updates the occurrences maps and
@@ -2081,6 +2206,8 @@ module Formula = struct
 
     val unsafe_mk :
          var_eqs:var_eqs
+      -> const_eqs:Term.t Var.Map.t
+      -> type_constraints:InstanceOf.t
       -> linear_eqs:linear_eqs
       -> term_eqs:Term.VarMap.t_
       -> tableau:Tableau.t
@@ -2099,6 +2226,8 @@ module Formula = struct
 
     type t =
       { var_eqs: var_eqs
+      ; const_eqs: Term.t Var.Map.t
+      ; type_constraints: InstanceOf.t
       ; linear_eqs: linear_eqs
       ; term_eqs: term_eqs
       ; tableau: Tableau.t
@@ -2112,6 +2241,8 @@ module Formula = struct
 
     let ttrue =
       { var_eqs= VarUF.empty
+      ; const_eqs= Var.Map.empty
+      ; type_constraints= Var.Map.empty
       ; linear_eqs= Var.Map.empty
       ; term_eqs= Term.VarMap.empty
       ; tableau= Tableau.empty
@@ -2129,6 +2260,8 @@ module Formula = struct
 
     let is_empty
         ({ var_eqs
+         ; const_eqs
+         ; type_constraints
          ; linear_eqs
          ; term_eqs
          ; tableau
@@ -2138,8 +2271,9 @@ module Formula = struct
          ; tableau_occurrences= _
          ; term_eqs_occurrences= _
          ; atoms_occurrences= _ } [@warning "+missing-record-field-pattern"] ) =
-      VarUF.is_empty var_eqs && Var.Map.is_empty linear_eqs && term_eqs_is_empty term_eqs
-      && Var.Map.is_empty tableau && Var.Map.is_empty intervals && Atom.Set.is_empty atoms
+      VarUF.is_empty var_eqs && Var.Map.is_empty const_eqs && Var.Map.is_empty type_constraints
+      && Var.Map.is_empty linear_eqs && term_eqs_is_empty term_eqs && Var.Map.is_empty tableau
+      && Var.Map.is_empty intervals && Atom.Set.is_empty atoms
 
 
     (* {2 [term_eqs] interface due to the totally opaque type} *)
@@ -2200,6 +2334,8 @@ module Formula = struct
 
     let pp_with_pp_var pp_var fmt
         ( ({ var_eqs
+           ; const_eqs
+           ; type_constraints
            ; linear_eqs
            ; term_eqs
            ; tableau
@@ -2217,6 +2353,16 @@ module Formula = struct
       F.pp_open_hvbox fmt 0 ;
       if is_empty phi then F.pp_print_string fmt "(empty)" ;
       (pp_if (not (VarUF.is_empty var_eqs)) "var_eqs" (VarUF.pp pp_var)) fmt var_eqs ;
+      (pp_if
+         (not (Var.Map.is_empty const_eqs))
+         "const_eqs"
+         (pp_var_map ~arrow:"=" (Term.pp pp_var) pp_var) )
+        fmt const_eqs ;
+      (pp_if
+         (not (Var.Map.is_empty type_constraints))
+         "type_constraints"
+         (InstanceOf.pp_with_pp_var pp_var) )
+        fmt type_constraints ;
       (pp_if
          (not (Var.Map.is_empty linear_eqs))
          "linear_eqs"
@@ -2248,6 +2394,112 @@ module Formula = struct
 
 
     (* {2 mutations} *)
+
+    let add_const_eq v t phi =
+      Debug.p "add_const_eq %a->%a@\n" Var.pp v (Term.pp Var.pp) t ;
+      match Var.Map.find_opt v phi.const_eqs with
+      | None ->
+          Sat {phi with const_eqs= Var.Map.add v t phi.const_eqs}
+      | Some t' ->
+          if Term.equal_syntax t t' then Sat phi else Unsat
+
+
+    let remove_const_eq v phi =
+      Debug.p "remove_const_eq for %a@\n" Var.pp v ;
+      {phi with const_eqs= Var.Map.remove v phi.const_eqs}
+
+
+    let add_dynamic_type v t ?source_file phi =
+      match Var.Map.find_opt v phi.type_constraints with
+      | None ->
+          Sat
+            { phi with
+              type_constraints=
+                Var.Map.add v (InstanceOf.Known {typ= t; source_file}) phi.type_constraints }
+      | Some (InstanceOf.Known {typ= t'}) ->
+          if Typ.equal t t' then Sat phi else Unsat
+      | Some (InstanceOf.Unknown {below; notbelow}) ->
+          if List.exists below ~f:(fun t' -> InstanceOf.is_subtype t t' |> not) then Unsat
+          else if List.exists notbelow ~f:(fun t' -> InstanceOf.is_subtype t t') then Unsat
+          else
+            Sat
+              { phi with
+                type_constraints=
+                  Var.Map.add v (InstanceOf.Known {typ= t; source_file= None}) phi.type_constraints
+              }
+
+
+    let add_below v t phi =
+      Debug.p "add_below %a %a@\n" Var.pp v (Typ.pp_full Pp.text) t ;
+      match Var.Map.find_opt v phi.type_constraints with
+      | None ->
+          (* TODO: case where t is final -> add_dynamic_type v t instead *)
+          Debug.p "not found so adding below constraint\n" ;
+          let phi =
+            { phi with
+              type_constraints=
+                Var.Map.add v (InstanceOf.Unknown {below= [t]; notbelow= []}) phi.type_constraints
+            }
+          in
+          Debug.p "new phi is %a@\n" (pp_with_pp_var Var.pp) phi ;
+          Sat phi
+      | Some (InstanceOf.Known {typ= t'}) ->
+          if InstanceOf.is_subtype t' t then Sat phi else Unsat
+      | Some (InstanceOf.Unknown {below; notbelow}) ->
+          (* new below constraint is redundant with an existing one *)
+          if List.exists below ~f:(fun t' -> InstanceOf.is_subtype t' t) then Sat phi
+            (* new below constraint is incompatible with a notbelow one *)
+          else if List.exists notbelow ~f:(fun t' -> InstanceOf.is_subtype t t') then Unsat
+            (* TODO: We omit rest of interesting logic for now *)
+          else
+            Sat
+              { phi with
+                type_constraints=
+                  Var.Map.add v
+                    (InstanceOf.Unknown {below= t :: below; notbelow})
+                    phi.type_constraints }
+
+
+    let add_notbelow v t phi =
+      match Var.Map.find_opt v phi.type_constraints with
+      | None ->
+          Debug.p "couldn't find %a in type constraints, writing singleton notbelow" Var.pp v ;
+          Sat
+            { phi with
+              type_constraints=
+                Var.Map.add v (InstanceOf.Unknown {below= []; notbelow= [t]}) phi.type_constraints
+            }
+      | Some (InstanceOf.Known {typ= t'}) ->
+          if InstanceOf.is_subtype t' t then Unsat else Sat phi
+      | Some (InstanceOf.Unknown {below; notbelow}) ->
+          (* new notbelow constraint is redundant with an existing one *)
+          if List.exists notbelow ~f:(fun t' -> InstanceOf.is_subtype t t') then (
+            Debug.p "adding %a to notbelow is redundant" (Typ.pp_full Pp.text) t ;
+            Sat phi (* new notbelow constraint is incompatible with a below one *) )
+          else if List.exists below ~f:(fun t' -> InstanceOf.is_subtype t' t) then (
+            Debug.p "adding %a to notbelow is inconsistent" (Typ.pp_full Pp.text) t ;
+            Unsat (* TODO: We omit rest of interesting logic for now *) )
+          else (
+            Debug.p "actually going ahead and adding %a to notbelow" (Typ.pp_full Pp.text) t ;
+            Sat
+              { phi with
+                type_constraints=
+                  Var.Map.add v
+                    (InstanceOf.Unknown {below; notbelow= t :: notbelow})
+                    phi.type_constraints } )
+
+
+    let copy_type_constraints v_src v_target phi =
+      match Var.Map.find_opt v_src phi.type_constraints with
+      | None ->
+          phi
+      | Some src_constraints -> (
+        match Var.Map.find_opt v_target phi.type_constraints with
+        | None ->
+            {phi with type_constraints= Var.Map.add v_target src_constraints phi.type_constraints}
+        | Some _ ->
+            L.die InternalError "Failed attempt to copy type constraints" )
+
 
     let remove_term_eq t v phi =
       Debug.p "remove_term_eq %a->%a in %a@\n" (Term.pp Var.pp) t Var.pp v (pp_with_pp_var Var.pp)
@@ -2429,9 +2681,12 @@ module Formula = struct
       {phi with term_eqs= Term.VarMap.empty; term_eqs_occurrences= Var.Map.empty}
 
 
-    let unsafe_mk ~var_eqs ~linear_eqs ~term_eqs ~tableau ~intervals ~atoms ~linear_eqs_occurrences
-        ~tableau_occurrences ~term_eqs_occurrences ~atoms_occurrences =
+    let unsafe_mk ~var_eqs ~const_eqs ~type_constraints ~linear_eqs ~term_eqs ~tableau ~intervals
+        ~atoms ~linear_eqs_occurrences ~tableau_occurrences ~term_eqs_occurrences ~atoms_occurrences
+        =
       { var_eqs
+      ; const_eqs
+      ; type_constraints
       ; linear_eqs
       ; term_eqs
       ; tableau
@@ -2445,18 +2700,25 @@ module Formula = struct
 
   include Unsafe
 
+  let fold_constant_var_map map ~init ~f =
+    let f var _constant acc = f acc var in
+    Var.Map.fold f map init
+
+
+  let fold_type_constraints_map map ~init ~f =
+    let f var _constraint acc = f acc var in
+    Var.Map.fold f map init
+
+
   let fold_linear_eqs_vars linear_eqs ~init ~f =
     let f_eq var linarith acc = Seq.fold_left f (f acc var) (LinArith.get_variables linarith) in
     Var.Map.fold f_eq linear_eqs init
 
 
-  let fold_intervals_vars intervals ~init ~f =
-    let f_interval var _interval acc = f acc var in
-    Var.Map.fold f_interval intervals init
-
-
   let fold_variables
       ( ({ var_eqs
+         ; const_eqs
+         ; type_constraints
          ; linear_eqs
          ; term_eqs= _
          ; tableau
@@ -2467,10 +2729,12 @@ module Formula = struct
          ; term_eqs_occurrences= _
          ; atoms_occurrences= _ } [@warning "+missing-record-field-pattern"] ) as phi ) ~init ~f =
     let init = VarUF.fold_elements var_eqs ~init ~f in
+    let init = fold_constant_var_map const_eqs ~init ~f in
+    let init = fold_type_constraints_map type_constraints ~init ~f in
     let init = fold_linear_eqs_vars linear_eqs ~init ~f in
     let init = fold_term_eqs_vars phi ~init ~f in
     let init = fold_linear_eqs_vars tableau ~init ~f in
-    let init = fold_intervals_vars intervals ~init ~f in
+    let init = fold_constant_var_map intervals ~init ~f in
     Atom.Set.fold (fun atom acc -> Atom.fold_variables atom ~init:acc ~f) atoms init
 
 
@@ -2504,6 +2768,8 @@ module Formula = struct
     (** use with the result of {!normalize_atom} in place of {!and_atom} *)
 
     val and_atom : Atom.t -> t * new_eqs -> (t * new_eqs) SatUnsat.t
+
+    val propagate_atom : Atom.t -> t * new_eqs -> (t * new_eqs) SatUnsat.t
     (** [and_atom atom (phi, new_eqs)] is
         [SatUnsat.(normalize_atom phi atom >>= and_normalized_atoms (phi, new_eqs))] *)
   end = struct
@@ -2555,8 +2821,12 @@ module Formula = struct
       Term.subst_variables t ~f:(fun v ->
           let v_canon = (get_repr phi v :> Var.t) in
           match Var.Map.find_opt v_canon phi.linear_eqs with
-          | None ->
-              VarSubst v_canon
+          | None -> (
+            match Var.Map.find_opt v_canon phi.const_eqs with
+            | None ->
+                VarSubst v_canon
+            | Some c ->
+                ConstantSubst (c, Some v_canon) )
           | Some l -> (
             match LinArith.get_as_const l with
             | None ->
@@ -2748,6 +3018,8 @@ module Formula = struct
       Debug.p "solve_normalized_term_eq: %a=%a in %a, new_eqs=%a@\n" (Term.pp Var.pp) t Var.pp v
         (pp_with_pp_var Var.pp) phi pp_new_eqs new_eqs ;
       match t with
+      | Var v' ->
+          merge_vars ~fuel new_eqs v v' phi
       | Linear l when LinArith.get_as_var l |> Option.is_some ->
           let v' = Option.value_exn (LinArith.get_as_var l) in
           merge_vars ~fuel new_eqs v v' phi
@@ -2774,6 +3046,10 @@ module Formula = struct
           (* same as above but constants ([c]) are always normalized so it's simpler *)
           let* phi, new_eqs = add_term_eq_and_solve_new_eq_opt ~fuel new_eqs t v phi in
           solve_normalized_lin_eq ~fuel new_eqs (LinArith.of_q c) (LinArith.of_var v) phi
+      | String _ ->
+          (* same as above for non-numeric constants *)
+          let* phi = add_const_eq v t phi in
+          add_term_eq_and_solve_new_eq_opt ~fuel new_eqs t v phi >>= propagate_term_eq ~fuel t v
       | _ ->
           solve_normalized_term_eq_no_lin ~fuel new_eqs t v phi >>= propagate_term_eq ~fuel t v
 
@@ -2797,7 +3073,26 @@ module Formula = struct
           let new_eqs = RevList.cons (Equal (v_old, v_new)) new_eqs in
           (* substitute [v_old -> v_new] in [phi.linear_eqs] while maintaining the [linear_eqs]
              invariant *)
-          propagate_linear_eq ~fuel v_old (LinArith.of_var v_new) (phi, new_eqs)
+          propagate_var_eq ~fuel v_old v_new (phi, new_eqs)
+
+
+    and propagate_in_const_eqs x y (phi, new_eqs) =
+      Debug.p "[propagate_in_const_eqs] %a=%a@\n  @[" Var.pp x Var.pp y ;
+      let r =
+        match Var.Map.find_opt x phi.const_eqs with
+        | None ->
+            Sat (phi, new_eqs)
+        | Some c -> (
+            let phi = remove_const_eq x phi in
+            match Var.Map.find_opt y phi.const_eqs with
+            | None ->
+                let+ phi = add_const_eq y c phi in
+                (phi, new_eqs)
+            | Some c' ->
+                if Term.equal_syntax c c' then Sat (phi, new_eqs) else Unsat )
+      in
+      Debug.p "@]end [propagate_in_const_eqs] %a=%a@\n" Var.pp x Var.pp y ;
+      r
 
 
     and propagate_in_linear_eqs_domain ~fuel v_old l (phi, new_eqs) =
@@ -2960,8 +3255,9 @@ module Formula = struct
     and propagate_in_term_eqs ~fuel (tx : Term.t) x ((phi, new_eqs) as phi_new_eqs) =
       match Term.to_subst_target tx with
       | LinSubst _ | NonLinearTermSubst _ ->
+          Debug.p "prop in term eqs tx=%a, x=%a being ignored" (Term.pp Var.pp) tx Var.pp x ;
           Sat phi_new_eqs
-      | (VarSubst _ | QSubst _) as subst_target_x -> (
+      | (VarSubst _ | QSubst _ | ConstantSubst _) as subst_target_x -> (
         match Var.Map.find_opt x phi.term_eqs_occurrences with
         | None ->
             Sat phi_new_eqs
@@ -2984,8 +3280,35 @@ module Formula = struct
                     | Some y -> (
                       match domain_or_range with
                       | Range -> (
-                          (* only thing to do in this case is to check if the new equality on [x]
-                             introduced contradictions in [t=x] or new atoms *)
+                          let* phi, new_eqs = phi_new_eqs_sat in
+                          (* If t is an IsInstanceOf formula, and we've just found its truth value, propagate
+                             the information into the below/notbelow type constraints on the relevant
+                             variable. *)
+                          let* phi =
+                            match Term.get_as_isinstanceof t with
+                            | Some (var, typ) ->
+                                if is_neq_zero phi tx then (
+                                  Debug.p "prop in term_eq adding below\n" ;
+                                  add_below var typ phi )
+                                else if
+                                  match tx with
+                                  | Linear l ->
+                                      LinArith.is_zero l
+                                  | Const c ->
+                                      Q.is_zero c
+                                  | _ ->
+                                      false
+                                then (
+                                  Debug.p "prop in term_eq adding notbelow\n" ;
+                                  add_notbelow var typ phi )
+                                else (
+                                  Debug.p "%a is neither zero nor non-zero, leaving phi alone\n"
+                                    (Term.pp Var.pp) tx ;
+                                  Sat phi )
+                            | None ->
+                                Sat phi
+                          in
+                          (* Now check if the new equality on [x] introduced contradictions in [t=x] or new atoms *)
                           let* atoms_opt =
                             Atom.eval_with_normalized_terms ~is_neq_zero:(is_neq_zero phi)
                               (Equal (t, Term.simplify_linear tx))
@@ -3007,6 +3330,13 @@ module Formula = struct
                               and_normalized_atoms (phi, new_eqs) atoms >>| snd )
                       | Domain | DomainAndRange -> (
                           let* phi, new_eqs = phi_new_eqs_sat in
+                          let subst_target_x =
+                            match subst_target_x with
+                            | VarSubst v ->
+                                VarSubst (get_repr phi v :> Var.t)
+                            | _ ->
+                                subst_target_x
+                          in
                           let* t' =
                             let exception Unsat in
                             try
@@ -3063,7 +3393,11 @@ module Formula = struct
                                           (LinArith.of_var y |> normalize_linear phi)
                                           l' phi
                                     | None ->
-                                        add_term_eq_and_solve_new_eq_opt ~fuel new_eqs t' y phi )
+                                        if Term.is_non_numeric_constant t' then
+                                          let+ phi = add_const_eq y t' phi in
+                                          (phi, new_eqs)
+                                        else add_term_eq_and_solve_new_eq_opt ~fuel new_eqs t' y phi
+                                    )
                                 | Some y' ->
                                     Debug.p "Existing term_eq %a -> %a, merging %a=%a@\n"
                                       (Term.pp Var.pp) t' Var.pp y' Var.pp y Var.pp y' ;
@@ -3112,35 +3446,53 @@ module Formula = struct
       >>= propagate_term_eq ~fuel (Term.Linear lx) x
 
 
+    and propagate_var_eq ~fuel x y phi_new_eqs =
+      propagate_in_const_eqs x y phi_new_eqs >>= propagate_linear_eq ~fuel x (LinArith.of_var y)
+
+
     and propagate_atom atom phi_new_eqs =
+      Debug.p "propagate atom called on %a@\n" (Atom.pp_with_pp_var Var.pp) atom ;
       match Atom.get_as_var_neq_zero atom with
       | None ->
           Sat phi_new_eqs
       | Some v -> (
-        match Var.Map.find_opt v (fst phi_new_eqs).term_eqs_occurrences with
-        | None ->
-            Sat phi_new_eqs
-        | Some in_term_eqs ->
-            TermDomainOrRange.Set.fold
-              (fun (t, domain_or_range) phi_new_eqs_sat ->
-                match domain_or_range with
-                | Domain ->
-                    phi_new_eqs_sat
-                | Range | DomainAndRange -> (
-                    let* phi, new_eqs = phi_new_eqs_sat in
-                    let* atoms_opt =
-                      Atom.eval_with_normalized_terms ~is_neq_zero:(is_neq_zero phi)
-                        (Equal (t, Var v))
-                    in
-                    match atoms_opt with
-                    | None ->
-                        phi_new_eqs_sat
-                    | Some atoms ->
-                        Debug.p "Found new atoms thanks to %a≠0: [%a]@\n" Var.pp v
-                          (Pp.seq ~sep:"," (Atom.pp_with_pp_var Var.pp))
-                          atoms ;
-                        and_normalized_atoms (phi, new_eqs) atoms >>| snd ) )
-              in_term_eqs (Sat phi_new_eqs) )
+          Debug.p "got as var neq zero with v=%a@\n" Var.pp v ;
+          match Var.Map.find_opt v (fst phi_new_eqs).term_eqs_occurrences with
+          | None ->
+              Debug.p "failed to find in term_eqs\n" ;
+              Sat phi_new_eqs
+          | Some in_term_eqs ->
+              Debug.p "found in term_eqs\n" ;
+              TermDomainOrRange.Set.fold
+                (fun (t, domain_or_range) phi_new_eqs_sat ->
+                  Debug.p "found var maps to %a@\n" (Term.pp Var.pp) t ;
+                  let* phi, new_eqs = phi_new_eqs_sat in
+                  match domain_or_range with
+                  | Domain ->
+                      Debug.p "domain\n" ;
+                      phi_new_eqs_sat
+                  | Range | DomainAndRange -> (
+                      Debug.p "range or both\n" ;
+                      let* phi =
+                        match Term.get_as_isinstanceof t with
+                        | Some (var, typ) ->
+                            add_below var typ phi
+                        | None ->
+                            Sat phi
+                      in
+                      let* atoms_opt =
+                        Atom.eval_with_normalized_terms ~is_neq_zero:(is_neq_zero phi)
+                          (Equal (t, Var v))
+                      in
+                      match atoms_opt with
+                      | None ->
+                          Sat (phi, new_eqs)
+                      | Some atoms ->
+                          Debug.p "Found new atoms thanks to %a≠0: [%a]@\n" Var.pp v
+                            (Pp.seq ~sep:"," (Atom.pp_with_pp_var Var.pp))
+                            atoms ;
+                          and_normalized_atoms (phi, new_eqs) atoms >>| snd ) )
+                in_term_eqs (Sat phi_new_eqs) )
 
 
     (* Assumes [w] is restricted, [l] is normalized. This is called [addlineq] in \[2\]. *)
@@ -3184,7 +3536,8 @@ module Formula = struct
 
     (** return [(new_linear_equalities, phi ∧ atom)], where [new_linear_equalities] is [true] if
         [phi.linear_eqs] was changed as a result *)
-    and and_normalized_atom (phi, new_eqs) = function
+    and and_normalized_atom (phi, new_eqs) atom =
+      match Atom.var_terms_to_linear atom with
       | Atom.Equal (Linear _, Linear _) ->
           assert false
       | Atom.Equal (Linear l, Const c) | Atom.Equal (Const c, Linear l) ->
@@ -3211,8 +3564,8 @@ module Formula = struct
           let+ phi', new_eqs = solve_lin_ineq new_eqs (LinArith.of_q (Q.add c Q.one)) l phi in
           (true, (phi', new_eqs))
       | atom' ->
-          (* the previous normalization has "simplified" [Var] and [Const] terms into [Linear]
-             ones, revert this *)
+          (* the previous normalization has "simplified" [Var] terms into [Linear] ones, revert
+             this *)
           let atom = Atom.simplify_linear atom' in
           let+ phi_new_eqs = (add_atom atom phi, new_eqs) |> propagate_atom atom in
           (false, phi_new_eqs)
@@ -3456,12 +3809,19 @@ let and_equal_binop v (bop : Binop.t) x y formula =
   and_atom (Equal (Var v, Term.of_binop bop (Term.of_operand x) (Term.of_operand y))) formula
 
 
+let and_equal_string_concat v x y formula =
+  and_atom (Equal (Var v, StringConcat (Term.of_operand x, Term.of_operand y))) formula
+
+
 let prune_atom atom (formula, new_eqs) =
   (* Use [phi] to normalize [atom] here to take previous [prune]s into account. *)
+  Debug.p "prune atom %a" (Atom.pp_with_pp_var Var.pp) atom ;
   let* normalized_atoms = Formula.Normalizer.normalize_atom formula.phi atom in
   let* phi, new_eqs =
     Formula.Normalizer.and_normalized_atoms (formula.phi, new_eqs) normalized_atoms
   in
+  (* Sticking this call in slightly hopefully *)
+  let* phi, new_eqs = Formula.Normalizer.propagate_atom atom (phi, new_eqs) in
   let conditions =
     List.fold normalized_atoms ~init:formula.conditions ~f:(fun conditions atom ->
         Atom.Set.add atom conditions )
@@ -3493,24 +3853,42 @@ let prune_binop ~negated (bop : Binop.t) x y formula =
 
 
 module DynamicTypes = struct
-  let evaluate_instanceof tenv ~get_dynamic_type v typ =
-    get_dynamic_type v
-    |> Option.map ~f:(fun dynamic_type ->
-           let is_instanceof =
-             match (Typ.name dynamic_type, Typ.name typ) with
-             | Some name1, Some name2 ->
-                 PatternMatch.is_subtype tenv name1 name2
-             | _, _ ->
-                 Typ.equal dynamic_type typ
-           in
-           Term.of_bool is_instanceof )
+  let get_dynamic_type v formula =
+    (* TODO: canonicalize more uniformly - sticking this here is almost certainly not enough since we look things up in lots of places *)
+    let v_canon = (Formula.get_repr formula.phi v :> Var.t) in
+    match Var.Map.find_opt v_canon formula.phi.type_constraints with
+    | Some (InstanceOf.Known dtd) ->
+        Some dtd
+    | _ ->
+        None
 
 
-  let really_simplify tenv ~get_dynamic_type formula =
+  let evaluate_instanceof formula v typ =
+    match Var.Map.find_opt v formula.phi.type_constraints with
+    | None ->
+        None
+    | Some (InstanceOf.Known {typ= t}) ->
+        Some (InstanceOf.is_subtype t typ |> Term.of_bool)
+    | Some (InstanceOf.Unknown {below; notbelow}) ->
+        if List.exists below ~f:(fun t' -> InstanceOf.is_subtype t' typ) then Some Term.one
+        else if List.exists notbelow ~f:(fun t' -> InstanceOf.is_subtype t' typ) then Some Term.zero
+        else if
+          (* The following is valid only if the subtype hierarchy is a tree rather than a DAG
+             That's fine for the concrete tag hierarchy but not if we also allow interfaces in there,
+             unless we also take care over the distinction between tags and interfaces (which I don't think is captured in tenv)
+             Note that under the tree assumption, we'd really only need at most a single upper bound in type_constraints
+          *)
+          List.exists below ~f:(fun t' ->
+              (not (InstanceOf.is_subtype t' typ)) && not (InstanceOf.is_subtype typ t') )
+        then Some Term.zero
+        else None
+
+
+  let really_simplify formula =
     let simplify_term (t : Term.t) =
       match t with
       | IsInstanceOf (v, typ) -> (
-        match evaluate_instanceof tenv ~get_dynamic_type v typ with None -> t | Some t' -> t' )
+        match evaluate_instanceof formula v typ with None -> t | Some t' -> t' )
       | t ->
           t
     in
@@ -3544,29 +3922,92 @@ module DynamicTypes = struct
     || Atom.Set.exists in_atom formula.phi.atoms
 
 
-  let simplify tenv ~get_dynamic_type formula =
-    if has_instanceof formula then really_simplify tenv ~get_dynamic_type formula
-    else Sat (formula, RevList.empty)
+  (* The previous summary-time simplification wipes out v1 = InstanceOf(v2,t) when we can evaluate the term, which messes with
+     the distinction between latent and manifest errors (if v2 is an argument). I tried hacks to keep the
+     intensional information, but they're unconvincing and a waste of effort, since we ultimately aim to remove the simplification
+     phase anyway. Instead, we just log situations in which the simplification would lead to Unsat, as those are ones in which the
+     new on-the-fly propagation is deficient. If none show up, we can safely remove simplification.
+  *)
+  let simplify formula =
+    if has_instanceof formula then
+      match really_simplify formula with
+      | Unsat ->
+          L.d_printfln ~color:Pp.Orange "WARNING: Summary-time simplify returned Unsat on %a" pp
+            formula
+      | Sat _ ->
+          ()
+    else () ;
+    Sat (formula, RevList.empty)
+
+
+  (* TODO: fix messy separation between (new) InstanceOf and (old) DynamicTypes - not sure where to put the next definition *)
+  let and_callee_type_constraints v type_constraints_foreign (phi, new_eqs) =
+    match type_constraints_foreign with
+    | InstanceOf.Known {typ= t; source_file} ->
+        let+ phi = Formula.add_dynamic_type v t ?source_file phi in
+        (phi, new_eqs)
+    | InstanceOf.Unknown {below; notbelow} ->
+        let* phi =
+          PulseSatUnsat.list_fold below ~init:phi ~f:(fun phi upper_bound ->
+              Formula.add_below v upper_bound phi )
+        in
+        let* phi =
+          PulseSatUnsat.list_fold notbelow ~init:phi ~f:(fun phi not_upper ->
+              Formula.add_notbelow v not_upper phi )
+        in
+        Sat (phi, new_eqs)
 end
 
-(* Just do most naive thing of evaluating instanceof if we know the dynamic type at the time of assertion
-   Because that's pretty weak, leave existing normalisation at summary time in for now
-*)
-let and_equal_instanceof v1 v2 t ~get_dynamic_type ~tenv formula =
-  let atom =
-    match DynamicTypes.evaluate_instanceof tenv ~get_dynamic_type v2 t with
+type dynamic_type_data = InstanceOf.dynamic_type_data =
+  {typ: Typ.t; source_file: SourceFile.t option}
+
+let get_dynamic_type = DynamicTypes.get_dynamic_type
+
+let add_dynamic_type_unsafe v t ?source_file location {conditions; phi} =
+  match Formula.add_dynamic_type v t ?source_file phi with
+  | Sat phi ->
+      {conditions; phi}
+  | _ ->
+      (* It seems this "can't happen" case does, in fact, sometimes happen
+         Just return original phi and log to html and scuba
+      *)
+      let prev_fact = Var.Map.find_opt v phi.type_constraints in
+      L.d_printfln "failed to add dynamic type %a to value %a. Previous constraints were %a\n"
+        (Typ.pp_full Pp.text) t PulseAbstractValue.pp v
+        (Pp.option InstanceOf.pp_instance_fact)
+        prev_fact ;
+      ScubaLogging.log_message_with_location ~label:"add_dynamic_type_unsafe"
+        ~loc:(F.asprintf "%a" Location.pp_file_pos location)
+        ~message:"Failed to add inconsistent dynamic type." ;
+      {conditions; phi}
+
+
+let copy_type_constraints v_src v_target {conditions; phi} =
+  {conditions; phi= Formula.copy_type_constraints v_src v_target phi}
+
+
+let and_equal_instanceof v1 v2 t formula =
+  let* formula, new_eqs =
+    match DynamicTypes.evaluate_instanceof formula v2 t with
     | None ->
-        Atom.equal (Var v1) (IsInstanceOf (v2, t))
+        Sat (formula, RevList.empty)
     | Some bool_term ->
-        Atom.equal (Var v1) bool_term
+        and_atom (Atom.equal (Var v1) bool_term) formula
   in
-  and_atom atom formula
+  let* formula, new_eqs' = and_atom (Atom.equal (Var v1) (IsInstanceOf (v2, t))) formula in
+  Sat (formula, RevList.append new_eqs new_eqs')
 
 
-let normalize tenv ~get_dynamic_type formula =
+let normalize formula =
+  (* Sat (formula, RevList.empty) *)
   Debug.p "@\n@\n***NORMALIZING NOW***@\n@\n" ;
   (* normalization happens incrementally except for dynamic types (TODO) *)
-  DynamicTypes.simplify tenv ~get_dynamic_type formula
+  DynamicTypes.simplify formula
+
+
+let and_dynamic_type_is v t ?source_file formula =
+  let+ phi = Formula.add_dynamic_type v t ?source_file formula.phi in
+  ({formula with phi}, RevList.empty)
 
 
 (** translate each variable in [formula_foreign] according to [f] then incorporate each fact into
@@ -3616,6 +4057,16 @@ let and_fold_subst_variables formula0 ~up_to_f:formula_foreign ~init ~f:f_var =
         in
         (acc_f, phi_new_eqs) )
   in
+  let and_type_constraints type_constraints_foreign acc_phi_new_eqs =
+    IContainer.fold_of_pervasives_map_fold Var.Map.fold type_constraints_foreign
+      ~init:acc_phi_new_eqs ~f:(fun (acc_f, phi_new_eqs) (v_foreign, type_constraints_foreign) ->
+        let acc_f, v = f_var acc_f v_foreign in
+        let phi_new_eqs =
+          DynamicTypes.and_callee_type_constraints v type_constraints_foreign phi_new_eqs
+          |> sat_value_exn
+        in
+        (acc_f, phi_new_eqs) )
+  in
   let and_atoms atoms_foreign acc_phi_new_eqs =
     IContainer.fold_of_pervasives_set_fold Atom.Set.fold atoms_foreign ~init:acc_phi_new_eqs
       ~f:(fun (acc_f, phi_new_eqs) atom_foreign ->
@@ -3627,6 +4078,7 @@ let and_fold_subst_variables formula0 ~up_to_f:formula_foreign ~init ~f:f_var =
     try
       Sat
         ( and_var_eqs phi_foreign.Formula.var_eqs (acc, (phi, RevList.empty))
+        |> and_type_constraints phi_foreign.Formula.type_constraints
         |> and_linear_eqs phi_foreign.Formula.linear_eqs
         |> and_term_eqs phi_foreign
         |> and_intervals phi_foreign.Formula.intervals
@@ -3639,6 +4091,7 @@ let and_fold_subst_variables formula0 ~up_to_f:formula_foreign ~init ~f:f_var =
 
 
 let and_conditions_fold_subst_variables phi0 ~up_to_f:phi_foreign ~init ~f:f_var =
+  Debug.p "START and_conditions_fold_subst_variables" ;
   let f_subst acc v =
     let acc', v' = f_var acc v in
     (acc', VarSubst v')
@@ -3657,6 +4110,7 @@ let and_conditions_fold_subst_variables phi0 ~up_to_f:phi_foreign ~init ~f:f_var
   in
   try
     let acc, (phi, new_eqs) = add_conditions phi_foreign.conditions (init, (phi0, RevList.empty)) in
+    Debug.p "END and_conditions_fold_subst_variables" ;
     Sat (acc, phi, new_eqs)
   with Contradiction -> Unsat
 
@@ -3687,11 +4141,12 @@ end = struct
       linear_eqs Var.Map.empty
 
 
-  let subst_var_intervals subst intervals =
+  (* used for both intervals and type constraints *)
+  let subst_key_var_only subst intervals =
     Var.Map.fold
       (fun x citv new_map ->
         let x' = subst_f subst x in
-        (* concrete intervals have no variables inside them *)
+        (* concrete intervals/types have no variables inside them *)
         Var.Map.add x' citv new_map )
       intervals Var.Map.empty
 
@@ -3725,12 +4180,15 @@ end = struct
 
 
   let subst_var_phi subst
-      ({Formula.var_eqs; linear_eqs; tableau; term_eqs= _; intervals; atoms} as phi) =
+      ( {Formula.var_eqs; type_constraints; linear_eqs; tableau; term_eqs= _; intervals; atoms} as
+        phi ) =
     Formula.unsafe_mk ~var_eqs:(VarUF.apply_subst subst var_eqs)
+      ~const_eqs:(* trust that rebuilding [term_eqs] will re-generate this map *) Var.Map.empty
+      ~type_constraints:(subst_key_var_only subst type_constraints)
       ~linear_eqs:(subst_var_linear_eqs subst linear_eqs)
       ~term_eqs:(Formula.subst_term_eqs subst phi)
       ~tableau:(subst_var_linear_eqs subst tableau)
-      ~intervals:(subst_var_intervals subst intervals)
+      ~intervals:(subst_key_var_only subst intervals)
       ~atoms:(subst_var_atoms subst atoms)
         (* this is only ever called during summary creation, it's safe to ditch the occurrence maps
            at this point since they will be reconstructed by callers *)
@@ -3877,6 +4335,9 @@ module DeadVariables = struct
     L.d_printfln "Reachable vars: %a" Var.Set.pp vars_to_keep ;
     let simplify_phi phi =
       let var_eqs = VarUF.filter ~f:(fun x -> Var.Set.mem x vars_to_keep) phi.Formula.var_eqs in
+      let type_constraints =
+        Var.Map.filter (fun x _ -> Var.Set.mem x vars_to_keep) phi.Formula.type_constraints
+      in
       (* all linear equalities have a counterpart in [term_eqs] so it's safe to drop them here to
          save space in summaries *)
       let linear_eqs = Var.Map.empty in
@@ -3915,7 +4376,11 @@ module DeadVariables = struct
             CItv.requires_integer_reasoning interval && Var.Set.mem v vars_to_keep )
           phi.Formula.intervals
       in
-      Formula.unsafe_mk ~var_eqs ~linear_eqs ~term_eqs ~tableau ~intervals
+      Formula.unsafe_mk ~var_eqs
+        ~const_eqs:
+          (* we simplify for summaries creation, this information is already present in
+             [term_eqs] *)
+          Var.Map.empty ~linear_eqs ~term_eqs ~tableau ~intervals ~type_constraints
         ~atoms
           (* we simplify for summaries creation, it's safe to ditch the occurrence maps at this
              point since they will be reconstructed by callers *)
@@ -3934,9 +4399,9 @@ module DeadVariables = struct
     Sat ({conditions; phi}, vars_to_keep)
 end
 
-let simplify tenv ~get_dynamic_type ~precondition_vocabulary ~keep formula =
+let simplify ~precondition_vocabulary ~keep formula =
   let open SatUnsat.Import in
-  let* formula, new_eqs = normalize tenv ~get_dynamic_type formula in
+  let* formula, new_eqs = normalize formula in
   L.d_printfln_escaped "@[Simplifying %a@ wrt %a (keep),@ with prunables=%a@]" pp formula Var.Set.pp
     keep Var.Set.pp precondition_vocabulary ;
   (* get rid of as many variables as possible *)
@@ -3958,6 +4423,9 @@ let is_known_non_pointer formula v = Formula.is_non_pointer formula.phi v
 let is_manifest ~is_allocated formula =
   Atom.Set.for_all
     (fun atom ->
+      let is_ground = not @@ Term.has_var_notin Var.Set.empty @@ Atom.to_term atom in
+      is_ground
+      ||
       match Atom.get_as_var_neq_zero atom with
       | Some x ->
           (* ignore [x≠0] when [x] is known to be allocated: pointers being allocated doesn't make
@@ -3977,9 +4445,17 @@ let is_manifest ~is_allocated formula =
 
 let get_var_repr formula v = (Formula.get_repr formula.phi v :> Var.t)
 
-let get_known_constant_opt formula v =
+let as_constant_q formula v =
   Var.Map.find_opt (get_var_repr formula v) formula.phi.linear_eqs
   |> Option.bind ~f:LinArith.get_as_const
+
+
+let as_constant_string formula v =
+  match Var.Map.find_opt (get_var_repr formula v) formula.phi.const_eqs with
+  | Some (String s) ->
+      Some s
+  | _ ->
+      None
 
 
 (** for use in applying callee path conditions: we need to translate callee variables to make sense
@@ -4024,5 +4500,18 @@ let absval_of_int formula i =
       let v = Var.mk_fresh () in
       let formula =
         and_equal (AbstractValueOperand v) (ConstOperand (Cint i)) formula |> assert_sat |> fst
+      in
+      (formula, v)
+
+
+let absval_of_string formula s =
+  match Formula.get_term_eq formula.phi (String s) with
+  | Some v ->
+      (formula, v)
+  | None ->
+      let assert_sat = function Sat x -> x | Unsat -> assert false in
+      let v = Var.mk_fresh () in
+      let formula =
+        and_equal (AbstractValueOperand v) (ConstOperand (Cstr s)) formula |> assert_sat |> fst
       in
       (formula, v)

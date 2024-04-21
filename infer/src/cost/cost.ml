@@ -65,10 +65,11 @@ module InstrBasicCostWithReason = struct
       | Some callee_cost when not (Procname.is_hack_builtins callee_pname) ->
           callee_cost
       | _ ->
-          ScubaLogging.cost_log_message ~label:"unmodeled_function_operation_cost"
-            ~message:
-              (F.asprintf "[Operation Cost] Unmodeled Function: %a" Procname.pp_without_templates
-                 callee_pname ) ;
+          if Config.cost_log_unknown_calls then
+            ScubaLogging.log_message ~label:"unmodeled_function_operation_cost"
+              ~message:
+                (F.asprintf "[Operation Cost] Unmodeled Function: %a" Procname.pp_without_templates
+                   callee_pname ) ;
           BasicCostWithReason.one )
 
 
@@ -242,9 +243,11 @@ module WorstCaseCost = struct
           CostDomain.plus acc cost )
     in
     Option.iter (CostDomain.get_operation_cost cost).top_pname_opt ~f:(fun top_pname ->
-        ScubaLogging.cost_log_message ~label:"unmodeled_function_top_cost"
-          ~message:
-            (F.asprintf "[Top Cost] Unmodeled Function: %a" Procname.pp_without_templates top_pname) ) ;
+        if Config.cost_log_unknown_calls then
+          ScubaLogging.log_message ~label:"unmodeled_function_top_cost"
+            ~message:
+              (F.asprintf "[Top Cost] Unmodeled Function: %a" Procname.pp_without_templates
+                 top_pname ) ) ;
     cost
 end
 
@@ -281,16 +284,16 @@ module Check = struct
     if not (is_report_suppressed pname) then
       CostIssues.CostKindMap.iter2 CostIssues.enabled_cost_map cost
         ~f:(fun
-             _kind
-             CostIssues.
-               { name
-               ; unreachable_issue
-               ; infinite_issue
-               ; expensive_issue
-               ; top_and_unreachable
-               ; expensive }
-             cost
-           ->
+            _kind
+            CostIssues.
+              { name
+              ; unreachable_issue
+              ; infinite_issue
+              ; expensive_issue
+              ; top_and_unreachable
+              ; expensive }
+            cost
+          ->
           let report = mk_report proc_desc pname err_log (Procdesc.get_loc proc_desc) ~name cost in
           if top_and_unreachable then
             report_top_and_unreachable ~report ~unreachable_issue ~infinite_issue cost ;

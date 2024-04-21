@@ -7,7 +7,6 @@
 
 open! IStd
 open PulseDomainInterface
-module L = Logging
 
 let prune_eq_list_values astate values =
   let prune_eq astate val1 val2 =
@@ -26,8 +25,6 @@ let rec initialize_heap_path heap_path astate =
   match (heap_path : Specialization.HeapPath.t) with
   | Pvar pvar ->
       let opt_addr = Stack.find_opt (Var.of_pvar pvar) astate in
-      if Option.is_none opt_addr then
-        L.internal_error "pvar %a should be defined in pre" Var.pp (Var.of_pvar pvar) ;
       let default () = (PulseAbstractValue.mk_fresh (), PulseValueHistory.epoch) in
       (astate, Option.value_or_thunk opt_addr ~default)
   | FieldAccess (fieldname, heap_path) ->
@@ -39,7 +36,7 @@ let rec initialize_heap_path heap_path astate =
       Memory.eval_edge src_addr Dereference astate
 
 
-let apply {Specialization.Pulse.aliases; dynamic_types} astate =
+let apply {Specialization.Pulse.aliases; dynamic_types} location astate =
   let astate =
     Option.value_map aliases ~default:astate ~f:(fun aliases ->
         List.fold aliases ~init:astate ~f:(fun astate alias ->
@@ -56,7 +53,7 @@ let apply {Specialization.Pulse.aliases; dynamic_types} astate =
       (fun heap_path typename astate ->
         let astate, (addr, _) = initialize_heap_path heap_path astate in
         let typ = Typ.mk_struct typename in
-        AddressAttributes.add_dynamic_type {typ; source_file= None} addr astate )
+        PulseArithmetic.and_dynamic_type_is_unsafe addr typ location astate )
       dynamic_types astate
   in
   astate

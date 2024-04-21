@@ -154,7 +154,7 @@ module Captured = struct
   let is_captured_by_ref var x =
     match (var : Var.t) with
     | ProgramVar pvar ->
-        get_all pvar x
+        find_all pvar x
         |> List.exists ~f:(fun mode -> CapturedVar.equal_capture_mode mode ByReference)
     | LogicalVar _ ->
         false
@@ -208,7 +208,7 @@ module Loads = struct
     (IdentToVars.add ident var ident_to_vars, LoadedVars.add var loc timestamp loaded_vars)
 
 
-  let get_all ident (ident_to_vars, _) = IdentToVars.get_all ident ident_to_vars
+  let get_all ident (ident_to_vars, _) = IdentToVars.find_all ident ident_to_vars
 
   let is_loaded var (_, loaded_vars) = LoadedVars.mem var loaded_vars
 
@@ -636,12 +636,16 @@ module InterDom = struct
 
   let remember_dropped_elements dropped = map (TransitiveInfo.remember_dropped_elements ~dropped)
 
-  let apply_summary ~callee_pname ~call_loc ~summary non_disj =
+  let apply_summary ~callee_pname ~call_loc ~summary ~skip_transitive_accesses non_disj =
     match (non_disj, summary) with
     | Top, _ | _, Top ->
         Top
     | NonTop non_disj, NonTop summary ->
-        NonTop (TransitiveInfo.apply_summary ~callee_pname ~call_loc ~summary non_disj)
+        let non_disj =
+          if skip_transitive_accesses then non_disj
+          else TransitiveInfo.apply_summary ~callee_pname ~call_loc ~summary non_disj
+        in
+        NonTop non_disj
 end
 
 type t = {intra: IntraDom.t; inter: InterDom.t} [@@deriving abstract_domain]
@@ -728,8 +732,10 @@ type summary = InterDom.t [@@deriving abstract_domain]
 
 let make_summary {inter} = inter
 
-let apply_summary ~callee_pname ~call_loc non_disj summary =
-  map_inter (InterDom.apply_summary ~callee_pname ~call_loc ~summary) non_disj
+let apply_summary ~callee_pname ~call_loc ~skip_transitive_accesses non_disj summary =
+  map_inter
+    (InterDom.apply_summary ~callee_pname ~call_loc ~skip_transitive_accesses ~summary)
+    non_disj
 
 
 module Summary = struct

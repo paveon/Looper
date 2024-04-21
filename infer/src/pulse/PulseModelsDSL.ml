@@ -28,6 +28,8 @@ and 'a execution =
   | Other of ExecutionDomain.t (* should never contain a ExecutionDomain.ContinueProgram *)
 
 module Syntax = struct
+  module ModeledField = PulseOperations.ModeledField
+
   let ret (a : 'a) : 'a model_monad =
    fun _data astate non_disj -> ([Ok (ContinueProgram (a, astate))], non_disj)
 
@@ -178,16 +180,28 @@ module Syntax = struct
     ret a data astate
 
 
-  let get_known_constant_opt (v, _) : Q.t option model_monad =
+  let as_constant_q (v, _) : Q.t option model_monad =
    fun data astate ->
     let phi = astate.path_condition in
-    ret (Formula.get_known_constant_opt phi v) data astate
+    ret (Formula.as_constant_q phi v) data astate
 
 
-  let get_known_int_opt v : int option model_monad =
-    let* n_q_opt = get_known_constant_opt v in
+  let as_constant_int v : int option model_monad =
+    let* n_q_opt = as_constant_q v in
     let n = Option.bind n_q_opt ~f:QSafeCapped.to_int in
     ret n
+
+
+  let as_constant_string (v, _) : string option model_monad =
+   fun data astate ->
+    let phi = astate.path_condition in
+    ret (Formula.as_constant_string phi v) data astate
+
+
+  let aval_of_int hist i : aval model_monad =
+   fun data astate ->
+    let astate, v = PulseArithmetic.absval_of_int astate (IntLit.of_int i) in
+    ret (v, hist) data astate
 
 
   let get_known_fields (v, _) =
@@ -256,14 +270,14 @@ module Syntax = struct
     PulseOperations.remove_dict_contain_const_keys addr |> exec_command
 
 
-  let add_dynamic_type typ (addr, _) : unit model_monad =
-    PulseOperations.add_dynamic_type typ addr |> exec_command
+  let and_dynamic_type_is (v, _) t : unit model_monad =
+    PulseArithmetic.and_dynamic_type_is v t |> exec_partial_command
 
 
-  let get_dynamic_type ~ask_specialization (addr, _) :
-      Attribute.dynamic_type_data option model_monad =
+  let get_dynamic_type ~ask_specialization (addr, _) : Formula.dynamic_type_data option model_monad
+      =
    fun data astate ->
-    let res = AbductiveDomain.AddressAttributes.get_dynamic_type addr astate in
+    let res = PulseArithmetic.get_dynamic_type addr astate in
     let astate =
       if ask_specialization && Option.is_none res then
         AbductiveDomain.add_need_dynamic_type_specialization addr astate
@@ -272,20 +286,18 @@ module Syntax = struct
     ret res data astate
 
 
-  let and_eq_int (size_addr, _) i : unit model_monad =
-    PulseArithmetic.and_eq_int size_addr i |> exec_partial_command
+  let and_eq_int (v, _) i : unit model_monad =
+    PulseArithmetic.and_eq_int v i |> exec_partial_command
 
 
   (* and_eq v and_equal inconsistent naming *)
   let and_eq (x, _) (y, _) : unit model_monad =
-    PulseArithmetic.and_equal (PulseArithmetic.AbstractValueOperand x)
-      (PulseArithmetic.AbstractValueOperand y)
+    PulseArithmetic.and_equal (AbstractValueOperand x) (AbstractValueOperand y)
     |> exec_partial_command
 
 
   let and_equal_instanceof (res, _) (obj, _) ty : unit model_monad =
-    let* {analysis_data= {tenv}} = get_data in
-    PulseArithmetic.and_equal_instanceof res obj ty ~tenv |> exec_partial_command
+    PulseArithmetic.and_equal_instanceof res obj ty |> exec_partial_command
 
 
   let and_positive (addr, _) : unit model_monad =
@@ -293,13 +305,15 @@ module Syntax = struct
 
 
   let add_static_type typ_name (addr, _) : unit model_monad =
-   fun ({analysis_data= {tenv}} as data) astate ->
-    let astate = AbductiveDomain.AddressAttributes.add_static_type tenv typ_name addr astate in
+   fun ({analysis_data= {tenv}; location} as data) astate ->
+    let astate =
+      AbductiveDomain.AddressAttributes.add_static_type tenv typ_name addr location astate
+    in
     ret () data astate
 
 
-  let get_const_string (addr, _) : string option model_monad =
-    AddressAttributes.get_const_string addr |> exec_pure_operation
+  let get_const_string (v, _) : string option model_monad =
+   fun data astate -> ret (PulseArithmetic.as_constant_string astate v) data astate
 
 
   let tenv_resolve_field_info typ_name field_name : Struct.field_info option model_monad =
@@ -322,6 +336,17 @@ module Syntax = struct
   let eval_const_int i : aval model_monad = eval_read (Const (Cint (IntLit.of_int i)))
 
   let eval_const_string str : aval model_monad = eval_read (Const (Cstr str))
+
+  let eval_string_concat (v1, hist1) (v2, hist2) : aval model_monad =
+    let v = AbstractValue.mk_fresh () in
+    let hist = ValueHistory.binary_op (PlusA None) hist1 hist2 in
+    let* () =
+      exec_partial_command (fun astate ->
+          PulseArithmetic.and_equal_string_concat v (AbstractValueOperand v1)
+            (AbstractValueOperand v2) astate )
+    in
+    ret (v, hist)
+
 
   let eval_to_value_origin exp : ValueOrigin.t model_monad =
     let* {path; location} = get_data in
@@ -378,7 +403,15 @@ module Syntax = struct
     |> lift_model
 
 
-  let new_ type_name = lift_to_monad_and_get_result (internal_new_ type_name)
+  let new_ type_name_exp =
+    let* new_obj = lift_to_monad_and_get_result (internal_new_ type_name_exp) in
+    match type_name_exp with
+    | Exp.Sizeof {typ} ->
+        let* () = and_dynamic_type_is new_obj typ in
+        ret new_obj
+    | _ ->
+        unreachable
+
 
   let constructor type_name fields : aval model_monad =
     let exp =
@@ -428,7 +461,17 @@ module Syntax = struct
 
 
   let prune_eq_int arg i : unit model_monad =
-    prune_binop ~negated:false Binop.Eq (aval_operand arg) (PulseArithmetic.ConstOperand (Cint i))
+    prune_binop ~negated:false Eq (aval_operand arg) (PulseArithmetic.ConstOperand (Cint i))
+
+
+  let prune_eq_string (v, _) s : unit model_monad =
+    PulseArithmetic.prune_binop ~negated:false Eq (AbstractValueOperand v) (ConstOperand (Cstr s))
+    |> exec_partial_command
+
+
+  let prune_ne_string (v, _) s : unit model_monad =
+    PulseArithmetic.prune_binop ~negated:false Ne (AbstractValueOperand v) (ConstOperand (Cstr s))
+    |> exec_partial_command
 
 
   let prune_eq_zero (addr, _) : unit model_monad =
@@ -477,15 +520,14 @@ module Syntax = struct
 
   let invalidate_access cause ref_addr_hist access : unit model_monad =
     let* {path; location} = get_data in
-    PulseOperations.invalidate_access path location cause ref_addr_hist access
-    >> ok >> sat |> exec_partial_command
+    PulseOperations.invalidate_access path location cause ref_addr_hist access |> exec_command
 
 
   let dynamic_dispatch ~(cases : (Typ.name * (unit -> 'a model_monad)) list)
       ?(default : (unit -> 'a model_monad) option) aval : 'a model_monad =
     let* opt_dynamic_type_data = get_dynamic_type ~ask_specialization:true aval in
     match opt_dynamic_type_data with
-    | Some {Attribute.typ= {Typ.desc= Tstruct type_name}} -> (
+    | Some {Formula.typ= {Typ.desc= Tstruct type_name}} -> (
       match (List.find cases ~f:(fun case -> fst case |> Typ.Name.equal type_name), default) with
       | Some (_, case_fun), _ ->
           Logging.d_printfln

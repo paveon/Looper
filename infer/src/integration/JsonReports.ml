@@ -53,7 +53,7 @@ let sanitize_qualifier qualifier =
 
 
 let compute_hash =
-  let num_regexp = Re.Str.regexp "\\(:\\)[0-9]+" in
+  let num_regexp = Re.Str.regexp ":[0-9]+\\(_[0-9a-f]+\\)?" in
   fun ~(severity : string) ~(bug_type : string) ~(proc_name : Procname.t) ~(file : string)
       ~(qualifier : string) ->
     let base_filename = Filename.basename file in
@@ -218,6 +218,7 @@ module JsonIssuePrinter = MakeJsonListPrinter (struct
       && not (is_in_clang_header source_file)
     then
       let severity = IssueType.string_of_severity err_key.severity in
+      let category = IssueType.string_of_category err_key.issue_type.category in
       let bug_type = err_key.issue_type.unique_id in
       let file =
         SourceFile.to_string ~force_relative:Config.report_force_relative_path source_file
@@ -248,6 +249,7 @@ module JsonIssuePrinter = MakeJsonListPrinter (struct
         { Jsonbug_j.bug_type
         ; qualifier
         ; severity
+        ; category
         ; suggestion
         ; line= err_data.loc.Location.line
         ; column= err_data.loc.Location.col
@@ -255,6 +257,8 @@ module JsonIssuePrinter = MakeJsonListPrinter (struct
         ; procedure_start_line
         ; file
         ; bug_trace= loc_trace_to_jsonbug_record err_data.loc_trace
+        ; bug_trace_length= Errlog.loc_trace_length err_data.loc_trace
+        ; bug_trace_max_depth= Errlog.loc_trace_max_depth err_data.loc_trace
         ; node_key= Option.map ~f:Procdesc.NodeKey.to_string err_data.node_key
         ; key= compute_key bug_type proc_name file
         ; hash= compute_hash ~severity ~bug_type ~proc_name ~file ~qualifier

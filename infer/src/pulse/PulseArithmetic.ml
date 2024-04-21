@@ -82,6 +82,10 @@ let prune_binop ~negated binop lhs rhs astate =
   map_path_condition astate ~f:(fun phi -> Formula.prune_binop ~negated binop lhs rhs phi)
 
 
+let and_equal_string_concat ret lhs rhs astate =
+  map_path_condition astate ~f:(fun phi -> Formula.and_equal_string_concat ret lhs rhs phi)
+
+
 let literal_zero = ConstOperand (Cint IntLit.zero)
 
 let literal_one = ConstOperand (Cint IntLit.one)
@@ -121,16 +125,39 @@ let is_manifest summary =
 
 let and_is_int v astate = map_path_condition astate ~f:(fun phi -> Formula.and_is_int v phi)
 
-let and_equal_instanceof v1 v2 t ~tenv astate =
-  let get_dynamic_type v =
-    AbductiveDomain.AddressAttributes.get_dynamic_type v astate
-    |> Option.map ~f:(fun dynamic_type_data -> dynamic_type_data.Attribute.typ)
+let and_equal_instanceof v1 v2 t astate =
+  map_path_condition astate ~f:(fun phi -> Formula.and_equal_instanceof v1 v2 t phi)
+
+
+let and_dynamic_type_is v t ?source_file astate =
+  map_path_condition astate ~f:(fun phi -> Formula.and_dynamic_type_is v t ?source_file phi)
+
+
+let get_dynamic_type v astate = Formula.get_dynamic_type v astate.AbductiveDomain.path_condition
+
+(* this is just to ease migration of previous calls to PulseOperations.add_dynamic_type, which can't fail *)
+let and_dynamic_type_is_unsafe v t ?source_file location astate =
+  let phi =
+    Formula.add_dynamic_type_unsafe v t ?source_file location astate.AbductiveDomain.path_condition
   in
-  map_path_condition astate ~f:(fun phi ->
-      Formula.and_equal_instanceof v1 v2 t ~get_dynamic_type ~tenv phi )
+  AbductiveDomain.set_path_condition phi astate
+
+
+let copy_type_constraints v_src v_target astate =
+  let phi = Formula.copy_type_constraints v_src v_target astate.AbductiveDomain.path_condition in
+  AbductiveDomain.set_path_condition phi astate
 
 
 let absval_of_int astate i =
   let phi, v = Formula.absval_of_int astate.AbductiveDomain.path_condition i in
   let astate = AbductiveDomain.set_path_condition phi astate in
   (astate, v)
+
+
+let absval_of_string astate s =
+  let phi, v = Formula.absval_of_string astate.AbductiveDomain.path_condition s in
+  let astate = AbductiveDomain.set_path_condition phi astate in
+  (astate, v)
+
+
+let as_constant_string astate v = Formula.as_constant_string astate.AbductiveDomain.path_condition v

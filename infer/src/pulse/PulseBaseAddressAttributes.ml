@@ -151,6 +151,8 @@ let hack_async_await address memory = add_one address Attribute.HackAsyncAwaited
 
 let csharp_resource_release address memory = add_one address Attribute.CSharpResourceReleased memory
 
+let in_reported_retain_cycle address memory = add_one address Attribute.InReportedRetainCycle memory
+
 let mark_as_end_of_collection address memory = add_one address Attribute.EndOfCollection memory
 
 let check_valid address attrs =
@@ -269,12 +271,6 @@ let add_dict_read_const_key timestamp trace address key attrs =
 
 let get_dict_read_const_keys = get_attribute Attributes.get_dict_read_const_keys
 
-let add_dynamic_type {Attribute.typ; source_file} address memory =
-  add_one address (Attribute.DynamicType {Attribute.typ; source_file}) memory
-
-
-let get_dynamic_type attrs v = get_attribute Attributes.get_dynamic_type v attrs
-
 let add_static_type typ address memory = add_one address (Attribute.StaticType typ) memory
 
 let get_static_type attrs v = get_attribute Attributes.get_static_type v attrs
@@ -288,8 +284,6 @@ let add_copied_return address ~source ~is_const_ref from copied_location memory 
 
 
 let get_config_usage address attrs = get_attribute Attributes.get_config_usage address attrs
-
-let get_const_string address attrs = get_attribute Attributes.get_const_string address attrs
 
 let get_used_as_branch_cond address attrs =
   get_attribute Attributes.get_used_as_branch_cond address attrs
@@ -307,6 +301,10 @@ let is_csharp_resource_released adress attrs =
   Graph.find_opt adress attrs |> Option.exists ~f:Attributes.is_csharp_resource_released
 
 
+let is_in_reported_retain_cycle address attrs =
+  Graph.find_opt address attrs |> Option.exists ~f:Attributes.is_in_reported_retain_cycle
+
+
 let is_std_moved address attrs =
   Graph.find_opt address attrs |> Option.exists ~f:Attributes.is_std_moved
 
@@ -319,6 +317,11 @@ let get_last_lookup address attrs = get_attribute Attributes.get_last_lookup add
 
 let get_address_of_stack_variable address attrs =
   get_attribute Attributes.get_address_of_stack_variable address attrs
+
+
+let has_unknown_effect address attrs =
+  Graph.find_opt address attrs
+  |> Option.exists ~f:(fun attribute -> Option.is_some (Attributes.get_unknown_effect attribute))
 
 
 let merge attrs attrs' =
@@ -381,6 +384,8 @@ module type S = sig
 
   val csharp_resource_release : key -> t -> t
 
+  val in_reported_retain_cycle : key -> t -> t
+
   val fold : (key -> Attributes.t -> 'a -> 'a) -> t -> 'a -> 'a
 
   val check_valid : key -> t -> (unit, Invalidation.t * Trace.t) result
@@ -423,10 +428,6 @@ module type S = sig
 
   val get_dict_read_const_keys : key -> t -> Attribute.ConstKeys.t option
 
-  val add_dynamic_type : Attribute.dynamic_type_data -> key -> t -> t
-
-  val get_dynamic_type : t -> key -> Attribute.dynamic_type_data option
-
   val add_static_type : Typ.Name.t -> key -> t -> t
 
   val get_static_type : t -> key -> Typ.Name.t option
@@ -438,6 +439,8 @@ module type S = sig
   val is_java_resource_released : key -> t -> bool
 
   val is_csharp_resource_released : key -> t -> bool
+
+  val is_in_reported_retain_cycle : key -> t -> bool
 
   val is_std_moved : key -> t -> bool
 
@@ -456,8 +459,6 @@ module type S = sig
 
   val get_config_usage : key -> t -> Attribute.ConfigUsage.t option
 
-  val get_const_string : key -> t -> string option
-
   val get_used_as_branch_cond : key -> t -> (Procname.t * Location.t * Trace.t) option
 
   val remove_allocation_attr : key -> t -> t
@@ -471,4 +472,6 @@ module type S = sig
   val initialize : key -> t -> t
 
   val get_address_of_stack_variable : key -> t -> (Var.t * Location.t * ValueHistory.t) option
+
+  val has_unknown_effect : key -> t -> bool
 end

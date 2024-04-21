@@ -191,7 +191,7 @@ module Node : sig
   val pp_stmt : Format.formatter -> stmt_nodekind -> unit
 
   val pp_with_instrs : ?print_types:bool -> Format.formatter -> t -> unit
-    [@@warning "-unused-value-declaration"]
+  [@@warning "-unused-value-declaration"]
   (** Pretty print the node with instructions *)
 
   val compute_key : t -> NodeKey.t
@@ -226,6 +226,9 @@ val create_node : t -> Location.t -> Node.nodekind -> Sil.instr list -> Node.t
 
 val create_node_from_not_reversed :
   t -> Location.t -> Node.nodekind -> Instrs.not_reversed_t -> Node.t
+
+val remove_node : t -> Node.t -> unit
+(** Remove a node from a cfg *)
 
 val fold_instrs : t -> init:'accum -> f:('accum -> Node.t -> Sil.instr -> 'accum) -> 'accum
 (** fold over all nodes and their instructions *)
@@ -360,7 +363,7 @@ val pp_signature : Format.formatter -> t -> unit
 val pp_local : Format.formatter -> ProcAttributes.var_data -> unit
 
 val pp_with_instrs : ?print_types:bool -> Format.formatter -> t -> unit
-  [@@warning "-unused-value-declaration"]
+[@@warning "-unused-value-declaration"]
 
 val is_specialized : t -> bool
 
