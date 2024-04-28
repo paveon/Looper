@@ -161,6 +161,7 @@ depends: [
   "yojson" {= "2.1.2"}
   "zarith" {= "1.13"}
   "zed" {= "3.2.3"}
+  "why3" {= "1.6.0"}
 ]
 depexts: [
   ["default-jdk"] {"ubuntu"}
