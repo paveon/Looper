@@ -6,21 +6,16 @@ module F = Format
 module DC = DifferenceConstraint
 module LTS = LabeledTransitionSystem
 
-(* Difference Constraint Program *)
-type edge_output_type = GuardedDCP | DCP [@@deriving compare]
-
 module EdgeData = struct
   type t =
     { backedge: bool
     ; branch_info: (Sil.if_kind * bool * Location.t) option
     ; mutable calls: EdgeExp.CallPair.Set.t
     ; mutable constraints: DC.t list
-    ; mutable guards: EdgeExp.Set.t
     ; mutable condition_norms: EdgeExp.Set.t list
     ; mutable bound: EdgeExp.T.t option
     ; mutable bound_norms: EdgeExp.Set.t list
-    ; mutable computing_bound: bool
-    ; mutable edge_type: edge_output_type }
+    ; mutable computing_bound: bool }
   [@@deriving compare]
 
   let equal = [%compare.equal: t]
@@ -30,12 +25,10 @@ module EdgeData = struct
     ; branch_info= lts_edge_data.branch_info
     ; calls= lts_edge_data.calls
     ; constraints= []
-    ; guards= EdgeExp.Set.empty
     ; condition_norms= lts_edge_data.condition_norms
     ; bound= None
     ; bound_norms= []
-    ; computing_bound= false
-    ; edge_type= DCP }
+    ; computing_bound= false }
 
 
   let get_dc key constraints =
@@ -77,62 +70,19 @@ module EdgeData = struct
 
   let is_backedge edge = edge.backedge
 
-  let active_guards edge =
-    let normal_guards =
-      EdgeExp.Set.fold
-        (fun guard acc ->
-          match get_dc guard edge.constraints with
-          | Some dc ->
-              if DC.is_decreasing dc && DC.same_norms dc then acc else EdgeExp.Set.add guard acc
-          | _ ->
-              EdgeExp.Set.add guard acc )
-        edge.guards EdgeExp.Set.empty
-    in
-    let guards_via_constant_reset =
-      List.filter_map edge.constraints ~f:(fun (lhs_norm, rhs) ->
-          let process_value (rhs_norm, op, const) =
-            if EdgeExp.is_zero rhs_norm then
-              match op with
-              | (Binop.PlusA _ | Binop.PlusPI) when IntLit.gt const IntLit.zero ->
-                  true
-              | _ ->
-                  false
-            else
-              match EdgeExp.evaluate_const_exp rhs_norm with
-              | Some value ->
-                  let total_value = EdgeExp.eval_consts op value const in
-                  if IntLit.gt total_value IntLit.zero then true else false
-              | None ->
-                  false
-          in
-          match rhs with
-          | DC.Value v ->
-              if process_value v then Some lhs_norm else None
-          | DC.Pair (lb, ub) ->
-              if process_value lb && process_value ub then Some lhs_norm else None )
-    in
-    EdgeExp.Set.union normal_guards (EdgeExp.Set.of_list guards_via_constant_reset)
-
-
   (* Required by Graph module interface *)
   let default =
     { backedge= false
     ; branch_info= None
-    ; edge_type= DCP
     ; constraints= []
     ; calls= EdgeExp.CallPair.Set.empty
-    ; guards= EdgeExp.Set.empty
     ; condition_norms= []
     ; bound= None
     ; bound_norms= []
     ; computing_bound= false }
 
 
-  let set_edge_output_type edge output_type = edge.edge_type <- output_type
-
   let branch_type edge = match edge.branch_info with Some (_, branch, _) -> branch | _ -> false
-
-  let add_guards edge guards = edge.guards <- guards
 
   let add_constraint edge dc =
     (* debug_log "[DC derivation] Adding new DC: %a\n" DC.pp dc; *)
@@ -189,9 +139,7 @@ let edge_attributes : E.t -> 'a list =
                 F.asprintf "%s : %a" (EdgeExp.call_to_string call) Location.pp loc
             | EdgeExp.CallPair.P (((_, _, _, loc1) as lb_call), ub_call) ->
                 F.asprintf "[%s; %s] : %a" (EdgeExp.call_to_string lb_call)
-                  (EdgeExp.call_to_string ub_call) Location.pp loc1
-            | _ ->
-                assert false )
+                  (EdgeExp.call_to_string ub_call) Location.pp loc1 )
       in
       Some (String.concat ~sep:"\n" call_list)
   in
@@ -221,19 +169,6 @@ let edge_attributes : E.t -> 'a list =
   in
   let label_parts =
     [edge_label edge_data; backedge_label; local_bounds_label; calls_str; condition_norms]
-  in
-  let label_parts =
-    match edge_data.edge_type with
-    | GuardedDCP ->
-        let guards =
-          Some
-            ( List.map (EdgeExp.Set.elements edge_data.guards) ~f:(fun guard ->
-                  F.asprintf "[GUARD] %s > 0" (EdgeExp.to_string guard) )
-            |> String.concat ~sep:"\n" )
-        in
-        label_parts @ [guards]
-    | DCP ->
-        label_parts
   in
   let constraints =
     Some (List.map edge_data.constraints ~f:(fun dc -> DC.to_string dc) |> String.concat ~sep:"\n")

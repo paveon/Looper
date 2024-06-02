@@ -9,9 +9,6 @@ module LTS = LabeledTransitionSystem
 module DCP = DifferenceConstraintProgram
 module RG = ResetGraph
 module VFG = VariableFlowGraph
-
-let console_log : ('a, F.formatter, unit) format -> 'a = fun fmt -> F.printf fmt
-
 module LTS_Dot = Graph.Graphviz.Dot (LTS)
 module DCP_Dot = Graph.Graphviz.Dot (DCP)
 module RG_Dot = Graph.Graphviz.Dot (RG)
@@ -33,8 +30,6 @@ end)
 let lts_fname = "LTS.dot"
 
 let dcp_fname = "DCP.dot"
-
-let g_dcp_fname = "DCP_guarded.dot"
 
 let vfg_fname = "VFG.dot"
 
@@ -61,8 +56,6 @@ let mk_outfile fname =
 
 
 let analyze_procedure ({InterproceduralAnalysis.proc_desc; exe_env} as analysis_data) =
-  (* clang_initializer_prefix *)
-  (* Config.clang_initializer_prefix *)
   let begin_loc = Procdesc.get_loc proc_desc in
   let proc_name = Procdesc.get_proc_name proc_desc in
   let proc_name_str = String.drop_suffix (Procname.to_simplified_string proc_name) 2 in
@@ -87,7 +80,6 @@ let analyze_procedure ({InterproceduralAnalysis.proc_desc; exe_env} as analysis_
     in
     let proc_graph_dir = graphs_dir ^/ source_file_str ^/ proc_name_str in
     Utils.create_dir (F.asprintf "%s/Logs/%s/" looper_dir source_file_str) ;
-    (* Utils.create_dir (F.asprintf "%s/%s/" looper_dir proc_graph_dir) ; *)
     let debug_log_fname = looper_dir ^/ "Logs" ^/ source_file_str ^/ proc_name_str ^ ".log" in
     let log_file = mk_outfile debug_log_fname in
     debug_fmt := log_file.fmt :: !debug_fmt ;
@@ -118,73 +110,6 @@ let analyze_procedure ({InterproceduralAnalysis.proc_desc; exe_env} as analysis_
             (lts_edge, dcp_edge_data) :: edge_pairs )
           graph_data.edges []
       in
-      (* let rec compute_norm_set unprocessed processed =
-           if UnprocessedNormSet.is_empty unprocessed then processed
-           else
-             let ((norm, norm_history) as unprocessed_norm) = UnprocessedNormSet.min_elt unprocessed in
-             let unprocessed = UnprocessedNormSet.remove unprocessed_norm unprocessed in
-             debug_log "@[<v4>[DC derivation] Processing norm: %a@," EdgeExp.pp norm ;
-             let unprocessed =
-               if EdgeExp.is_variable norm formals tenv && not (EdgeExp.Set.mem norm processed) then
-                 List.fold edge_pairs
-                   ~f:(fun unprocessed (((src, lts_edge_data, dst) as lts_edge), dcp_edge_data) ->
-                     debug_log "@[<v2>Deriving for edge: %a  ---->  %a@," LTS.Node.pp src LTS.Node.pp dst ;
-                     let used_assignments =
-                       match LTS.EdgeMap.find_opt lts_edge norm_history with
-                       | Some set ->
-                           set
-                       | None ->
-                           AccessExpressionSet.empty
-                     in
-                     debug_log "Used assignments before: " ;
-                     AccessExpressionSet.iter
-                       (fun access -> debug_log "%a " HilExp.AccessExpression.pp access)
-                       used_assignments ;
-                     debug_log "@," ;
-                     let substituted_accesses, dc_rhs_opt, new_norms =
-                       LTS.EdgeData.derive_constraint lts_edge_data norm used_assignments formals tenv
-                         proc_name
-                     in
-                     let used_assignments =
-                       AccessExpressionSet.union used_assignments substituted_accesses
-                     in
-                     ( match dc_rhs_opt with
-                     | Some dc_rhs ->
-                         let dc = (norm, dc_rhs) in
-                         debug_log "Adding new DC: %a@," DC.pp dc ;
-                         DCP.EdgeData.add_constraint dcp_edge_data dc
-                     | None ->
-                         debug_log
-                           "DC could not be derived (undefined variable of norm expression at source or \
-                            destination LTS location)@," ) ;
-                     let unprocessed =
-                       EdgeExp.Set.fold
-                         (fun new_norm unprocessed ->
-                           (* Remember used assignments on this specific edge to avoid infinite recursive
-                            * loop when generating new norms from assignments such as [i = i * n] *)
-                           debug_log "Used assignments after: " ;
-                           AccessExpressionSet.iter
-                             (fun access -> debug_log "%a " HilExp.AccessExpression.pp access)
-                             used_assignments ;
-                           debug_log "@," ;
-                           let new_norm_history =
-                             LTS.EdgeMap.add lts_edge used_assignments norm_history
-                           in
-                           if EdgeExp.Set.mem new_norm processed then unprocessed
-                           else (
-                             debug_log "Adding new norm: %a@," EdgeExp.pp new_norm ;
-                             UnprocessedNormSet.add (new_norm, new_norm_history) unprocessed ) )
-                         new_norms unprocessed
-                     in
-                     debug_log "@]@," ;
-                     unprocessed )
-                   ~init:unprocessed
-               else unprocessed
-             in
-             debug_log "@]@," ;
-             let processed = EdgeExp.Set.add norm processed in
-             compute_norm_set unprocessed processed
-         in *)
       let print_used_assignments assignments =
         debug_log "@[<v2>[Used assignments]@," ;
         EdgeExp.AssignmentSet.iter
@@ -260,145 +185,11 @@ let analyze_procedure ({InterproceduralAnalysis.proc_desc; exe_env} as analysis_
       debug_log "@[<v2>[FINAL NORMS]@," ;
       EdgeExp.Set.iter (fun norm -> debug_log "%a@," EdgeExp.pp norm) final_norm_set ;
       debug_log "@]@," ;
-      (* All DCs and norms are derived, now derive guards.
-       * Use SMT solver to check which norms on which
-       * transitions are guaranted to be greater than 0
-       * based on conditions that hold on specified transition.
-       * For example if transition is guarded by conditions
-       * [x >= 0] and [y > x] then we can prove that
-       * norm [x + y] > 0 thus it is a guard on this transition *)
-      debug_log "@,@[<v2>==========[Deriving guards]=======================@," ;
-      let why3_norms =
-        EdgeExp.Set.fold
-          (fun norm norms_acc ->
-            if EdgeExp.is_const norm then norms_acc
-            else
-              try
-                let why3_exp =
-                  EdgeExp.to_why3_expr norm tenv ~selected_theory:active_prover.real_data
-                    active_prover
-                  |> fst
-                in
-                (norm, why3_exp) :: norms_acc
-              with _ ->
-                debug_log "Failed to transform norm '%a' to Why3 expr@," EdgeExp.pp norm ;
-                norms_acc )
-          final_norm_set []
-      in
+      (* Create DCP *)
       let dcp = DCP.create () in
       LTS.NodeSet.iter (fun node -> DCP.add_vertex dcp node) graph_data.nodes ;
-      List.iter edge_pairs ~f:(fun ((src, (lts_edge_data : LTS.EdgeData.t), dst), dcp_edge_data) ->
-          debug_log "@[<v2>[Guard Derivation] %a ---> %a@," LTS.Node.pp src LTS.Node.pp dst ;
-          DCP.EdgeData.set_edge_output_type dcp_edge_data GuardedDCP ;
-          let condition_str =
-            EdgeExp.output_exp_dnf lts_edge_data.conditions ~and_sep:" && " ~or_sep:" || "
-          in
-          debug_log "@[<v2>Conditions:@,%s@]@," condition_str ;
-          (* debug_log "(%s) ||@," and_term_str *)
-          (* debug_log "@]@," ; *)
-          (* debug_log "%a@,"
-             EdgeExp.(pp_list "Conditions" EdgeExp.pp)
-             (EdgeExp.Set.elements lts_edge_data.conditions) ; *)
-          let guards = LTS.EdgeData.derive_guards lts_edge_data why3_norms tenv active_prover in
-          DCP.EdgeData.add_guards dcp_edge_data guards ;
-          debug_log "%a@]@," EdgeExp.(pp_list "Guards" EdgeExp.pp) (EdgeExp.Set.elements guards) ;
+      List.iter edge_pairs ~f:(fun ((src, _, dst), dcp_edge_data) ->
           DCP.add_edge_e dcp (src, dcp_edge_data, dst) ) ;
-      debug_log "@[<v2>Guarded nodes:@," ;
-      let guarded_nodes =
-        DCP.fold_edges_e
-          (fun (_, edge_data, dst) acc ->
-            if EdgeExp.Set.is_empty edge_data.guards then acc
-            else (
-              debug_log "%a@," LTS.Node.pp dst ;
-              LTS.NodeSet.add dst acc ) )
-          dcp LTS.NodeSet.empty
-      in
-      debug_log "@]" ;
-      (* Propagate guard to all outgoing edges if all incoming edges
-         * are guarded by this guard and the guard itself is not decreased
-         * on any of those incoming edges (guard is a norm) *)
-      debug_log "@,==========[Propagating guards]====================@," ;
-      let rec propagate_guards : LTS.NodeSet.t -> unit =
-       fun nodes ->
-        if not (LTS.NodeSet.is_empty nodes) then (
-          let get_shared_guards incoming_edges =
-            if List.is_empty incoming_edges then EdgeExp.Set.empty
-            else
-              (* let dowhile_guards, edge_guards =
-                   List.fold incoming_edges ~init:(EdgeExp.Set.empty, [])
-                     ~f:(fun (dowhile_guards, edge_guards) (src, (edge_data : DCP.EdgeData.t), _) ->
-                       debug_log "Processing incoming edge from: %a, backedge: %B@," LTS.Node.pp src
-                         edge_data.backedge ;
-                       let dowhile_guards =
-                         match src with
-                         | LTS.Node.Prune (Sil.Ik_dowhile, _, _) when edge_data.backedge ->
-                             (* dowhile back-edge, exempt any guards. This is a hack for now before we
-                                figure out a proper "sound" solution *)
-                             EdgeExp.Set.union dowhile_guards edge_data.guards
-                         | _ ->
-                             dowhile_guards
-                       in
-                       let edge_guards = DCP.EdgeData.active_guards edge_data :: edge_guards in
-                       (dowhile_guards, edge_guards) )
-                 in *)
-              let shared_guards =
-                List.map incoming_edges ~f:(fun (_, edge_data, _) ->
-                    DCP.EdgeData.active_guards edge_data )
-                |> List.reduce_exn ~f:(fun g1 g2 -> EdgeExp.Set.inter g1 g2)
-              in
-              shared_guards
-            (* let _, head_edge_data, _ = List.hd_exn incoming_edges in
-               let acc = DCP.EdgeData.active_guards head_edge_data in
-               List.fold (List.tl_exn incoming_edges) ~init:acc
-                 ~f:(fun shared_guards (_, edge_data, _) ->
-                   (* Get edge guards that are not decreased on this edge *)
-                   let guards = DCP.EdgeData.active_guards edge_data in
-                   EdgeExp.Set.inter guards shared_guards ) *)
-          in
-          (* Pop one node from set of unprocessed nodes *)
-          let node = LTS.NodeSet.min_elt nodes in
-          let nodes = LTS.NodeSet.remove node nodes in
-          debug_log "Processing: %a@," LTS.Node.pp node ;
-          let backedge_in_edges, in_edges =
-            List.partition_tf (DCP.pred_e dcp node) ~f:(fun (_, edge_data, _) ->
-                DCP.EdgeData.is_backedge edge_data )
-          in
-          (* Exempt any guards from dowhile and goto simulated loop back-edges.
-             This is a hack for now before we figure out a proper "sound" solution *)
-          let exempt_guards =
-            List.fold backedge_in_edges ~init:EdgeExp.Set.empty
-              ~f:(fun guards_acc (src, (edge_data : DCP.EdgeData.t), dst) ->
-                match (src, dst) with
-                | LTS.Node.Prune _, LTS.Node.Join _ ->
-                    let guards =
-                      List.reduce edge_data.condition_norms ~f:(fun g1 g2 ->
-                          EdgeExp.Set.union g1 g2 )
-                      |> Option.value ~default:EdgeExp.Set.empty
-                    in
-                    EdgeExp.Set.union guards_acc guards
-                | _ ->
-                    guards_acc )
-          in
-          let guards = EdgeExp.Set.union exempt_guards (get_shared_guards in_edges) in
-          let out_edges = DCP.succ_e dcp node in
-          let nodes =
-            List.fold out_edges ~init:nodes
-              ~f:(fun nodes_acc (_, (edge_data : DCP.EdgeData.t), dst) ->
-                let updated_guards = EdgeExp.Set.union guards edge_data.guards in
-                let old_count = EdgeExp.Set.cardinal edge_data.guards in
-                let new_count = EdgeExp.Set.cardinal updated_guards in
-                if new_count > old_count then (
-                  edge_data.guards <- EdgeExp.Set.union guards edge_data.guards ;
-                  LTS.NodeSet.add dst nodes_acc )
-                else nodes_acc )
-          in
-          propagate_guards nodes )
-      in
-      propagate_guards guarded_nodes ;
-      (* Output Guarded DCP over integers *)
-      output_graph (proc_graph_dir ^/ g_dcp_fname) dcp DCP_Dot.output_graph ;
-      debug_log "@.@[<v2>==========[Converting Integer DCP to Natural Numbers]==========@," ;
-      (* Convert DCP with guards to DCP without guards over natural numbers *)
       let wrap_norm norm =
         match norm with
         | EdgeExp.T.Strlen _ ->
@@ -424,8 +215,7 @@ let analyze_procedure ({InterproceduralAnalysis.proc_desc; exe_env} as analysis_
         DCP.iter_edges_e
           (fun (_, edge_data, _) ->
             let constraints =
-              List.fold edge_data.constraints
-                ~f:(fun acc (lhs, dc_rhs) ->
+              List.map edge_data.constraints ~f:(fun (lhs, dc_rhs) ->
                   let convert_dc (rhs_norm, op, rhs_const) =
                     match EdgeExp.evaluate_const_exp rhs_norm with
                     | Some rhs_norm_value ->
@@ -438,17 +228,7 @@ let analyze_procedure ({InterproceduralAnalysis.proc_desc; exe_env} as analysis_
                         let rhs_const =
                           match op with
                           | Binop.PlusA _ ->
-                              if IntLit.isnegative rhs_const then
-                                if
-                                  (* lhs != rhs hack for now, abstraction algorithm presented in the thesis
-                                     * doesn't add up in the example 'SingleLinkSimple' where they have [i]' <= [n]-1
-                                     * which is indeed right if we want to get valid bound but their abstraction algorithm
-                                     * leads to [i]' <= [n] because there's no guard for n on the transition *)
-                                  EdgeExp.Set.mem rhs_norm edge_data.guards
-                                  || not (EdgeExp.equal lhs rhs_norm)
-                                then IntLit.minus_one
-                                else IntLit.zero
-                              else rhs_const
+                              if IntLit.isnegative rhs_const then IntLit.minus_one else rhs_const
                           | Binop.Shiftrt ->
                               (* We should be able to transform (e1 <= e2 >> c) into ([e1] <= [e2] >> c) directly,
                                  * because shifting to the right can never result in a negative number, thus abstraction
@@ -469,15 +249,13 @@ let analyze_procedure ({InterproceduralAnalysis.proc_desc; exe_env} as analysis_
                   match dc_rhs with
                   | DC.Value rhs_value ->
                       let rhs_value = convert_dc rhs_value in
-                      acc @ [(lhs, DC.Value rhs_value)]
+                      (lhs, DC.Value rhs_value)
                   | DC.Pair (lb_rhs, ub_rhs) ->
                       let lb_rhs_value = convert_dc lb_rhs in
                       let ub_rhs_value = convert_dc ub_rhs in
-                      acc @ [(lhs, DC.Pair (lb_rhs_value, ub_rhs_value))] )
-                ~init:[]
+                      (lhs, DC.Pair (lb_rhs_value, ub_rhs_value)) )
             in
-            edge_data.constraints <- constraints ;
-            DCP.EdgeData.set_edge_output_type edge_data DCP )
+            edge_data.constraints <- constraints )
           dcp
       in
       to_natural_numbers dcp ;
@@ -851,8 +629,7 @@ let analyze_procedure ({InterproceduralAnalysis.proc_desc; exe_env} as analysis_
               in
               edge_data.condition_norms <- condition_norms ;
               edge_data.calls <- calls_renamed_args ;
-              edge_data.constraints <- constraints ;
-              DCP.EdgeData.set_edge_output_type edge_data DCP )
+              edge_data.constraints <- constraints )
             dcp ;
           debug_log "@]@," ;
           output_graph (proc_graph_dir ^/ ssa_dcp_fname) dcp DCP_Dot.output_graph ;

@@ -5,21 +5,16 @@ module F = Format
 module DC = DifferenceConstraint
 module LTS = LabeledTransitionSystem
 
-(* Difference Constraint Program *)
-type edge_output_type = GuardedDCP | DCP [@@deriving compare]
-
 module EdgeData : sig
   type t =
     { backedge: bool
     ; branch_info: (Sil.if_kind * bool * Location.t) option
     ; mutable calls: EdgeExp.CallPair.Set.t
     ; mutable constraints: DC.t list
-    ; mutable guards: EdgeExp.Set.t
     ; mutable condition_norms: EdgeExp.Set.t list
     ; mutable bound: EdgeExp.T.t option
     ; mutable bound_norms: EdgeExp.Set.t list
-    ; mutable computing_bound: bool
-    ; mutable edge_type: edge_output_type }
+    ; mutable computing_bound: bool }
   [@@deriving compare]
 
   val equal : t -> t -> bool
@@ -32,16 +27,10 @@ module EdgeData : sig
 
   val is_backedge : t -> bool
 
-  val active_guards : t -> EdgeExp.Set.t
-
   (* Required by Graph module interface *)
   val default : t
 
-  val set_edge_output_type : t -> edge_output_type -> unit
-
   val branch_type : t -> bool
-
-  val add_guards : t -> EdgeExp.Set.t -> unit
 
   val add_constraint : t -> DC.t -> unit
 end

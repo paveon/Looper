@@ -132,10 +132,6 @@ module LooperSummary = struct
     ; err_log }
 
 
-  (* module SQLite = SqliteUtils.MarshalledDataNOTForComparison (struct
-       type nonrec t = t
-     end) *)
-
   let merge ~into x = Errlog.merge ~into:into.err_log x.err_log
 
   module SQLite = struct

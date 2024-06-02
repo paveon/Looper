@@ -382,7 +382,9 @@ let exec_instr :
                   (fun ptr_arg (lb, ub) acc ->
                     debug_log "Side-effect: %a  --->  [%a, %a]@," EdgeExp.pp ptr_arg EdgeExp.pp lb
                       EdgeExp.pp ub ;
-                    let arg_access = HilExp.AccessExpression.dereference_2 (extract_access ptr_arg) in
+                    let arg_access =
+                      HilExp.AccessExpression.dereference_2 (extract_access ptr_arg)
+                    in
                     let output_bound = EdgeExp.ValuePair.P (lb, ub) in
                     LTS.EdgeData.add_assignment acc arg_access output_bound )
                   call_model.side_effects graph_data.edge_data
@@ -1057,16 +1059,13 @@ let process_split_node node successors predecessors (graph_data, proc_data) =
       let prev_is_loop_head = Procdesc.is_loop_head graph_data.proc_desc prev_node in
       let current_is_loop_head = Procdesc.is_loop_head graph_data.proc_desc node in
       let node_map, loop_heads =
-        if prev_is_loop_head then (
+        if prev_is_loop_head then
           let node_map = Procdesc.NodeMap.add prev_node prune_node graph_data.node_map in
-          node_map, graph_data.loop_heads
-        ) else if current_is_loop_head then (
+          (node_map, graph_data.loop_heads)
+        else if current_is_loop_head then
           let loop_heads = prune_node :: graph_data.loop_heads in
-          Procdesc.NodeMap.add node prune_node graph_data.node_map, loop_heads
-        ) else (
-          Procdesc.NodeMap.add node prune_node graph_data.node_map, 
-          graph_data.loop_heads
-        )
+          (Procdesc.NodeMap.add node prune_node graph_data.node_map, loop_heads)
+        else (Procdesc.NodeMap.add node prune_node graph_data.node_map, graph_data.loop_heads)
       in
       let graph_data =
         { graph_data with
@@ -1357,7 +1356,7 @@ let construct : LooperSummary.t InterproceduralAnalysis.t -> procedure_data =
       let nodes = LTS.NodeSet.remove node const_nodes in
       let backedge_in_edges, in_edges =
         List.partition_tf (LTS.pred_e proc_data.lts node)
-          ~f:(fun (_, (edge_data : LTS.EdgeData.t), _) -> edge_data.backedge)
+          ~f:(fun (_, (edge_data : LTS.EdgeData.t), _) -> edge_data.backedge )
       in
       let shared_const_assignments =
         List.map in_edges ~f:(fun ((_, edge_data, _) as edge) ->
@@ -1470,7 +1469,7 @@ let construct : LooperSummary.t InterproceduralAnalysis.t -> procedure_data =
   let rec cut_branch access_edge node =
     let _, in_edges =
       List.partition_tf (LTS.pred_e proc_data.lts node)
-        ~f:(fun (_, (edge_data : LTS.EdgeData.t), _) -> edge_data.backedge)
+        ~f:(fun (_, (edge_data : LTS.EdgeData.t), _) -> edge_data.backedge )
     in
     LTS.remove_edge_e proc_data.lts access_edge ;
     if Int.equal (List.length in_edges) 1 then (
