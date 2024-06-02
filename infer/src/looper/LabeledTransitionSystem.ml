@@ -171,78 +171,7 @@ module EdgeData = struct
         EdgeExp.ValuePair.V (EdgeExp.T.Access lhs_access)
 
 
-  let derive_guards edge why3_norms tenv (prover_data : Provers.prover_data) =
-    let selected_theory = prover_data.real_data in
-    let or_terms =
-      List.fold edge.conditions ~init:[] ~f:(fun or_terms and_terms ->
-          let condition_set =
-            EdgeExp.Set.fold
-              (fun cond acc ->
-                match cond with
-                | EdgeExp.T.BinOp (_, EdgeExp.T.Const _, EdgeExp.T.Const _) ->
-                    acc
-                | EdgeExp.T.UnOp _ | EdgeExp.T.BinOp _ -> (
-                  try
-                    debug_log "Transforming: %a@," EdgeExp.pp cond ;
-                    let cond_why3, type_conditions =
-                      EdgeExp.to_why3_expr cond tenv ~selected_theory prover_data
-                    in
-                    Why3.Term.Sterm.add cond_why3 (Why3.Term.Sterm.union type_conditions acc)
-                  with error ->
-                    debug_log
-                      "Failed to transform condition '%a' to Why3 expression, skipping: %a@,"
-                      EdgeExp.pp cond Exn.pp error ;
-                    acc )
-                | _ ->
-                    L.(die InternalError)
-                      "[Guards] Condition of form '%a' is not supported" EdgeExp.pp cond )
-              and_terms Why3.Term.Sterm.empty
-          in
-          if Why3.Term.Sterm.is_empty condition_set then or_terms
-          else (Why3.Term.Sterm.elements condition_set |> Why3.Term.t_and_l) :: or_terms )
-    in
-    if List.is_empty or_terms then EdgeExp.Set.empty
-    else
-      let lhs = Why3.Term.t_or_l or_terms in
-      let gt = selected_theory.get_op ">" in
-      let zero_const = selected_theory.mk_const (Why3.BigInt.of_int 0) in
-      let goal_symbol = Why3.Decl.create_prsymbol (Why3.Ident.id_fresh "is_guard") in
-      let lhs_vars = Why3.Term.Mvs.keys (Why3.Term.t_vars lhs) in
-      let is_norm_guard why3_norm =
-        let rhs = Why3.Term.t_app_infer gt [why3_norm; zero_const] in
-        let formula = Why3.Term.t_implies lhs rhs in
-        let rhs_vars = Why3.Term.Mvs.keys (Why3.Term.t_vars rhs) in
-        let free_vars = lhs_vars @ rhs_vars in
-        let quantified_fmla = Why3.Term.t_forall_close free_vars [] formula in
-        let task = Why3.Task.use_export None selected_theory.theory in
-        let task = Why3.Task.add_prop_decl task Why3.Decl.Pgoal goal_symbol quantified_fmla in
-        let prover_call =
-          Why3.Driver.prove_task prover_data.driver task ~config:prover_data.main
-            ~command:prover_data.prover_conf.command
-            ~limit:{Why3.Call_provers.empty_limit with limit_time= 5.}
-        in
-        let result = Why3.Call_provers.wait_on_call prover_call in
-        match result.pr_answer with
-        | Why3.Call_provers.Valid ->
-            (* Implication [conditions] => [norm > 0] always holds *)
-            true
-        | Why3.Call_provers.Invalid | Why3.Call_provers.Unknown _ ->
-            false
-        | _ ->
-            debug_log "Failed task: %a\n" Why3.Pretty.print_task task ;
-            debug_log "Fail: %s\n" result.pr_output ;
-            assert false
-      in
-      let guards =
-        List.fold why3_norms ~init:EdgeExp.Set.empty ~f:(fun guard_acc (norm, why3_norm) ->
-            if is_norm_guard why3_norm then EdgeExp.Set.add norm guard_acc else guard_acc )
-      in
-      guards
-
-
   let derive_constraint edge_data (norm, used_assignments) formals tenv proc_name =
-    (* List.iter edge_data.assignments ~f:(fun (lhs, rhs) ->
-        debug_log "Assignment: %a = %a@," HilExp.AccessExpression.pp lhs EdgeExp.ValuePair.pp rhs ) ; *)
     let get_assignment lhs_access =
       debug_log "get_assignment: %a@," HilExp.AccessExpression.pp lhs_access ;
       let lhs_access_stripped =
@@ -333,25 +262,6 @@ module EdgeData = struct
                   else EdgeExp.AssignmentSet.empty
                 in
                 (accesses, Some rhs)
-              (* if
-                   (not (EdgeExp.equal norm rhs_exp))
-                   && AccessExpressionSet.mem access used_assignments
-                 then (
-                   (* debug_log "############ FAIL ###########@,"; *)
-                   (* L.die InternalError "[%a] Edge '%a = %a' assignment previously used " Procname.pp
-                      proc_name HilExp.AccessExpression.pp access EdgeExp.pp rhs *)
-                   L.user_warning
-                     "[%a] Edge '%a = %a' assignment previously used, skipping substitution...@."
-                     Procname.pp proc_name HilExp.AccessExpression.pp access EdgeExp.pp rhs ;
-                   debug_log "Returning rhs: %a@," EdgeExp.pp norm ;
-                   (AccessExpressionSet.empty, Some norm) )
-                 else
-                   let accesses =
-                     if (not (EdgeExp.equal norm rhs)) && not (EdgeExp.is_zero rhs) then
-                       AccessExpressionSet.singleton access
-                     else AccessExpressionSet.empty
-                   in
-                   (accesses, Some rhs) *)
             in
             match rhs with
             | EdgeExp.ValuePair.P (lower_bound, upper_bound) -> (

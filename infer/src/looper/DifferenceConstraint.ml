@@ -27,7 +27,16 @@ let make ?(const_part = (Binop.PlusA None, IntLit.zero)) lhs_norm rhs_norm =
 
 let make_value_rhs ?(const_part = (Binop.PlusA None, IntLit.zero)) rhs_norm =
   let op, rhs_const = const_part in
-  match op with Binop.PlusA _ | Binop.Shiftrt -> (rhs_norm, op, rhs_const) | _ -> assert false
+  match op with
+  | Binop.PlusA _ ->
+      let rhs_const =
+        if IntLit.lt rhs_const IntLit.minus_one then IntLit.minus_one else rhs_const
+      in
+      (rhs_norm, op, rhs_const)
+  | Binop.Shiftrt ->
+      (rhs_norm, op, rhs_const)
+  | _ ->
+      assert false
 
 
 let rec is_constant (lhs_norm, rhs) =
